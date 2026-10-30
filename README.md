@@ -1,6 +1,6 @@
 # Cookbook
 
-A self-hostable cookbook for collecting recipes and organizing them into cookbooks. The current application includes a Go API backed by SQLite and a React/Vite discovery interface. The discovery page reads explicitly public recipes from the instance. Signed-in users can create private recipes and browse recipes they own or can access.
+A self-hostable cookbook for collecting recipes and organizing them into cookbooks. The current application includes a Go API backed by SQLite and a React/Vite discovery interface. The discovery page reads explicitly public recipes from the instance. Signed-in users can create private recipes and cookbooks, add recipes to their own cookbooks, and browse recipes and cookbooks they own or can access.
 
 ## Requirements
 

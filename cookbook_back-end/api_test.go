@@ -85,7 +85,15 @@ func TestRecipeRevisionsAndOptimisticUpdates(t *testing.T) {
 	}
 	cookie := &http.Cookie{Name: sessionCookie, Value: sessionToken}
 	h := handlerWithAuth(db, testAuth(db))
-	create := map[string]any{"title": "First title", "ingredients": []map[string]string{{"name": "flour"}}, "steps": []map[string]string{{"text": "Mix"}}}
+	bookResponse := callAPI(h, http.MethodPost, "/api/cookbooks", map[string]string{"title": "Family"}, cookie)
+	if bookResponse.Code != http.StatusCreated {
+		t.Fatalf("cookbook create status = %d: %s", bookResponse.Code, bookResponse.Body)
+	}
+	var book cookbook
+	if err := json.Unmarshal(bookResponse.Body.Bytes(), &book); err != nil {
+		t.Fatal(err)
+	}
+	create := map[string]any{"title": "First title", "ingredients": []map[string]string{{"name": "flour"}}, "steps": []map[string]string{{"text": "Mix"}}, "cookbook_ids": []string{book.ID}}
 	created := callAPI(h, http.MethodPost, "/api/recipes", create, cookie)
 	if created.Code != http.StatusOK {
 		t.Fatalf("create status = %d: %s", created.Code, created.Body)
@@ -93,6 +101,9 @@ func TestRecipeRevisionsAndOptimisticUpdates(t *testing.T) {
 	var current recipe
 	if err := json.Unmarshal(created.Body.Bytes(), &current); err != nil {
 		t.Fatal(err)
+	}
+	if len(current.CookbookIDs) != 1 || current.CookbookIDs[0] != book.ID {
+		t.Fatalf("recipe cookbook association = %#v", current.CookbookIDs)
 	}
 	update := map[string]any{"title": "Second title", "ingredients": []map[string]string{{"name": "flour"}}, "steps": []map[string]string{{"text": "Mix"}}, "version": current.Version}
 	updated := callAPI(h, http.MethodPut, "/api/recipes/"+current.ID, update, cookie)

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/mail"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -54,6 +55,17 @@ type recipeRevision struct {
 	Tags        []string     `json:"tags"`
 	Visibility  visibility   `json:"visibility"`
 	CreatedAt   string       `json:"created_at"`
+}
+
+type revisionFieldChange struct {
+	Before any `json:"before"`
+	After  any `json:"after"`
+}
+
+type revisionDiff struct {
+	FromVersion int                            `json:"from_version"`
+	ToVersion   int                            `json:"to_version"`
+	Changes     map[string]revisionFieldChange `json:"changes"`
 }
 
 func (h publicRecipeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -192,6 +204,8 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.recipeByID(w, r, parts[1])
 	case len(parts) == 3 && parts[0] == "recipes" && parts[2] == "revisions":
 		h.recipeRevisions(w, r, parts[1])
+	case len(parts) == 4 && parts[0] == "recipes" && parts[2] == "revisions" && parts[3] == "diff":
+		h.recipeRevisionDiff(w, r, parts[1])
 	case len(parts) == 5 && parts[0] == "recipes" && parts[2] == "revisions" && parts[4] == "restore":
 		h.restoreRecipeRevision(w, r, parts[1], parts[3])
 	default:
@@ -1070,6 +1084,90 @@ func (h apiHandler) recipeRevisions(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	writeJSON(w, 200, items)
+}
+
+func (h apiHandler) recipeRevisionDiff(w http.ResponseWriter, r *http.Request, recipeID string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	fromVersion, fromErr := strconv.Atoi(r.URL.Query().Get("from"))
+	toVersion, toErr := strconv.Atoi(r.URL.Query().Get("to"))
+	if fromErr != nil || toErr != nil || fromVersion < 1 || toVersion < 1 {
+		writeError(w, http.StatusBadRequest, "invalid_revision_versions")
+		return
+	}
+	uid := authenticatedUser(r)
+	var owner string
+	var visibilityValue visibility
+	var public int
+	if err := h.db.QueryRow(`SELECT r.owner_id,r.visibility,s.public_instance FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.id=? AND r.deleted_at IS NULL`, recipeID).Scan(&owner, &visibilityValue, &public); err != nil {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	var member role
+	_ = h.db.QueryRow(`SELECT m.role FROM cookbook_memberships m JOIN cookbook_recipes cr ON cr.cookbook_id=m.cookbook_id WHERE cr.recipe_id=? AND m.user_id=? LIMIT 1`, recipeID, uid).Scan(&member)
+	if !canReadResource(uid, access{instancePublic: public == 1, visibility: visibilityValue, ownerID: owner, memberRole: member}) {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	type snapshot struct {
+		Title       string
+		Description string
+		Ingredients []ingredient
+		Steps       []recipeStep
+		Servings    int
+		PrepTime    int
+		CookTime    int
+		Tags        []string
+		Visibility  visibility
+	}
+	load := func(version int) (snapshot, error) {
+		var item snapshot
+		var ingredientsJSON, stepsJSON, tagsJSON string
+		err := h.db.QueryRow(`SELECT title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility FROM recipe_revisions WHERE recipe_id=? AND version=?`, recipeID, version).Scan(&item.Title, &item.Description, &ingredientsJSON, &stepsJSON, &item.Servings, &item.PrepTime, &item.CookTime, &tagsJSON, &item.Visibility)
+		if err != nil {
+			return snapshot{}, err
+		}
+		if json.Unmarshal([]byte(ingredientsJSON), &item.Ingredients) != nil || json.Unmarshal([]byte(stepsJSON), &item.Steps) != nil || json.Unmarshal([]byte(tagsJSON), &item.Tags) != nil {
+			return snapshot{}, errors.New("invalid revision data")
+		}
+		return item, nil
+	}
+	before, err := load(fromVersion)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	after, err := load(toVersion)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	changes := make(map[string]revisionFieldChange)
+	add := func(field string, oldValue, newValue any) {
+		if !reflect.DeepEqual(oldValue, newValue) {
+			changes[field] = revisionFieldChange{Before: oldValue, After: newValue}
+		}
+	}
+	add("title", before.Title, after.Title)
+	add("description", before.Description, after.Description)
+	add("ingredients", before.Ingredients, after.Ingredients)
+	add("steps", before.Steps, after.Steps)
+	add("servings", before.Servings, after.Servings)
+	add("prep_time_minutes", before.PrepTime, after.PrepTime)
+	add("cook_time_minutes", before.CookTime, after.CookTime)
+	add("tags", before.Tags, after.Tags)
+	add("visibility", before.Visibility, after.Visibility)
+	writeJSON(w, http.StatusOK, revisionDiff{FromVersion: fromVersion, ToVersion: toVersion, Changes: changes})
 }
 
 func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request, recipeID, versionText string) {

@@ -177,6 +177,29 @@ func TestRecipeRevisionsAndOptimisticUpdates(t *testing.T) {
 	if len(history) != 2 || history[0].Version != 2 || history[0].Title != "Second title" || history[0].Servings != 2 || history[0].CookTime != 25 || len(history[0].Tags) != 1 || history[0].Tags[0] != "quick" || history[1].Version != 1 || history[1].Title != "First title" || history[1].Servings != 4 || history[1].PrepTime != 15 || len(history[1].Tags) != 2 {
 		t.Fatalf("unexpected revision history: %#v", history)
 	}
+	diffResponse := callAPI(h, http.MethodGet, "/api/recipes/"+current.ID+"/revisions/diff?from=1&to=2", nil, cookie)
+	var diff revisionDiff
+	if diffResponse.Code != http.StatusOK || json.Unmarshal(diffResponse.Body.Bytes(), &diff) != nil || diff.FromVersion != 1 || diff.ToVersion != 2 {
+		t.Fatalf("revision diff status=%d body=%s", diffResponse.Code, diffResponse.Body)
+	}
+	if diff.Changes["title"].Before != "First title" || diff.Changes["title"].After != "Second title" || diff.Changes["servings"].Before != float64(4) || diff.Changes["servings"].After != float64(2) {
+		t.Fatalf("revision diff changes=%#v", diff.Changes)
+	}
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('stranger','stranger@example.test','Stranger','now')`); err != nil {
+		t.Fatal(err)
+	}
+	strangerToken, _, err := issueSession(db, "stranger")
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateDiff := callAPI(h, http.MethodGet, "/api/recipes/"+current.ID+"/revisions/diff?from=1&to=2", nil, &http.Cookie{Name: sessionCookie, Value: strangerToken})
+	if privateDiff.Code != http.StatusNotFound {
+		t.Fatalf("private revision diff status=%d, want 404", privateDiff.Code)
+	}
+	invalidDiff := callAPI(h, http.MethodGet, "/api/recipes/"+current.ID+"/revisions/diff?from=0&to=2", nil, cookie)
+	if invalidDiff.Code != http.StatusBadRequest {
+		t.Fatalf("invalid revision diff status=%d, want 400", invalidDiff.Code)
+	}
 	restored := callAPI(h, http.MethodPost, "/api/recipes/"+current.ID+"/revisions/1/restore", map[string]int{"expected_version": current.Version + 1}, cookie)
 	if restored.Code != http.StatusOK {
 		t.Fatalf("restore revision status = %d: %s", restored.Code, restored.Body)

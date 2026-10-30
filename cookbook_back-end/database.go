@@ -13,7 +13,7 @@ const schema = `
 CREATE TABLE IF NOT EXISTS instance_settings (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   public_instance INTEGER NOT NULL DEFAULT 0 CHECK (public_instance IN (0, 1)),
-  registration_policy TEXT NOT NULL DEFAULT 'invite_only' CHECK (registration_policy IN ('open', 'invite_only', 'disabled')),
+  registration_policy TEXT NOT NULL DEFAULT 'open' CHECK (registration_policy IN ('open', 'invite_only', 'disabled')),
   courses_enabled INTEGER NOT NULL DEFAULT 0 CHECK (courses_enabled IN (0, 1)),
   federation_enabled INTEGER NOT NULL DEFAULT 0 CHECK (federation_enabled IN (0, 1))
 );
@@ -24,6 +24,23 @@ CREATE TABLE IF NOT EXISTS users (
   display_name TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS email_challenges (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_email_challenges_email_created ON email_challenges(email, created_at DESC);
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE TABLE IF NOT EXISTS cookbooks (
   id TEXT PRIMARY KEY,
   owner_id TEXT NOT NULL REFERENCES users(id),

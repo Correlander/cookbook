@@ -1,14 +1,16 @@
 package main
 
 import (
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
 
 func TestHealthEndpoint(t *testing.T) {
+	db := testDatabase(t)
 	recorder := httptest.NewRecorder()
-	newHandler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	handlerWithAuth(db, testAuth(db)).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
@@ -19,8 +21,9 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestUnknownRouteReturnsJSONNotFound(t *testing.T) {
+	db := testDatabase(t)
 	recorder := httptest.NewRecorder()
-	newHandler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/missing", nil))
+	handlerWithAuth(db, testAuth(db)).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/missing", nil))
 
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
@@ -33,7 +36,7 @@ func TestUnknownRouteReturnsJSONNotFound(t *testing.T) {
 func TestConfigDefaultsAndOverride(t *testing.T) {
 	t.Setenv("COOKBOOK_ADDR", "")
 	cfg, err := loadConfig()
-	if err != nil || cfg.address != ":8000" {
+	if err != nil || cfg.address != "127.0.0.1:8000" {
 		t.Fatalf("default config = %#v, %v", cfg, err)
 	}
 
@@ -42,4 +45,14 @@ func TestConfigDefaultsAndOverride(t *testing.T) {
 	if err != nil || cfg.address != "127.0.0.1:9000" {
 		t.Fatalf("override config = %#v, %v", cfg, err)
 	}
+}
+
+func testDatabase(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := openDatabase(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
 }

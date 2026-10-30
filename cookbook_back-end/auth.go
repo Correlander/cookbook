@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/mail"
@@ -16,6 +17,12 @@ import (
 )
 
 type emailSender interface{ SendLoginLink(to, link string) error }
+type loginEmail struct {
+	To        string `json:"to"`
+	Subject   string `json:"subject"`
+	Text      string `json:"text"`
+	SignInURL string `json:"sign_in_url"`
+}
 type authHandler struct {
 	db            *sql.DB
 	sender        emailSender
@@ -214,8 +221,12 @@ func authConfig(db *sql.DB) (authHandler, error) {
 type commandEmailSender struct{ command string }
 
 func (s commandEmailSender) SendLoginLink(to, link string) error {
-	cmd := exec.Command(s.command, to, link)
-	cmd.Stdin = strings.NewReader("Cookbook sign-in\n\nUse this one-time link to sign in. It expires in 15 minutes.\n")
+	payload, err := json.Marshal(loginEmail{To: to, Subject: "Your Cookbook sign-in link", Text: "Use this one-time link to sign in. It expires in 15 minutes.", SignInURL: link})
+	if err != nil {
+		return errors.New("email payload encoding failed")
+	}
+	cmd := exec.Command(s.command)
+	cmd.Stdin = strings.NewReader(string(payload))
 	if err := cmd.Run(); err != nil {
 		return errors.New("email delivery failed")
 	}

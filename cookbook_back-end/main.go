@@ -12,12 +12,17 @@ import (
 
 func handlerWithAuth(db *sql.DB, auth authHandler) http.Handler {
 	mux := http.NewServeMux()
+	passkeys := passkeyHandler{db: db, webauthn: auth.webauthn, secureCookies: auth.secureCookies}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	mux.Handle("/api/auth/passkey/register/", csrfProtection(auth.origin, requireSession(db, passkeys)))
+	mux.Handle("/api/auth/passkey/login/", csrfProtection(auth.origin, passkeys))
+	mux.Handle("/api/auth/passkeys", csrfProtection(auth.origin, requireSession(db, passkeys)))
+	mux.Handle("/api/auth/passkeys/", csrfProtection(auth.origin, requireSession(db, passkeys)))
 	mux.Handle("/api/auth/", auth)
 	mux.Handle("GET /api/public/recipes", publicRecipeHandler{db: db})
-	mux.Handle("/api/", csrfProtection(requireSession(db, apiHandler{db: db})))
+	mux.Handle("/api/", csrfProtection(auth.origin, requireSession(db, apiHandler{db: db})))
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
 	})
@@ -52,6 +57,9 @@ func main() {
 		log.Fatal(err)
 	}
 	defer db.Close()
+	if err := configureRegistrationPolicy(db); err != nil {
+		log.Fatal(err)
+	}
 
 	auth, err := authConfig(db)
 	if err != nil {
@@ -85,7 +93,7 @@ func authenticatedUser(r *http.Request) string {
 	return userID
 }
 
-func csrfProtection(next http.Handler) http.Handler {
+func csrfProtection(expectedOrigin string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
 			next.ServeHTTP(w, r)
@@ -101,7 +109,7 @@ func csrfProtection(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "csrf_origin_invalid")
 			return
 		}
-		if r.Host != u.Host {
+		if r.Host != u.Host || origin != expectedOrigin {
 			writeError(w, http.StatusForbidden, "csrf_origin_mismatch")
 			return
 		}

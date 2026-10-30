@@ -4,7 +4,7 @@ A self-hostable cookbook for collecting recipes and organizing them into cookboo
 
 ## Requirements
 
-- Go 1.23 or newer
+- Go 1.24 or newer
 - Node.js 20 or newer and npm
 - A mail delivery command that accepts a JSON object on stdin (for email sign-in)
 
@@ -29,7 +29,9 @@ A self-hostable cookbook for collecting recipes and organizing them into cookboo
 
    Vite proxies `/api` requests to the local API.
 
-The initial instance is private, registration is invite-only, and courses and federation are disabled. Set `COOKBOOK_REGISTRATION=open` only when you intend to allow anyone to create an account. Invitation management is not implemented yet, so invite-only currently means only accounts provisioned by an administrator can sign in.
+The initial instance is private, registration is invite-only, and courses and federation are disabled. `COOKBOOK_REGISTRATION` accepts `invite_only`, `open`, or `disabled` and is applied at API startup. Set it to `open` only when you intend to allow anyone to create an account. Invitation management is not implemented yet, so invite-only currently means only accounts provisioned by an administrator can sign in.
+
+`COOKBOOK_PUBLIC_URL` must identify the browser-facing app origin. For the local Vite setup it is `http://localhost:5173`; in production use the HTTPS URL served by the reverse proxy. `COOKBOOK_RP_ID` and `COOKBOOK_RP_ORIGIN` configure the WebAuthn relying party and origin. The local example uses `localhost`; production passkeys require HTTPS and the app's exact origin.
 
 ## Email command contract
 
@@ -43,4 +45,4 @@ The command should deliver the message and exit with status 0 on success. It mus
 
 ## Current scope
 
-Email-link authentication, durable sessions, private-first SQLite schema, access checks, structured recipe/cookbook APIs, public recipe browsing, and private recipe creation are present. Passkeys, invitation administration, recipe revision history, media uploads, and federation are not implemented. Federation is disabled by default; protocol evaluation and design are tracked in `AUDIT_AND_PLAN.md`.
+Email-link and passkey authentication, durable sessions, private-first SQLite schema, access checks, structured recipe/cookbook APIs, public recipe browsing, private recipe and cookbook creation, and recipe revision history are present. Invitation administration, revision restore/trash, media uploads, and federation are not implemented. Federation is disabled by default; protocol evaluation and design are tracked in `AUDIT_AND_PLAN.md`.

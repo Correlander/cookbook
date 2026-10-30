@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/mail"
 	"net/url"
@@ -14,6 +15,9 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/go-webauthn/webauthn/protocol"
+	"github.com/go-webauthn/webauthn/webauthn"
 )
 
 type emailSender interface{ SendLoginLink(to, link string) error }
@@ -27,11 +31,13 @@ type authHandler struct {
 	db            *sql.DB
 	sender        emailSender
 	baseURL       string
+	origin        string
 	secureCookies bool
+	webauthn      *webauthn.WebAuthn
 }
 
 func (h authHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodPost && !validRequestOrigin(r) {
+	if r.Method == http.MethodPost && !validRequestOrigin(r, h.origin) {
 		writeError(w, http.StatusForbidden, "csrf_origin_mismatch")
 		return
 	}
@@ -49,13 +55,31 @@ func (h authHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func validRequestOrigin(r *http.Request) bool {
+func validRequestOrigin(r *http.Request, expectedOrigin string) bool {
 	origin := r.Header.Get("Origin")
-	if origin == "" {
+	if origin == "" || expectedOrigin == "" {
 		return false
 	}
 	u, err := url.Parse(origin)
-	return err == nil && u.Host != "" && (u.Scheme == "https" || u.Scheme == "http") && u.Host == r.Host
+	return err == nil && u.Host != "" && (u.Scheme == "https" || u.Scheme == "http") && origin == expectedOrigin && u.Host == r.Host
+}
+
+func normalizeOrigin(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return "", errors.New("invalid origin")
+	}
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if (u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80") {
+		port = ""
+	}
+	if port != "" {
+		host = net.JoinHostPort(host, port)
+	} else if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	return strings.ToLower(u.Scheme) + "://" + host, nil
 }
 
 func (h authHandler) requestEmail(w http.ResponseWriter, r *http.Request) {
@@ -218,7 +242,8 @@ func authConfig(db *sql.DB) (authHandler, error) {
 	if base == "" {
 		return authHandler{}, errors.New("COOKBOOK_PUBLIC_URL must be configured")
 	}
-	if !strings.HasPrefix(base, "https://") && !strings.HasPrefix(base, "http://localhost") && !strings.HasPrefix(base, "http://127.0.0.1") {
+	parsedBase, err := url.Parse(base)
+	if err != nil || parsedBase.Host == "" || (parsedBase.Scheme != "https" && !(parsedBase.Scheme == "http" && (parsedBase.Hostname() == "localhost" || parsedBase.Hostname() == "127.0.0.1"))) {
 		return authHandler{}, errors.New("COOKBOOK_PUBLIC_URL must use HTTPS outside local development")
 	}
 	driver := strings.TrimSpace(os.Getenv("COOKBOOK_EMAIL_COMMAND"))
@@ -228,7 +253,38 @@ func authConfig(db *sql.DB) (authHandler, error) {
 	if _, err := exec.LookPath(driver); err != nil {
 		return authHandler{}, errors.New("COOKBOOK_EMAIL_COMMAND executable was not found")
 	}
-	return authHandler{db: db, sender: commandEmailSender{command: driver}, baseURL: base, secureCookies: strings.HasPrefix(base, "https://")}, nil
+	rpID := strings.TrimSpace(os.Getenv("COOKBOOK_RP_ID"))
+	if rpID == "" {
+		rpID = parsedBase.Hostname()
+	}
+	baseOrigin, err := normalizeOrigin(base)
+	if err != nil {
+		return authHandler{}, errors.New("COOKBOOK_PUBLIC_URL must contain a valid origin")
+	}
+	rpOrigin := strings.TrimSpace(os.Getenv("COOKBOOK_RP_ORIGIN"))
+	if rpOrigin == "" {
+		rpOrigin = baseOrigin
+	} else if rpOrigin, err = normalizeOrigin(rpOrigin); err != nil {
+		return authHandler{}, errors.New("COOKBOOK_RP_ORIGIN must be a valid origin")
+	}
+	if rpOrigin != baseOrigin {
+		return authHandler{}, errors.New("COOKBOOK_RP_ORIGIN must match COOKBOOK_PUBLIC_URL origin")
+	}
+	wa, err := webauthn.New(&webauthn.Config{
+		RPDisplayName:        "Cookbook",
+		RPID:                 rpID,
+		RPOrigins:            []string{rpOrigin},
+		EncodeUserIDAsString: true,
+		AuthenticatorSelection: protocol.AuthenticatorSelection{
+			ResidentKey:        protocol.ResidentKeyRequirementRequired,
+			RequireResidentKey: boolPointer(true),
+			UserVerification:   protocol.VerificationRequired,
+		},
+	})
+	if err != nil {
+		return authHandler{}, errors.New("WebAuthn relying party configuration is invalid")
+	}
+	return authHandler{db: db, sender: commandEmailSender{command: driver}, baseURL: base, origin: baseOrigin, secureCookies: parsedBase.Scheme == "https", webauthn: wa}, nil
 }
 
 type commandEmailSender struct{ command string }
@@ -250,5 +306,9 @@ type testEmailSender struct{ sent chan string }
 
 func (s testEmailSender) SendLoginLink(to, link string) error { s.sent <- link; return nil }
 func testAuth(db *sql.DB) authHandler {
-	return authHandler{db: db, sender: testEmailSender{sent: make(chan string, 8)}, baseURL: "http://localhost:8000"}
+	wa, err := webauthn.New(&webauthn.Config{RPDisplayName: "Cookbook", RPID: "localhost", RPOrigins: []string{"http://localhost:5173"}, EncodeUserIDAsString: true, AuthenticatorSelection: protocol.AuthenticatorSelection{ResidentKey: protocol.ResidentKeyRequirementRequired, RequireResidentKey: boolPointer(true), UserVerification: protocol.VerificationRequired}})
+	if err != nil {
+		panic(err)
+	}
+	return authHandler{db: db, sender: testEmailSender{sent: make(chan string, 8)}, baseURL: "http://localhost:5173", origin: "http://localhost:5173", webauthn: wa}
 }

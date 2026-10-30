@@ -3,11 +3,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-webauthn/webauthn/webauthn"
 )
 
 func callAPI(h http.Handler, method, path string, body any, cookie *http.Cookie) *httptest.ResponseRecorder {
@@ -21,8 +24,8 @@ func callAPI(h http.Handler, method, path string, body any, cookie *http.Cookie)
 		req.AddCookie(cookie)
 	}
 	if method != http.MethodGet {
-		req.Host = "example.test"
-		req.Header.Set("Origin", "http://example.test")
+		req.Host = "localhost:5173"
+		req.Header.Set("Origin", "http://localhost:5173")
 	}
 	h.ServeHTTP(rec, req)
 	return rec
@@ -32,12 +35,20 @@ func TestAuthStateChangesRequireSameOrigin(t *testing.T) {
 	db := testDatabase(t)
 	h := handlerWithAuth(db, testAuth(db))
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/consume", strings.NewReader(`{"token":"invalid"}`))
-	req.Host = "example.test"
+	req.Host = "localhost:5173"
 	req.Header.Set("Origin", "https://attacker.test")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("cross-origin auth request status = %d, want 403", rec.Code)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/consume", strings.NewReader(`{"token":"invalid"}`))
+	req.Host = "localhost:5173"
+	req.Header.Set("Origin", "https://localhost:5173")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("same-host wrong-scheme auth request status = %d, want 403", rec.Code)
 	}
 }
 
@@ -134,6 +145,102 @@ func TestRecipeRevisionsAndOptimisticUpdates(t *testing.T) {
 		t.Fatalf("private revision read status = %d, want 404", denied.Code)
 	}
 }
+
+func TestPasskeyCeremoniesAreShortLivedAndSingleUse(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now')`); err != nil {
+		t.Fatal(err)
+	}
+	sessionToken, _, err := issueSession(db, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := handlerWithAuth(db, testAuth(db))
+	cookie := &http.Cookie{Name: sessionCookie, Value: sessionToken}
+	started := callAPI(h, http.MethodPost, "/api/auth/passkey/register/begin", nil, cookie)
+	if started.Code != http.StatusOK {
+		t.Fatalf("registration begin status = %d: %s", started.Code, started.Body)
+	}
+	var ceremony struct {
+		ID      string `json:"ceremony_id"`
+		Options struct {
+			PublicKey struct {
+				Challenge string `json:"challenge"`
+			} `json:"publicKey"`
+		} `json:"options"`
+	}
+	if err := json.Unmarshal(started.Body.Bytes(), &ceremony); err != nil || ceremony.ID == "" || ceremony.Options.PublicKey.Challenge == "" {
+		t.Fatalf("invalid registration options: %s (%v)", started.Body, err)
+	}
+	finish := httptest.NewRequest(http.MethodPost, "/api/auth/passkey/register/finish", strings.NewReader(`{}`))
+	finish.Host = "localhost:5173"
+	finish.Header.Set("Origin", "http://localhost:5173")
+	finish.Header.Set("X-Cookbook-Ceremony", ceremony.ID)
+	finish.AddCookie(cookie)
+	finishRecorder := httptest.NewRecorder()
+	h.ServeHTTP(finishRecorder, finish)
+	if finishRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid attestation response status = %d", finishRecorder.Code)
+	}
+	replay := httptest.NewRequest(http.MethodPost, "/api/auth/passkey/register/finish", strings.NewReader(`{}`))
+	replay.Host = "localhost:5173"
+	replay.Header.Set("Origin", "http://localhost:5173")
+	replay.Header.Set("X-Cookbook-Ceremony", ceremony.ID)
+	replay.AddCookie(cookie)
+	replayRecorder := httptest.NewRecorder()
+	h.ServeHTTP(replayRecorder, replay)
+	if replayRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("registration ceremony replay status = %d", replayRecorder.Code)
+	}
+	loginBegin := callAPI(h, http.MethodPost, "/api/auth/passkey/login/begin", nil, nil)
+	if loginBegin.Code != http.StatusOK {
+		t.Fatalf("discoverable login begin status = %d: %s", loginBegin.Code, loginBegin.Body)
+	}
+	var loginCeremony struct {
+		ID string `json:"ceremony_id"`
+	}
+	if err := json.Unmarshal(loginBegin.Body.Bytes(), &loginCeremony); err != nil || loginCeremony.ID == "" {
+		t.Fatalf("invalid login ceremony: %s (%v)", loginBegin.Body, err)
+	}
+	loginFinish := httptest.NewRequest(http.MethodPost, "/api/auth/passkey/login/finish", strings.NewReader(`{}`))
+	loginFinish.Host = "localhost:5173"
+	loginFinish.Header.Set("Origin", "http://localhost:5173")
+	loginFinish.Header.Set("X-Cookbook-Ceremony", loginCeremony.ID)
+	loginRecorder := httptest.NewRecorder()
+	h.ServeHTTP(loginRecorder, loginFinish)
+	if loginRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid passkey assertion status = %d", loginRecorder.Code)
+	}
+	loginReplay := httptest.NewRequest(http.MethodPost, "/api/auth/passkey/login/finish", strings.NewReader(`{}`))
+	loginReplay.Host = "localhost:5173"
+	loginReplay.Header.Set("Origin", "http://localhost:5173")
+	loginReplay.Header.Set("X-Cookbook-Ceremony", loginCeremony.ID)
+	loginReplayRecorder := httptest.NewRecorder()
+	h.ServeHTTP(loginReplayRecorder, loginReplay)
+	if loginReplayRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("login ceremony replay status = %d", loginReplayRecorder.Code)
+	}
+}
+
+func TestPasskeyCredentialCannotBeRegisteredToTwoAccounts(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('another-user','another@example.test','Another','now')`); err != nil {
+		t.Fatal(err)
+	}
+	h := passkeyHandler{db: db}
+	credential := webauthn.Credential{ID: []byte("credential-id")}
+	if err := h.storeCredential("owner", credential); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.storeCredential("another-user", credential); !errors.Is(err, errPasskeyAlreadyRegistered) {
+		t.Fatalf("duplicate credential error = %v, want already registered", err)
+	}
+	var owner string
+	if err := db.QueryRow(`SELECT user_id FROM webauthn_credentials WHERE credential_id=?`, credential.ID).Scan(&owner); err != nil || owner != "owner" {
+		t.Fatalf("credential owner = %q, err = %v", owner, err)
+	}
+}
+
 func TestUnauthenticatedAndForgedUserCannotCreateCookbook(t *testing.T) {
 	db := testDatabase(t)
 	sender := testEmailSender{sent: make(chan string, 1)}

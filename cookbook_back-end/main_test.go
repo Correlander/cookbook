@@ -47,6 +47,22 @@ func TestConfigDefaultsAndOverride(t *testing.T) {
 	}
 }
 
+func TestRegistrationPolicyConfiguration(t *testing.T) {
+	db := testDatabase(t)
+	t.Setenv("COOKBOOK_REGISTRATION", "open")
+	if err := configureRegistrationPolicy(db); err != nil {
+		t.Fatal(err)
+	}
+	var policy string
+	if err := db.QueryRow(`SELECT registration_policy FROM instance_settings WHERE id=1`).Scan(&policy); err != nil || policy != "open" {
+		t.Fatalf("registration policy = %q, %v", policy, err)
+	}
+	t.Setenv("COOKBOOK_REGISTRATION", "unknown")
+	if err := configureRegistrationPolicy(db); err == nil {
+		t.Fatal("invalid registration policy should be rejected")
+	}
+}
+
 func testDatabase(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := openDatabase(":memory:")

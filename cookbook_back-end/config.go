@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"errors"
 	"os"
 	"strings"
@@ -9,6 +10,20 @@ import (
 type config struct {
 	address  string
 	database string
+}
+
+func configureRegistrationPolicy(db *sql.DB) error {
+	policy := strings.TrimSpace(os.Getenv("COOKBOOK_REGISTRATION"))
+	if policy == "" {
+		return nil
+	}
+	if policy != "open" && policy != "invite_only" && policy != "disabled" {
+		return errors.New("COOKBOOK_REGISTRATION must be open, invite_only, or disabled")
+	}
+	if _, err := db.Exec(`UPDATE instance_settings SET registration_policy=? WHERE id=1`, policy); err != nil {
+		return errors.New("could not apply COOKBOOK_REGISTRATION")
+	}
+	return nil
 }
 
 func loadConfig() (config, error) {

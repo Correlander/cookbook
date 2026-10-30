@@ -17,10 +17,11 @@ At audit time the repository was an early prototype. Implementation has since ad
 ## Implementation progress (2026-10-30)
 
 - M1 foundation: Go configuration, health endpoint, security headers, SQLite startup schema, and backend verification are in place. Production static asset serving and deploy packaging remain open.
-- M2 authentication: passwordless email links, hashed one-time challenges, durable sessions, same-origin checks, and frontend request/confirmation are implemented. Passkeys, administrator invitation management, and broader abuse controls remain open. New databases default to invite-only; provisioned accounts can sign in, but invite flows do not exist yet.
+- M2 authentication: passwordless email links, hashed one-time challenges, durable sessions, same-origin checks, WebAuthn passkeys, and frontend request/confirmation/management are implemented. Administrator invitation management and broader abuse controls remain open. New databases default to invite-only; provisioned accounts can sign in, but invite flows do not exist yet.
 - M3 local core: private-first users/cookbooks/recipes/membership schema, API authorization, structured recipes, public recipe listing, private recipe creation, and basic cookbook listing/creation/assignment UI are implemented. Member/invitation management UI, recipe/cookbook editing, uploads, and pagination remain open.
 - M4 history: recipe snapshots are written atomically at create/update, updates use optimistic versions, and authorized users can read revision history. Existing recipes receive a latest-version backfill during schema initialization. Diff, restore-as-new-version, distinct security audit, soft delete/trash, and retention are not implemented.
 - Frontend dependencies were updated within existing semver ranges; `npm audit` currently reports no advisories. Go tests/vet and frontend lint/build have been run successfully at recent checkpoints.
+- WebAuthn uses `github.com/go-webauthn/webauthn` v0.14.0 and raises the backend minimum to Go 1.24. Automated tests cover RP configuration, option creation, origin checks, and one-time ceremony use; a real browser/authenticator enrollment and assertion has not been exercised.
 
 These notes describe repository state, not a claim that any milestone is complete. Recheck implementation and verification evidence before release.
 

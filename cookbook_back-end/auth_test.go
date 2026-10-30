@@ -9,6 +9,25 @@ import (
 	"testing"
 )
 
+func TestAuthConfigBuildsWebAuthnRelyingPartyFromInstanceURL(t *testing.T) {
+	db := testDatabase(t)
+	t.Setenv("COOKBOOK_PUBLIC_URL", "https://Recipes.Example.test:443/")
+	t.Setenv("COOKBOOK_RP_ID", "recipes.example.test")
+	t.Setenv("COOKBOOK_RP_ORIGIN", "https://recipes.example.test")
+	t.Setenv("COOKBOOK_EMAIL_COMMAND", "/bin/true")
+	config, err := authConfig(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.secureCookies || config.webauthn.Config.RPID != "recipes.example.test" || len(config.webauthn.Config.RPOrigins) != 1 || config.webauthn.Config.RPOrigins[0] != "https://recipes.example.test" {
+		t.Fatalf("unexpected WebAuthn relying party config: secure=%v config=%#v", config.secureCookies, config.webauthn.Config)
+	}
+	t.Setenv("COOKBOOK_RP_ORIGIN", "https://other.example.test")
+	if _, err := authConfig(db); err == nil {
+		t.Fatal("mismatched WebAuthn and public origins should be rejected")
+	}
+}
+
 func TestCommandEmailSenderKeepsSignInURLOutOfArguments(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script")

@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS recipes (
   visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'public', 'unlisted')),
   edit_policy TEXT NOT NULL DEFAULT 'owner_only' CHECK (edit_policy IN ('owner_only', 'cookbook_editors')),
   version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+  deleted_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -168,6 +169,7 @@ func openDatabase(path string) (*sql.DB, error) {
 		{"recipes", "prep_time_minutes", `INTEGER NOT NULL DEFAULT 0 CHECK (prep_time_minutes BETWEEN 0 AND 1440)`},
 		{"recipes", "cook_time_minutes", `INTEGER NOT NULL DEFAULT 0 CHECK (cook_time_minutes BETWEEN 0 AND 1440)`},
 		{"recipes", "tags_json", `TEXT NOT NULL DEFAULT '[]'`},
+		{"recipes", "deleted_at", `TEXT`},
 		{"recipe_revisions", "servings", `INTEGER NOT NULL DEFAULT 0 CHECK (servings BETWEEN 0 AND 1000)`},
 		{"recipe_revisions", "prep_time_minutes", `INTEGER NOT NULL DEFAULT 0 CHECK (prep_time_minutes BETWEEN 0 AND 1440)`},
 		{"recipe_revisions", "cook_time_minutes", `INTEGER NOT NULL DEFAULT 0 CHECK (cook_time_minutes BETWEEN 0 AND 1440)`},
@@ -184,6 +186,10 @@ func openDatabase(path string) (*sql.DB, error) {
 				return nil, fmt.Errorf("upgrade %s schema: %w", column.table, err)
 			}
 		}
+	}
+	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_recipes_owner_deleted ON recipes(owner_id,deleted_at)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("index recipe trash: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `UPDATE invitations AS older SET revoked_at=COALESCE(older.created_at,?) WHERE older.accepted_at IS NULL AND older.revoked_at IS NULL AND EXISTS (SELECT 1 FROM invitations AS newer WHERE COALESCE(newer.cookbook_id,'')=COALESCE(older.cookbook_id,'') AND lower(newer.email)=lower(older.email) AND newer.accepted_at IS NULL AND newer.revoked_at IS NULL AND (newer.created_at>older.created_at OR (newer.created_at=older.created_at AND newer.id>older.id)))`, timestamp()); err != nil {
 		db.Close()

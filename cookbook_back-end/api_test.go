@@ -202,6 +202,63 @@ func TestRecipeRevisionsAndOptimisticUpdates(t *testing.T) {
 	}
 }
 
+func TestRecipeTrashIsOwnerOnlyAndRestorable(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1; INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('other','other@example.test','Other','now'); INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,created_at,updated_at) VALUES('recipe','owner','Owner','Public soup','','[]','[]','public','owner_only','now','now')`); err != nil {
+		t.Fatal(err)
+	}
+	ownerToken, _, err := issueSession(db, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherToken, _, err := issueSession(db, "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := handlerWithAuth(db, testAuth(db))
+	ownerCookie := &http.Cookie{Name: sessionCookie, Value: ownerToken}
+	otherCookie := &http.Cookie{Name: sessionCookie, Value: otherToken}
+	forbiddenDelete := callAPI(handler, http.MethodDelete, "/api/recipes/recipe", nil, otherCookie)
+	if forbiddenDelete.Code != http.StatusNotFound {
+		t.Fatalf("non-owner delete status=%d, want 404", forbiddenDelete.Code)
+	}
+	trashed := callAPI(handler, http.MethodDelete, "/api/recipes/recipe", nil, ownerCookie)
+	if trashed.Code != http.StatusOK {
+		t.Fatalf("owner trash status=%d: %s", trashed.Code, trashed.Body)
+	}
+	missing := callAPI(handler, http.MethodGet, "/api/recipes/recipe", nil, ownerCookie)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("trashed recipe GET status=%d, want 404", missing.Code)
+	}
+	privateList := callAPI(handler, http.MethodGet, "/api/recipes", nil, ownerCookie)
+	if privateList.Code != http.StatusOK || strings.TrimSpace(privateList.Body.String()) != "[]" {
+		t.Fatalf("private list still includes trashed recipe: %d %s", privateList.Code, privateList.Body)
+	}
+	public := httptest.NewRecorder()
+	handler.ServeHTTP(public, httptest.NewRequest(http.MethodGet, "/api/public/recipes", nil))
+	if public.Code != http.StatusOK || strings.TrimSpace(public.Body.String()) != "[]" {
+		t.Fatalf("public listing still exposes trashed recipe: %d %s", public.Code, public.Body)
+	}
+	trash := callAPI(handler, http.MethodGet, "/api/recipes/trash", nil, ownerCookie)
+	var items []recipe
+	if trash.Code != http.StatusOK || json.Unmarshal(trash.Body.Bytes(), &items) != nil || len(items) != 1 || items[0].ID != "recipe" || items[0].DeletedAt == "" {
+		t.Fatalf("owner trash listing=%d %s", trash.Code, trash.Body)
+	}
+	otherTrash := callAPI(handler, http.MethodGet, "/api/recipes/trash", nil, otherCookie)
+	if otherTrash.Code != http.StatusOK || strings.TrimSpace(otherTrash.Body.String()) != "[]" {
+		t.Fatalf("another account can see trash: %d %s", otherTrash.Code, otherTrash.Body)
+	}
+	forbiddenRestore := callAPI(handler, http.MethodPost, "/api/recipes/recipe/restore", nil, otherCookie)
+	if forbiddenRestore.Code != http.StatusNotFound {
+		t.Fatalf("non-owner restore status=%d, want 404", forbiddenRestore.Code)
+	}
+	restored := callAPI(handler, http.MethodPost, "/api/recipes/recipe/restore", nil, ownerCookie)
+	var result recipe
+	if restored.Code != http.StatusOK || json.Unmarshal(restored.Body.Bytes(), &result) != nil || result.DeletedAt != "" || !result.CanDelete {
+		t.Fatalf("owner restore=%d %s", restored.Code, restored.Body)
+	}
+}
+
 func TestPasskeyCeremoniesAreShortLivedAndSingleUse(t *testing.T) {
 	db := testDatabase(t)
 	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now')`); err != nil {

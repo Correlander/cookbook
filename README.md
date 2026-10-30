@@ -25,6 +25,8 @@ Sign-in uses one-time email links and WebAuthn passkeys. `COOKBOOK_PUBLIC_URL` m
 
 `COOKBOOK_REGISTRATION` accepts `invite_only` (default), `open`, or `disabled`. Administrators can create and revoke account invitations from the dashboard. Cookbook owners can invite collaborators as viewers or editors, change roles, and remove members. Invitation links are bound to the specified email address and expire after seven days. A cookbook invitation adds the recipient as a member only after they verify their email; the cookbook owner controls the member role. The recipient must verify that mailbox by consuming the one-time email link before an account is created.
 
+Recipe owners can move recipes to their private trash and restore them. `COOKBOOK_TRASH_RETENTION_DAYS` defaults to `30`; expired trash is permanently deleted during startup and daily cleanup. Set it to `0` to retain trashed recipes indefinitely. Permanent cleanup also removes recipe revision history and cookbook references.
+
 `COOKBOOK_ADMIN_EMAIL` bootstraps the first administrator on startup if no administrator exists. The account can sign in through its verified email address. Keep control of the environment file and email account; subsequent administrators must be managed through operational database procedures until an in-app role management flow is added.
 
 For command-based email delivery, Cookbook writes one JSON object to the executable's stdin:
@@ -37,4 +39,4 @@ The command must deliver the message and exit with status 0. Do not log the one-
 
 ## Current scope and remaining work
 
-Email-link and passkey authentication, first-admin bootstrap, account invitations, private-first SQLite storage, authorization checks, cookbook and recipe APIs, public recipe browsing, private recipe/cookbook creation and editing, cookbook member sharing, server-side recipe search and pagination, structured recipe metadata, and atomic revision history with restore are implemented. Revision diff/trash/retention, image uploads, cookbook-list pagination, distinct security audit log, and federation protocol research remain open. The Go service can embed and serve a production frontend build; the Dockerfile creates that build. Courses and federation remain disabled by default.
+Email-link and passkey authentication, first-admin bootstrap, account invitations, private-first SQLite storage, authorization checks, cookbook and recipe APIs, public recipe browsing, private recipe/cookbook creation and editing, cookbook member sharing, server-side recipe search and pagination, structured recipe metadata, atomic revision history and restore, and recipe trash with configurable retention are implemented. Revision diff, image uploads, cookbook-list pagination, distinct security audit log, and federation protocol research remain open. The Go service can embed and serve a production frontend build; the Dockerfile creates that build. Courses and federation remain disabled by default.

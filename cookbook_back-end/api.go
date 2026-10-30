@@ -80,7 +80,7 @@ func (h publicRecipeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, []recipe{})
 		return
 	}
-	rows, err := h.db.Query(`SELECT id,owner_id,creator_name,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,edit_policy,version,created_at,updated_at FROM recipes WHERE visibility='public' AND (?='' OR instr(lower(title||' '||description||' '||tags_json),lower(?))>0) ORDER BY updated_at DESC,id LIMIT ? OFFSET ?`, query, query, limit, offset)
+	rows, err := h.db.Query(`SELECT id,owner_id,creator_name,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,edit_policy,version,created_at,updated_at FROM recipes WHERE deleted_at IS NULL AND visibility='public' AND (?='' OR instr(lower(title||' '||description||' '||tags_json),lower(?))>0) ORDER BY updated_at DESC,id LIMIT ? OFFSET ?`, query, query, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
@@ -156,10 +156,12 @@ type recipe struct {
 	Visibility  visibility   `json:"visibility"`
 	EditPolicy  string       `json:"edit_policy"`
 	CanEdit     bool         `json:"can_edit"`
+	CanDelete   bool         `json:"can_delete"`
 	Version     int          `json:"version"`
 	CookbookIDs []string     `json:"cookbook_ids"`
 	CreatedAt   string       `json:"created_at"`
 	UpdatedAt   string       `json:"updated_at"`
+	DeletedAt   string       `json:"deleted_at,omitempty"`
 }
 
 func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -178,6 +180,10 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.cookbookMembers(w, r, parts[1])
 	case len(parts) == 4 && parts[0] == "cookbooks" && parts[2] == "members" && parts[3] == "invitations":
 		h.cookbookInvitations(w, r, parts[1])
+	case len(parts) == 2 && parts[0] == "recipes" && parts[1] == "trash":
+		h.recipeTrash(w, r)
+	case len(parts) == 3 && parts[0] == "recipes" && parts[2] == "restore":
+		h.restoreTrashedRecipe(w, r, parts[1])
 	case len(parts) == 1 && parts[0] == "recipes":
 		h.recipes(w, r)
 	case len(parts) == 2 && parts[0] == "admin" && parts[1] == "invitations":
@@ -688,7 +694,7 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_pagination_or_query")
 		return
 	}
-	rows, err := h.db.Query(`SELECT r.id,r.owner_id,r.creator_name,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,s.public_instance FROM recipes r JOIN instance_settings s ON s.id=1 WHERE ((r.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_recipes cr JOIN cookbook_memberships m ON m.cookbook_id=cr.cookbook_id WHERE cr.recipe_id=r.id AND m.user_id=?)) OR (s.public_instance=1 AND r.visibility='public')) AND (?='' OR instr(lower(r.title||' '||r.description||' '||r.tags_json),lower(?))>0) ORDER BY r.updated_at DESC,r.id LIMIT ? OFFSET ?`, uid, uid, q, q, limit, offset)
+	rows, err := h.db.Query(`SELECT r.id,r.owner_id,r.creator_name,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,s.public_instance FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.deleted_at IS NULL AND ((r.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_recipes cr JOIN cookbook_memberships m ON m.cookbook_id=cr.cookbook_id WHERE cr.recipe_id=r.id AND m.user_id=?)) OR (s.public_instance=1 AND r.visibility='public')) AND (?='' OR instr(lower(r.title||' '||r.description||' '||r.tags_json),lower(?))>0) ORDER BY r.updated_at DESC,r.id LIMIT ? OFFSET ?`, uid, uid, q, q, limit, offset)
 	if err != nil {
 		writeError(w, 500, "storage_error")
 		return
@@ -735,6 +741,7 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 		}
 		it.CookbookIDs = h.recipeCookbooks(it.ID)
 		it.CanEdit = canEditRecipe(uid, access{ownerID: it.OwnerID, memberRole: member}, it.EditPolicy)
+		it.CanDelete = uid != "" && uid == it.OwnerID
 		visibleItems = append(visibleItems, it)
 	}
 	writeJSON(w, 200, visibleItems)
@@ -820,11 +827,30 @@ func (in *recipeInput) validate() error {
 }
 
 func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method == http.MethodDelete {
+		uid := authenticatedUser(r)
+		if uid == "" {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		result, err := h.db.Exec(`UPDATE recipes SET deleted_at=? WHERE id=? AND owner_id=? AND deleted_at IS NULL`, timestamp(), id, uid)
+		if err != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		count, _ := result.RowsAffected()
+		if count != 1 {
+			writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "recipe_trashed"})
+		return
+	}
 	if r.Method == http.MethodGet {
 		it := recipe{}
 		var public int
 		var ingredients, steps, tags string
-		err := h.db.QueryRow(`SELECT r.id,r.owner_id,r.creator_name,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,s.public_instance FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.id=?`, id).Scan(&it.ID, &it.OwnerID, &it.CreatorName, &it.Title, &it.Description, &ingredients, &steps, &it.Servings, &it.PrepTime, &it.CookTime, &tags, &it.Visibility, &it.EditPolicy, &it.Version, &it.CreatedAt, &it.UpdatedAt, &public)
+		err := h.db.QueryRow(`SELECT r.id,r.owner_id,r.creator_name,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,s.public_instance FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.id=? AND r.deleted_at IS NULL`, id).Scan(&it.ID, &it.OwnerID, &it.CreatorName, &it.Title, &it.Description, &ingredients, &steps, &it.Servings, &it.PrepTime, &it.CookTime, &tags, &it.Visibility, &it.EditPolicy, &it.Version, &it.CreatedAt, &it.UpdatedAt, &public)
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, 404, "not_found")
 			return
@@ -850,6 +876,7 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 		}
 		it.CookbookIDs = h.recipeCookbooks(id)
 		it.CanEdit = canEditRecipe(uid, access{ownerID: it.OwnerID, memberRole: member}, it.EditPolicy)
+		it.CanDelete = uid != "" && uid == it.OwnerID
 		writeJSON(w, 200, it)
 		return
 	}
@@ -877,7 +904,7 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 	var owner string
 	var version int
 	var edit string
-	if err := h.db.QueryRow(`SELECT owner_id,version,edit_policy FROM recipes WHERE id=?`, id).Scan(&owner, &version, &edit); err != nil {
+	if err := h.db.QueryRow(`SELECT owner_id,version,edit_policy FROM recipes WHERE id=? AND deleted_at IS NULL`, id).Scan(&owner, &version, &edit); err != nil {
 		writeError(w, 404, "not_found")
 		return
 	}
@@ -899,7 +926,7 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 		writeError(w, 500, "storage_error")
 		return
 	}
-	res, err := tx.Exec(`UPDATE recipes SET title=?,description=?,ingredients_json=?,steps_json=?,servings=?,prep_time_minutes=?,cook_time_minutes=?,tags_json=?,visibility=?,version=version+1,updated_at=? WHERE id=? AND version=?`, in.Title, in.Description, string(ingredientsJSON), string(stepsJSON), in.Servings, in.PrepTime, in.CookTime, string(tagsJSON), in.Visibility, timestamp(), id, in.Version)
+	res, err := tx.Exec(`UPDATE recipes SET title=?,description=?,ingredients_json=?,steps_json=?,servings=?,prep_time_minutes=?,cook_time_minutes=?,tags_json=?,visibility=?,version=version+1,updated_at=? WHERE id=? AND version=? AND deleted_at IS NULL`, in.Title, in.Description, string(ingredientsJSON), string(stepsJSON), in.Servings, in.PrepTime, in.CookTime, string(tagsJSON), in.Visibility, timestamp(), id, in.Version)
 	if err != nil {
 		tx.Rollback()
 		writeError(w, 500, "storage_error")
@@ -928,6 +955,73 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 	h.recipeByID(w, requestForUser(http.MethodGet, "/api/recipes/"+id, in.UserID), id)
 }
 
+func (h apiHandler) recipeTrash(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	uid := authenticatedUser(r)
+	if uid == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	limit, offset, err := listPage(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_pagination")
+		return
+	}
+	rows, err := h.db.Query(`SELECT id,owner_id,creator_name,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,edit_policy,version,created_at,updated_at,deleted_at FROM recipes WHERE owner_id=? AND deleted_at IS NOT NULL ORDER BY deleted_at DESC,id LIMIT ? OFFSET ?`, uid, limit, offset)
+	if err != nil {
+		writeError(w, 500, "storage_error")
+		return
+	}
+	defer rows.Close()
+	items := []recipe{}
+	for rows.Next() {
+		it := recipe{}
+		var ingredients, steps, tags string
+		if err := rows.Scan(&it.ID, &it.OwnerID, &it.CreatorName, &it.Title, &it.Description, &ingredients, &steps, &it.Servings, &it.PrepTime, &it.CookTime, &tags, &it.Visibility, &it.EditPolicy, &it.Version, &it.CreatedAt, &it.UpdatedAt, &it.DeletedAt); err != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		if json.Unmarshal([]byte(ingredients), &it.Ingredients) != nil || json.Unmarshal([]byte(steps), &it.Steps) != nil || json.Unmarshal([]byte(tags), &it.Tags) != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		it.CanEdit = true
+		it.CanDelete = true
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, 500, "storage_error")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+
+func (h apiHandler) restoreTrashedRecipe(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	uid := authenticatedUser(r)
+	if uid == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	result, err := h.db.Exec(`UPDATE recipes SET deleted_at=NULL,updated_at=? WHERE id=? AND owner_id=? AND deleted_at IS NOT NULL`, timestamp(), id, uid)
+	if err != nil {
+		writeError(w, 500, "storage_error")
+		return
+	}
+	count, _ := result.RowsAffected()
+	if count != 1 {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	h.recipeByID(w, requestForUser(http.MethodGet, "/api/recipes/"+id, uid), id)
+}
+
 func (h apiHandler) recipeRevisions(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
@@ -937,7 +1031,7 @@ func (h apiHandler) recipeRevisions(w http.ResponseWriter, r *http.Request, id s
 	var owner string
 	var visibilityValue visibility
 	var public int
-	if err := h.db.QueryRow(`SELECT r.owner_id,r.visibility,s.public_instance FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.id=?`, id).Scan(&owner, &visibilityValue, &public); err != nil {
+	if err := h.db.QueryRow(`SELECT r.owner_id,r.visibility,s.public_instance FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.id=? AND r.deleted_at IS NULL`, id).Scan(&owner, &visibilityValue, &public); err != nil {
 		writeError(w, 404, "not_found")
 		return
 	}
@@ -997,7 +1091,7 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 	userID := authenticatedUser(r)
 	var owner, editPolicy string
 	var currentVersion int
-	if err := h.db.QueryRow(`SELECT owner_id,edit_policy,version FROM recipes WHERE id=?`, recipeID).Scan(&owner, &editPolicy, &currentVersion); err != nil {
+	if err := h.db.QueryRow(`SELECT owner_id,edit_policy,version FROM recipes WHERE id=? AND deleted_at IS NULL`, recipeID).Scan(&owner, &editPolicy, &currentVersion); err != nil {
 		writeError(w, 404, "not_found")
 		return
 	}
@@ -1027,7 +1121,7 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 		writeError(w, 500, "storage_error")
 		return
 	}
-	result, err := tx.Exec(`UPDATE recipes SET title=?,description=?,ingredients_json=?,steps_json=?,servings=?,prep_time_minutes=?,cook_time_minutes=?,tags_json=?,visibility=?,version=version+1,updated_at=? WHERE id=? AND version=?`, title, description, ingredients, steps, servings, prepTime, cookTime, tags, restoredVisibility, timestamp(), recipeID, currentVersion)
+	result, err := tx.Exec(`UPDATE recipes SET title=?,description=?,ingredients_json=?,steps_json=?,servings=?,prep_time_minutes=?,cook_time_minutes=?,tags_json=?,visibility=?,version=version+1,updated_at=? WHERE id=? AND version=? AND deleted_at IS NULL`, title, description, ingredients, steps, servings, prepTime, cookTime, tags, restoredVisibility, timestamp(), recipeID, currentVersion)
 	if err != nil {
 		_ = tx.Rollback()
 		writeError(w, 500, "storage_error")

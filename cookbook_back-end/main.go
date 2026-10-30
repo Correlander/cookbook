@@ -112,6 +112,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer db.Close()
+	startTrashCleanup(db, cfg.trashRetentionDays)
 	if err := configureRegistrationPolicy(db); err != nil {
 		log.Fatal(err)
 	}

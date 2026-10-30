@@ -5,12 +5,14 @@ import (
 	"errors"
 	"net/mail"
 	"os"
+	"strconv"
 	"strings"
 )
 
 type config struct {
-	address  string
-	database string
+	address            string
+	database           string
+	trashRetentionDays int
 }
 
 func provisionAdministrator(db *sql.DB) error {
@@ -75,5 +77,13 @@ func loadConfig() (config, error) {
 	if database == "" {
 		database = "cookbook.db"
 	}
-	return config{address: address, database: database}, nil
+	retentionDays := 30
+	if raw := strings.TrimSpace(os.Getenv("COOKBOOK_TRASH_RETENTION_DAYS")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 || parsed > 3650 {
+			return config{}, errors.New("COOKBOOK_TRASH_RETENTION_DAYS must be between 0 and 3650")
+		}
+		retentionDays = parsed
+	}
+	return config{address: address, database: database, trashRetentionDays: retentionDays}, nil
 }

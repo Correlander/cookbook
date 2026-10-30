@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDatabaseCreatesPrivateInstanceAndConstraints(t *testing.T) {
@@ -103,6 +104,39 @@ func TestRecipeMetadataColumnsMigrateWithDefaults(t *testing.T) {
 	}
 	if err := db.QueryRow(`SELECT servings,prep_time_minutes,cook_time_minutes,tags_json FROM recipe_revisions WHERE recipe_id='recipe'`).Scan(&servings, &prepTime, &cookTime, &tags); err != nil || servings != 0 || prepTime != 0 || cookTime != 0 || tags != "[]" {
 		t.Fatalf("migrated revision metadata=%d/%d/%d %q err=%v", servings, prepTime, cookTime, tags, err)
+	}
+	var deletedAtColumn int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('recipes') WHERE name='deleted_at'`).Scan(&deletedAtColumn); err != nil || deletedAtColumn != 1 {
+		t.Fatalf("deleted_at migration count=%d err=%v", deletedAtColumn, err)
+	}
+}
+
+func TestTrashRetentionPurgesExpiredRecipesAndCanBeDisabled(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'); INSERT INTO recipes(id,owner_id,creator_name,title,deleted_at,created_at,updated_at) VALUES('expired','owner','Owner','Expired',?,'now','now'),('recent','owner','Owner','Recent',?,'now','now'),('active','owner','Owner','Active',NULL,'now','now')`, time.Now().UTC().AddDate(0, 0, -60).Format(time.RFC3339Nano), time.Now().UTC().AddDate(0, 0, -10).Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO cookbooks(id,owner_id,title,created_at,updated_at) VALUES('book','owner','Collection','now','now'); INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES('book','expired','owner','now'); INSERT INTO recipe_revisions(id,recipe_id,version,editor_id,title,description,ingredients_json,steps_json,visibility,created_at) VALUES('revision','expired',1,'owner','Expired','','[]','[]','private','now')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := purgeExpiredTrash(db, 30); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM recipes`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("recipes after retention cleanup=%d err=%v", count, err)
+	}
+	if err := db.QueryRow(`SELECT (SELECT COUNT(*) FROM recipe_revisions WHERE recipe_id='expired')+(SELECT COUNT(*) FROM cookbook_recipes WHERE recipe_id='expired')`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("retention left expired recipe references count=%d err=%v", count, err)
+	}
+	if _, err := db.Exec(`INSERT INTO recipes(id,owner_id,creator_name,title,deleted_at,created_at,updated_at) VALUES('retained','owner','Owner','Retained',?,'now','now')`, time.Now().UTC().AddDate(0, 0, -100).Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if err := purgeExpiredTrash(db, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM recipes WHERE id='retained'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("disabled retention removed recipe count=%d err=%v", count, err)
 	}
 }
 

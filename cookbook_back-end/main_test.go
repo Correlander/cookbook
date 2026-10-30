@@ -36,8 +36,9 @@ func TestUnknownPageServesFrontendShell(t *testing.T) {
 
 func TestConfigDefaultsAndOverride(t *testing.T) {
 	t.Setenv("COOKBOOK_ADDR", "")
+	t.Setenv("COOKBOOK_TRASH_RETENTION_DAYS", "")
 	cfg, err := loadConfig()
-	if err != nil || cfg.address != "127.0.0.1:8000" {
+	if err != nil || cfg.address != "127.0.0.1:8000" || cfg.trashRetentionDays != 30 {
 		t.Fatalf("default config = %#v, %v", cfg, err)
 	}
 
@@ -45,6 +46,15 @@ func TestConfigDefaultsAndOverride(t *testing.T) {
 	cfg, err = loadConfig()
 	if err != nil || cfg.address != "127.0.0.1:9000" {
 		t.Fatalf("override config = %#v, %v", cfg, err)
+	}
+	t.Setenv("COOKBOOK_TRASH_RETENTION_DAYS", "0")
+	cfg, err = loadConfig()
+	if err != nil || cfg.trashRetentionDays != 0 {
+		t.Fatalf("disabled retention config = %#v, %v", cfg, err)
+	}
+	t.Setenv("COOKBOOK_TRASH_RETENTION_DAYS", "3651")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("retention longer than 3650 days was accepted")
 	}
 }
 

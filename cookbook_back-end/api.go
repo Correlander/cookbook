@@ -568,8 +568,13 @@ func (h apiHandler) cookbooks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
+	limit, offset, err := listPage(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_pagination")
+		return
+	}
 	userID := authenticatedUser(r)
-	rows, err := h.db.Query(`SELECT c.id,c.owner_id,c.title,c.description,c.visibility,c.created_at,c.updated_at FROM cookbooks c JOIN instance_settings s ON s.id=1 WHERE (c.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_memberships m WHERE m.cookbook_id=c.id AND m.user_id=?)) OR (s.public_instance=1 AND c.visibility='public') ORDER BY c.updated_at DESC LIMIT 100`, userID, userID)
+	rows, err := h.db.Query(`SELECT c.id,c.owner_id,c.title,c.description,c.visibility,c.created_at,c.updated_at FROM cookbooks c JOIN instance_settings s ON s.id=1 WHERE (c.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_memberships m WHERE m.cookbook_id=c.id AND m.user_id=?)) OR (s.public_instance=1 AND c.visibility='public') ORDER BY c.updated_at DESC,c.id LIMIT ? OFFSET ?`, userID, userID, limit, offset)
 	if err != nil {
 		writeError(w, 500, "storage_error")
 		return
@@ -583,6 +588,10 @@ func (h apiHandler) cookbooks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		items = append(items, c)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, 500, "storage_error")
+		return
 	}
 	writeJSON(w, 200, items)
 }

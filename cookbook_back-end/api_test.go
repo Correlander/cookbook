@@ -225,6 +225,31 @@ func TestRecipeRevisionsAndOptimisticUpdates(t *testing.T) {
 	}
 }
 
+func TestCookbookPagination(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'); INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at) VALUES('book-a','owner','A','private','now','2026-01-01'),('book-b','owner','B','private','now','2026-01-02'),('book-c','owner','C','private','now','2026-01-03')`); err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := issueSession(db, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := handlerWithAuth(db, testAuth(db))
+	first := callAPI(h, http.MethodGet, "/api/cookbooks?limit=2&offset=0", nil, &http.Cookie{Name: sessionCookie, Value: token})
+	second := callAPI(h, http.MethodGet, "/api/cookbooks?limit=2&offset=2", nil, &http.Cookie{Name: sessionCookie, Value: token})
+	var firstPage, secondPage []cookbook
+	if first.Code != http.StatusOK || json.Unmarshal(first.Body.Bytes(), &firstPage) != nil || second.Code != http.StatusOK || json.Unmarshal(second.Body.Bytes(), &secondPage) != nil {
+		t.Fatalf("page statuses = %d/%d, bodies = %s / %s", first.Code, second.Code, first.Body, second.Body)
+	}
+	if len(firstPage) != 2 || len(secondPage) != 1 || firstPage[0].ID != "book-c" || firstPage[1].ID != "book-b" || secondPage[0].ID != "book-a" {
+		t.Fatalf("unexpected pages: %#v / %#v", firstPage, secondPage)
+	}
+	invalid := callAPI(h, http.MethodGet, "/api/cookbooks?limit=101", nil, &http.Cookie{Name: sessionCookie, Value: token})
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid pagination status = %d, want 400", invalid.Code)
+	}
+}
+
 func TestRecipeTrashIsOwnerOnlyAndRestorable(t *testing.T) {
 	db := testDatabase(t)
 	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1; INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('other','other@example.test','Other','now'); INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,created_at,updated_at) VALUES('recipe','owner','Owner','Public soup','','[]','[]','public','owner_only','now','now')`); err != nil {

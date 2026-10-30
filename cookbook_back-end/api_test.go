@@ -564,3 +564,45 @@ func TestPrivateInstanceCannotPublishCookbook(t *testing.T) {
 		t.Fatalf("public cookbook on private instance status %d", resp.Code)
 	}
 }
+
+func TestCookbookOwnerCanEditDetailsAndVisibility(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('member','member@example.test','Member','now'); INSERT INTO cookbooks(id,owner_id,title,description,visibility,created_at,updated_at) VALUES('book','owner','Old title','Old description','private','now','now'); INSERT INTO cookbook_memberships(cookbook_id,user_id,role,created_at) VALUES('book','member','editor','now')`); err != nil {
+		t.Fatal(err)
+	}
+	ownerToken, _, err := issueSession(db, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberToken, _, err := issueSession(db, "member")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := handlerWithAuth(db, testAuth(db))
+	body := map[string]any{"title": "New title", "description": "New description", "visibility": "private"}
+	memberResponse := callAPI(handler, http.MethodPatch, "/api/cookbooks/book", body, &http.Cookie{Name: sessionCookie, Value: memberToken})
+	if memberResponse.Code != http.StatusForbidden {
+		t.Fatalf("member edit status=%d, want 403", memberResponse.Code)
+	}
+	ownerCookie := &http.Cookie{Name: sessionCookie, Value: ownerToken}
+	updated := callAPI(handler, http.MethodPatch, "/api/cookbooks/book", body, ownerCookie)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("owner edit status=%d: %s", updated.Code, updated.Body)
+	}
+	var result cookbook
+	if err := json.Unmarshal(updated.Body.Bytes(), &result); err != nil || result.Title != "New title" || result.Description != "New description" {
+		t.Fatalf("edited cookbook=%+v err=%v", result, err)
+	}
+	body["visibility"] = "public"
+	privateInstance := callAPI(handler, http.MethodPatch, "/api/cookbooks/book", body, ownerCookie)
+	if privateInstance.Code != http.StatusForbidden {
+		t.Fatalf("public visibility on private instance status=%d, want 403", privateInstance.Code)
+	}
+	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	publicInstance := callAPI(handler, http.MethodPatch, "/api/cookbooks/book", body, ownerCookie)
+	if publicInstance.Code != http.StatusOK {
+		t.Fatalf("public visibility on public instance status=%d: %s", publicInstance.Code, publicInstance.Body)
+	}
+}

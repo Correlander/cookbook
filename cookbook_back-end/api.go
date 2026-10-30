@@ -19,6 +19,26 @@ import (
 
 type apiHandler struct{ db *sql.DB }
 type publicRecipeHandler struct{ db *sql.DB }
+
+func listPage(r *http.Request) (int, int, error) {
+	limit, offset := 24, 0
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 100 {
+			return 0, 0, errors.New("invalid limit")
+		}
+		limit = parsed
+	}
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 || parsed > 1000000 {
+			return 0, 0, errors.New("invalid offset")
+		}
+		offset = parsed
+	}
+	return limit, offset, nil
+}
+
 type recipeRevision struct {
 	ID          string       `json:"id"`
 	RecipeID    string       `json:"recipe_id"`
@@ -37,6 +57,16 @@ func (h publicRecipeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
+	limit, offset, err := listPage(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_pagination")
+		return
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if len(query) > 200 {
+		writeError(w, http.StatusBadRequest, "invalid_query")
+		return
+	}
 	var public int
 	if err := h.db.QueryRow(`SELECT public_instance FROM instance_settings WHERE id=1`).Scan(&public); err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
@@ -46,14 +76,13 @@ func (h publicRecipeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, []recipe{})
 		return
 	}
-	rows, err := h.db.Query(`SELECT id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,version,created_at,updated_at FROM recipes WHERE visibility='public' ORDER BY updated_at DESC LIMIT 100`)
+	rows, err := h.db.Query(`SELECT id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,version,created_at,updated_at FROM recipes WHERE visibility='public' AND (?='' OR instr(lower(title||' '||description),lower(?))>0) ORDER BY updated_at DESC,id LIMIT ? OFFSET ?`, query, query, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
 	defer rows.Close()
 	items := []recipe{}
-	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 	for rows.Next() {
 		it := recipe{}
 		var ingredients, steps string
@@ -68,9 +97,6 @@ func (h publicRecipeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal([]byte(steps), &it.Steps); err != nil {
 			writeError(w, http.StatusInternalServerError, "storage_error")
 			return
-		}
-		if query != "" && !strings.Contains(strings.ToLower(it.Title+" "+it.Description), query) {
-			continue
 		}
 		it.OwnerID = ""
 		it.CookbookIDs = []string{}
@@ -643,35 +669,55 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid, q := authenticatedUser(r), strings.TrimSpace(r.URL.Query().Get("q"))
-	rows, err := h.db.Query(`SELECT r.id,r.owner_id,r.creator_name,r.title,r.description,r.ingredients_json,r.steps_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,s.public_instance FROM recipes r JOIN instance_settings s ON s.id=1 WHERE (r.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_recipes cr JOIN cookbook_memberships m ON m.cookbook_id=cr.cookbook_id WHERE cr.recipe_id=r.id AND m.user_id=?)) OR (s.public_instance=1 AND r.visibility='public') ORDER BY r.updated_at DESC LIMIT 100`, uid, uid)
+	limit, offset, err := listPage(r)
+	if err != nil || len(q) > 200 {
+		writeError(w, http.StatusBadRequest, "invalid_pagination_or_query")
+		return
+	}
+	rows, err := h.db.Query(`SELECT r.id,r.owner_id,r.creator_name,r.title,r.description,r.ingredients_json,r.steps_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,s.public_instance FROM recipes r JOIN instance_settings s ON s.id=1 WHERE ((r.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_recipes cr JOIN cookbook_memberships m ON m.cookbook_id=cr.cookbook_id WHERE cr.recipe_id=r.id AND m.user_id=?)) OR (s.public_instance=1 AND r.visibility='public')) AND (?='' OR instr(lower(r.title||' '||r.description),lower(?))>0) ORDER BY r.updated_at DESC,r.id LIMIT ? OFFSET ?`, uid, uid, q, q, limit, offset)
 	if err != nil {
 		writeError(w, 500, "storage_error")
 		return
 	}
-	defer rows.Close()
 	items := []recipe{}
+	publicFlags := []bool{}
 	for rows.Next() {
 		it, public := recipe{}, 0
 		var ingredients, steps string
 		if err := rows.Scan(&it.ID, &it.OwnerID, &it.CreatorName, &it.Title, &it.Description, &ingredients, &steps, &it.Visibility, &it.EditPolicy, &it.Version, &it.CreatedAt, &it.UpdatedAt, &public); err != nil {
+			rows.Close()
 			writeError(w, 500, "storage_error")
 			return
 		}
 		if json.Unmarshal([]byte(ingredients), &it.Ingredients) != nil || json.Unmarshal([]byte(steps), &it.Steps) != nil {
+			rows.Close()
 			writeError(w, 500, "storage_error")
 			return
 		}
-		if q != "" && !strings.Contains(strings.ToLower(it.Title+" "+it.Description), strings.ToLower(q)) {
-			continue
-		}
+		items = append(items, it)
+		publicFlags = append(publicFlags, public == 1)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		writeError(w, 500, "storage_error")
+		return
+	}
+	if err := rows.Close(); err != nil {
+		writeError(w, 500, "storage_error")
+		return
+	}
+	visibleItems := make([]recipe, 0, len(items))
+	for index := range items {
+		it := items[index]
 		var member role
 		_ = h.db.QueryRow(`SELECT m.role FROM cookbook_memberships m JOIN cookbook_recipes cr ON cr.cookbook_id=m.cookbook_id WHERE cr.recipe_id=? AND m.user_id=? LIMIT 1`, it.ID, uid).Scan(&member)
-		if canReadResource(uid, access{instancePublic: public == 1, visibility: it.Visibility, ownerID: it.OwnerID, memberRole: member}) {
-			it.CookbookIDs = h.recipeCookbooks(it.ID)
-			items = append(items, it)
+		if !canReadResource(uid, access{instancePublic: publicFlags[index], visibility: it.Visibility, ownerID: it.OwnerID, memberRole: member}) {
+			continue
 		}
+		it.CookbookIDs = h.recipeCookbooks(it.ID)
+		visibleItems = append(visibleItems, it)
 	}
-	writeJSON(w, 200, items)
+	writeJSON(w, 200, visibleItems)
 }
 
 type recipeInput struct {

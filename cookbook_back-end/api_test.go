@@ -86,6 +86,38 @@ func TestPublicRecipeListingRequiresPublicInstanceAndPublishedRecipe(t *testing.
 	}
 }
 
+func TestPublicRecipeSearchAndPagination(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1; INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'); INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,created_at,updated_at) VALUES('soup-a','owner','Owner','Soup A','','[]','[]','public','owner_only','now','2026-01-01'),('soup-b','owner','Owner','Soup B','','[]','[]','public','owner_only','now','2026-01-02'),('cake','owner','Owner','Cake','','[]','[]','public','owner_only','now','2026-01-03')`); err != nil {
+		t.Fatal(err)
+	}
+	handler := handlerWithAuth(db, testAuth(db))
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/api/public/recipes?q=SOUP&limit=1&offset=0", nil))
+	var page []recipe
+	if first.Code != http.StatusOK || json.Unmarshal(first.Body.Bytes(), &page) != nil || len(page) != 1 || page[0].ID != "soup-b" {
+		t.Fatalf("first search page = %d %s", first.Code, first.Body)
+	}
+	token, _, err := issueSession(db, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateEndpoint := callAPI(handler, http.MethodGet, "/api/recipes?q=SOUP&limit=1&offset=0", nil, &http.Cookie{Name: sessionCookie, Value: token})
+	if privateEndpoint.Code != http.StatusOK || json.Unmarshal(privateEndpoint.Body.Bytes(), &page) != nil || len(page) != 1 || page[0].ID != "soup-b" {
+		t.Fatalf("authenticated recipe endpoint search page = %d %s", privateEndpoint.Code, privateEndpoint.Body)
+	}
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, httptest.NewRequest(http.MethodGet, "/api/public/recipes?q=soup&limit=1&offset=1", nil))
+	if second.Code != http.StatusOK || json.Unmarshal(second.Body.Bytes(), &page) != nil || len(page) != 1 || page[0].ID != "soup-a" {
+		t.Fatalf("second search page = %d %s", second.Code, second.Body)
+	}
+	invalid := httptest.NewRecorder()
+	handler.ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/api/public/recipes?limit=101", nil))
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid page limit status=%d, want 400", invalid.Code)
+	}
+}
+
 func TestRecipeRevisionsAndOptimisticUpdates(t *testing.T) {
 	db := testDatabase(t)
 	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now')`); err != nil {

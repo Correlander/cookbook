@@ -71,6 +71,22 @@ CREATE TABLE IF NOT EXISTS recipes (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS recipe_revisions (
+  id TEXT PRIMARY KEY,
+  recipe_id TEXT NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL CHECK (version > 0),
+  editor_id TEXT NOT NULL REFERENCES users(id),
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  ingredients_json TEXT NOT NULL,
+  steps_json TEXT NOT NULL,
+  visibility TEXT NOT NULL CHECK (visibility IN ('private', 'public', 'unlisted')),
+  created_at TEXT NOT NULL,
+  UNIQUE(recipe_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_recipe_revisions_recipe_version ON recipe_revisions(recipe_id, version DESC);
+INSERT OR IGNORE INTO recipe_revisions(id,recipe_id,version,editor_id,title,description,ingredients_json,steps_json,visibility,created_at)
+SELECT lower(hex(randomblob(16))),id,version,owner_id,title,description,ingredients_json,steps_json,visibility,updated_at FROM recipes;
 CREATE TABLE IF NOT EXISTS cookbook_recipes (
   cookbook_id TEXT NOT NULL REFERENCES cookbooks(id) ON DELETE CASCADE,
   recipe_id TEXT NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,

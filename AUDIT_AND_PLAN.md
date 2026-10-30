@@ -6,13 +6,23 @@ Source brief and four visual references are in the sibling `cookbook_agent_hando
 
 ## Current state
 
-The repository is an early prototype, not a functioning cookbook service.
+At audit time the repository was an early prototype. Implementation has since added the foundation and partial local-core functionality described below; the milestones are not complete as a whole.
 
 - **Backend:** Go 1.23.4, standard `net/http`, `golang-jwt/jwt/v4`, `golang.org/x/oauth2`, and `x/time`. `main.go` exposes OAuth initiation/callback and `/auth`; there is no persistence, recipe or cookbook model, CRUD API, migration system, or test suite.
 - **Authentication:** Google OAuth is the only login path, contrary to the passwordless email/passkey requirement. OAuth client credentials are hard-coded in `utils/oauth.go`. State is held in a process-global map without expiry; concurrent map reads/writes are not consistently locked, and there is no CSRF-bound browser session. JWT signing secret is randomly regenerated on each process start, making all issued JWTs invalid after restart. JWT claims are parsed without issuer/audience requirements. Refresh tokens originate from Google and are kept in cookies, but both cookies set `Secure: false`, omit SameSite, and refresh handling emits token/provider errors. The limiter is global across users and `/auth` prints diagnostic messages. CORS and frontend callback origins are hard-coded to localhost.
 - **Frontend:** React 19, Vite 7 and Tailwind 4. It renders a static welcome screen and placeholder search. Navigation controls are not wired, fixed minimum width harms mobile layout, starter Vite styles remain, and no API client or tests exist. Package lock is committed; dependencies are not installed in the clone.
 - **Operations:** no database, configuration example, Docker setup, health endpoint, backup guidance, deployment docs, or CI found. README is a brief note describing the project as unfinished.
 - **History:** recent commits are starter-level README and repository cleanup changes.
+
+## Implementation progress (2026-10-30)
+
+- M1 foundation: Go configuration, health endpoint, security headers, SQLite startup schema, and backend verification are in place. Production static asset serving and deploy packaging remain open.
+- M2 authentication: passwordless email links, hashed one-time challenges, durable sessions, same-origin checks, and frontend request/confirmation are implemented. Passkeys, administrator invitation management, and broader abuse controls remain open. New databases default to invite-only; provisioned accounts can sign in, but invite flows do not exist yet.
+- M3 local core: private-first users/cookbooks/recipes/membership schema, API authorization, structured recipes, public recipe listing, and basic private recipe creation are implemented. Cookbook/member/invitation management UI, edit UI, uploads, and pagination remain open.
+- M4 history: recipe snapshots are written atomically at create/update, updates use optimistic versions, and authorized users can read revision history. Diff, restore-as-new-version, distinct security audit, soft delete/trash, and retention are not implemented.
+- Frontend dependencies were updated within existing semver ranges; `npm audit` currently reports no advisories. Go tests/vet and frontend lint/build have been run successfully at recent checkpoints.
+
+These notes describe repository state, not a claim that any milestone is complete. Recheck implementation and verification evidence before release.
 
 ## Reuse and immediate risks
 
@@ -37,28 +47,28 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 
 ## Milestones
 
-### M0 — Audit and decision record (current)
+### M0 — Audit and decision record (complete)
 - Deliver this factual audit, architecture direction, risks, and staged plan.
 - Record baseline verification limitations and repository state.
 
-### M1 — Secure application foundation
+### M1 — Secure application foundation (partial)
 - Add configuration validation, structured HTTP routing, health endpoint, predictable JSON errors, security headers, request size limits, and CI-friendly tests.
 - Remove embedded OAuth secret and legacy OAuth routes/code. Require environment configuration; fail safely if required values are absent.
 - Add SQLite schema/migrations and startup integration with foreign keys, WAL/busy timeout where appropriate.
 - Acceptance: clean startup/config failures, health check, migration tests, `go test`, `go vet`.
 
-### M2 — Passwordless authentication
+### M2 — Passwordless authentication (partial)
 - Implement email challenges and sessions with storage interfaces, expiry, one-time consumption, rate limiting, enumeration-resistant responses, secure cookies/CSRF strategy, and email delivery configuration.
 - Add WebAuthn enrollment/assertion using maintained library, passkey list/revoke, and recovery via verified email.
 - Acceptance: expiry/replay/rate/session tests, WebAuthn origin/challenge tests, no password/OAuth endpoints, frontend sign-in and optional passkey prompt.
 
-### M3 — Cookbook and recipe local core
+### M3 — Cookbook and recipe local core (partial)
 - Schema and APIs for users, cookbooks, memberships/invites, recipes, structured ingredients/steps, attribution and cookbook references.
 - Centralized policy checks for private/public instance and resource visibility; owner-only edit default; pagination and indexed search.
 - Responsive core UI for cookbook dashboard, cookbook details, recipe details/editor, sharing controls, based on references 01/02.
 - Acceptance: anonymous/private/public, member/nonmember, cross-cookbook, ownership and visibility tests; frontend build/lint.
 
-### M4 — History and recovery
+### M4 — History and recovery (partial)
 - Atomic revision snapshots, concurrency/version checks, diff/restore-as-new-version, distinct audit records, soft delete/trash, configurable retention and cleanup.
 - Acceptance: rollback, conflict, access, retention, restore and migration tests.
 

@@ -73,6 +73,56 @@ func TestPublicRecipeListingRequiresPublicInstanceAndPublishedRecipe(t *testing.
 		t.Fatalf("public listing exposed the internal owner ID: %s", publicInstance.Body)
 	}
 }
+
+func TestRecipeRevisionsAndOptimisticUpdates(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now')`); err != nil {
+		t.Fatal(err)
+	}
+	sessionToken, _, err := issueSession(db, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := &http.Cookie{Name: sessionCookie, Value: sessionToken}
+	h := handlerWithAuth(db, testAuth(db))
+	create := map[string]any{"title": "First title", "ingredients": []map[string]string{{"name": "flour"}}, "steps": []map[string]string{{"text": "Mix"}}}
+	created := callAPI(h, http.MethodPost, "/api/recipes", create, cookie)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create status = %d: %s", created.Code, created.Body)
+	}
+	var current recipe
+	if err := json.Unmarshal(created.Body.Bytes(), &current); err != nil {
+		t.Fatal(err)
+	}
+	update := map[string]any{"title": "Second title", "ingredients": []map[string]string{{"name": "flour"}}, "steps": []map[string]string{{"text": "Mix"}}, "version": current.Version}
+	updated := callAPI(h, http.MethodPut, "/api/recipes/"+current.ID, update, cookie)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("update status = %d: %s", updated.Code, updated.Body)
+	}
+	stale := callAPI(h, http.MethodPut, "/api/recipes/"+current.ID, update, cookie)
+	if stale.Code != http.StatusConflict {
+		t.Fatalf("stale update status = %d, want 409", stale.Code)
+	}
+	revisions := callAPI(h, http.MethodGet, "/api/recipes/"+current.ID+"/revisions", nil, cookie)
+	var history []recipeRevision
+	if revisions.Code != http.StatusOK || json.Unmarshal(revisions.Body.Bytes(), &history) != nil {
+		t.Fatalf("revision listing status = %d: %s", revisions.Code, revisions.Body)
+	}
+	if len(history) != 2 || history[0].Version != 2 || history[0].Title != "Second title" || history[1].Version != 1 || history[1].Title != "First title" {
+		t.Fatalf("unexpected revision history: %#v", history)
+	}
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('reader','reader@example.test','Reader','now')`); err != nil {
+		t.Fatal(err)
+	}
+	readerToken, _, err := issueSession(db, "reader")
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied := callAPI(h, http.MethodGet, "/api/recipes/"+current.ID+"/revisions", nil, &http.Cookie{Name: sessionCookie, Value: readerToken})
+	if denied.Code != http.StatusNotFound {
+		t.Fatalf("private revision read status = %d, want 404", denied.Code)
+	}
+}
 func TestUnauthenticatedAndForgedUserCannotCreateCookbook(t *testing.T) {
 	db := testDatabase(t)
 	sender := testEmailSender{sent: make(chan string, 1)}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 )
 
@@ -39,5 +40,38 @@ func TestAccessPolicyDefaults(t *testing.T) {
 	}
 	if canReadResource("", access{instancePublic: true, visibility: visibilityPublic}) == false {
 		t.Fatal("public anonymous read should be allowed when explicitly published")
+	}
+}
+
+func TestSchemaBackfillsCurrentRecipeRevision(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "upgrade.db")
+	db, err := openDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('legacy-owner','legacy@example.test','Legacy','now')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,version,created_at,updated_at) VALUES('legacy-recipe','legacy-owner','Legacy','Old title','','[]','[]','private','owner_only',4,'old','updated')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP TABLE recipe_revisions`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = openDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var version int
+	var title string
+	if err := db.QueryRow(`SELECT version,title FROM recipe_revisions WHERE recipe_id='legacy-recipe'`).Scan(&version, &title); err != nil {
+		t.Fatal(err)
+	}
+	if version != 4 || title != "Old title" {
+		t.Fatalf("backfilled revision = version %d, title %q", version, title)
 	}
 }

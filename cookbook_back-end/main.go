@@ -3,12 +3,21 @@ package main
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"encoding/json"
+	"io"
+	"io/fs"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
+	"path/filepath"
+	"strings"
 	"time"
 )
+
+//go:embed web/dist
+var frontendFiles embed.FS
 
 func handlerWithAuth(db *sql.DB, auth authHandler) http.Handler {
 	mux := http.NewServeMux()
@@ -23,8 +32,54 @@ func handlerWithAuth(db *sql.DB, auth authHandler) http.Handler {
 	mux.Handle("/api/auth/", auth)
 	mux.Handle("GET /api/public/recipes", publicRecipeHandler{db: db})
 	mux.Handle("/api/", csrfProtection(auth.origin, requireSession(db, apiHandler{db: db})))
-	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.NotFound(w, r)
+			return
+		}
+		static, err := fs.Sub(frontendFiles, "web/dist")
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "static_unavailable"})
+			return
+		}
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if path == "" {
+			path = "index.html"
+		}
+		file, err := static.Open(path)
+		if err != nil || strings.HasSuffix(r.URL.Path, "/") {
+			if file != nil {
+				_ = file.Close()
+			}
+			path = "index.html"
+			file, err = static.Open(path)
+		}
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		defer file.Close()
+		info, err := file.Stat()
+		reader, readable := file.(io.ReadSeeker)
+		if err != nil || !readable {
+			http.NotFound(w, r)
+			return
+		}
+		contentType := mime.TypeByExtension(filepath.Ext(path))
+		if contentType == "" {
+			switch filepath.Ext(path) {
+			case ".css":
+				contentType = "text/css; charset=utf-8"
+			case ".html":
+				contentType = "text/html; charset=utf-8"
+			case ".js":
+				contentType = "text/javascript; charset=utf-8"
+			}
+		}
+		if contentType != "" {
+			w.Header().Set("Content-Type", contentType)
+		}
+		http.ServeContent(w, r, filepath.Base(path), info.ModTime(), reader)
 	})
 
 	return securityHeaders(mux)
@@ -35,7 +90,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -58,6 +113,9 @@ func main() {
 	}
 	defer db.Close()
 	if err := configureRegistrationPolicy(db); err != nil {
+		log.Fatal(err)
+	}
+	if err := provisionAdministrator(db); err != nil {
 		log.Fatal(err)
 	}
 

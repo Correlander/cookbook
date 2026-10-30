@@ -28,6 +28,29 @@ func TestAuthConfigBuildsWebAuthnRelyingPartyFromInstanceURL(t *testing.T) {
 	}
 }
 
+func TestAuthConfigRequiresValidSMTPConfigurationOrCommand(t *testing.T) {
+	db := testDatabase(t)
+	t.Setenv("COOKBOOK_PUBLIC_URL", "https://recipes.example.test")
+	t.Setenv("COOKBOOK_RP_ID", "recipes.example.test")
+	t.Setenv("COOKBOOK_RP_ORIGIN", "https://recipes.example.test")
+	t.Setenv("COOKBOOK_EMAIL_COMMAND", "")
+	t.Setenv("COOKBOOK_SMTP_HOST", "mail.example.test:587")
+	t.Setenv("COOKBOOK_SMTP_FROM", "cookbook@example.test")
+	t.Setenv("COOKBOOK_SMTP_USERNAME", "mailer")
+	t.Setenv("COOKBOOK_SMTP_PASSWORD", "")
+	if _, err := authConfig(db); err == nil {
+		t.Fatal("partial SMTP credentials should be rejected")
+	}
+	t.Setenv("COOKBOOK_SMTP_PASSWORD", "secret")
+	handler, err := authConfig(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := handler.sender.(smtpEmailSender); !ok {
+		t.Fatalf("sender type = %T, want SMTP", handler.sender)
+	}
+}
+
 func TestCommandEmailSenderKeepsSignInURLOutOfArguments(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script")

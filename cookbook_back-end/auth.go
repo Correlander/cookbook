@@ -3,13 +3,16 @@ package main
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/mail"
+	"net/smtp"
 	"net/url"
 	"os"
 	"os/exec"
@@ -86,36 +89,53 @@ func (h authHandler) requestEmail(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Email       string `json:"email"`
 		DisplayName string `json:"display_name"`
+		Invitation  string `json:"invitation"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
 	}
 	parsed, err := mail.ParseAddress(strings.TrimSpace(body.Email))
-	if err != nil || parsed.Address != strings.TrimSpace(body.Email) {
+	if err != nil || parsed.Address != strings.TrimSpace(body.Email) || len(parsed.Address) > 254 {
 		writeError(w, 400, "invalid_email")
 		return
 	}
 	email := strings.ToLower(parsed.Address)
 	var uid, registrationPolicy string
+	var registrationName, registrationInvitation string
 	err = h.db.QueryRow(`SELECT id FROM users WHERE email=?`, email).Scan(&uid)
 	if errors.Is(err, sql.ErrNoRows) {
+		var invitationID string
+		var invitationExpiry string
+		var invitationToken string
+		var invitationValid bool
+		invitation := strings.TrimSpace(body.Invitation)
+		if invitation != "" {
+			sum := sha256.Sum256([]byte(invitation))
+			invitationToken = hex.EncodeToString(sum[:])
+			if h.db.QueryRow(`SELECT id,expires_at FROM invitations WHERE token_hash=? AND lower(email)=? AND accepted_at IS NULL AND revoked_at IS NULL`, invitationToken, email).Scan(&invitationID, &invitationExpiry) == nil {
+				if expiry, parseErr := time.Parse(time.RFC3339Nano, invitationExpiry); parseErr == nil && time.Now().Before(expiry) {
+					invitationValid = true
+				}
+			}
+		}
 		if err := h.db.QueryRow(`SELECT registration_policy FROM instance_settings WHERE id=1`).Scan(&registrationPolicy); err != nil {
 			writeError(w, 500, "storage_error")
 			return
 		}
-		if registrationPolicy != "open" {
+		if registrationPolicy == "disabled" || (registrationPolicy == "invite_only" && !invitationValid) || (registrationPolicy != "open" && registrationPolicy != "invite_only" && registrationPolicy != "disabled") {
 			writeJSON(w, 200, map[string]string{"status": "if_account_can_sign_in_link_sent"})
 			return
 		}
-		name := strings.TrimSpace(body.DisplayName)
-		if name == "" {
-			name = strings.Split(email, "@")[0]
-		}
-		uid = newID()
-		_, err = h.db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES(?,?,?,?)`, uid, email, name, timestamp())
-		if err != nil {
-			writeJSON(w, 200, map[string]string{"status": "if_account_can_sign_in_link_sent"})
+		registrationName = strings.TrimSpace(body.DisplayName)
+		if len(registrationName) > 100 {
+			writeError(w, http.StatusBadRequest, "invalid_display_name")
 			return
+		}
+		if registrationName == "" {
+			registrationName = strings.Split(email, "@")[0]
+		}
+		if invitationValid {
+			registrationInvitation = invitationID
 		}
 	} else if err != nil {
 		writeError(w, 500, "storage_error")
@@ -139,7 +159,7 @@ func (h authHandler) requestEmail(w http.ResponseWriter, r *http.Request) {
 	token := hex.EncodeToString(raw[:])
 	sum := sha256.Sum256([]byte(token))
 	now := time.Now().UTC()
-	_, err = h.db.Exec(`INSERT INTO email_challenges(id,email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)`, newID(), email, hex.EncodeToString(sum[:]), now.Add(15*time.Minute).Format(time.RFC3339Nano), timestamp())
+	_, err = h.db.Exec(`INSERT INTO email_challenges(id,email,display_name,invitation_id,token_hash,expires_at,created_at) VALUES(?,?,?,?,?,?,?)`, newID(), email, registrationName, nullableID(registrationInvitation), hex.EncodeToString(sum[:]), now.Add(15*time.Minute).Format(time.RFC3339Nano), timestamp())
 	if err != nil {
 		writeError(w, 500, "internal_error")
 		return
@@ -170,8 +190,9 @@ func (h authHandler) consumeEmail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "storage_error")
 		return
 	}
-	var email, expires string
-	err = tx.QueryRow(`SELECT email,expires_at FROM email_challenges WHERE token_hash=? AND consumed_at IS NULL`, hash).Scan(&email, &expires)
+	var email, expires, displayName string
+	var invitationID sql.NullString
+	err = tx.QueryRow(`SELECT email,expires_at,display_name,invitation_id FROM email_challenges WHERE token_hash=? AND consumed_at IS NULL`, hash).Scan(&email, &expires, &displayName, &invitationID)
 	if err != nil {
 		tx.Rollback()
 		writeError(w, 400, "invalid_or_expired_token")
@@ -196,9 +217,34 @@ func (h authHandler) consumeEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var uid string
-	if err := tx.QueryRow(`SELECT id FROM users WHERE email=?`, email).Scan(&uid); err != nil {
+	if err := tx.QueryRow(`SELECT id FROM users WHERE email=?`, email).Scan(&uid); errors.Is(err, sql.ErrNoRows) {
+		if invitationID.Valid {
+			var accepted string
+			if err := tx.QueryRow(`SELECT id FROM invitations WHERE id=? AND lower(email)=? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>?`, invitationID.String, email, timestamp()).Scan(&accepted); err != nil {
+				tx.Rollback()
+				writeError(w, 400, "invalid_or_expired_token")
+				return
+			}
+		}
+		if displayName == "" {
+			displayName = strings.Split(email, "@")[0]
+		}
+		uid = newID()
+		if _, err := tx.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES(?,?,?,?)`, uid, email, displayName, timestamp()); err != nil {
+			tx.Rollback()
+			writeError(w, 400, "invalid_or_expired_token")
+			return
+		}
+		if invitationID.Valid {
+			if _, err := tx.Exec(`UPDATE invitations SET accepted_at=? WHERE id=?`, timestamp(), invitationID.String); err != nil {
+				tx.Rollback()
+				writeError(w, 500, "storage_error")
+				return
+			}
+		}
+	} else if err != nil {
 		tx.Rollback()
-		writeError(w, 400, "invalid_or_expired_token")
+		writeError(w, 500, "storage_error")
 		return
 	}
 	if err := tx.Commit(); err != nil {
@@ -247,11 +293,31 @@ func authConfig(db *sql.DB) (authHandler, error) {
 		return authHandler{}, errors.New("COOKBOOK_PUBLIC_URL must use HTTPS outside local development")
 	}
 	driver := strings.TrimSpace(os.Getenv("COOKBOOK_EMAIL_COMMAND"))
-	if driver == "" {
-		return authHandler{}, errors.New("COOKBOOK_EMAIL_COMMAND is required for email login")
-	}
-	if _, err := exec.LookPath(driver); err != nil {
-		return authHandler{}, errors.New("COOKBOOK_EMAIL_COMMAND executable was not found")
+	var sender emailSender
+	if driver != "" {
+		if _, err := exec.LookPath(driver); err != nil {
+			return authHandler{}, errors.New("COOKBOOK_EMAIL_COMMAND executable was not found")
+		}
+		sender = commandEmailSender{command: driver}
+	} else {
+		host := strings.TrimSpace(os.Getenv("COOKBOOK_SMTP_HOST"))
+		from := strings.TrimSpace(os.Getenv("COOKBOOK_SMTP_FROM"))
+		username := os.Getenv("COOKBOOK_SMTP_USERNAME")
+		password := os.Getenv("COOKBOOK_SMTP_PASSWORD")
+		if host == "" || from == "" {
+			return authHandler{}, errors.New("configure COOKBOOK_EMAIL_COMMAND or COOKBOOK_SMTP_HOST and COOKBOOK_SMTP_FROM")
+		}
+		parsedFrom, parseErr := mail.ParseAddress(from)
+		if parseErr != nil || parsedFrom.Address != from {
+			return authHandler{}, errors.New("COOKBOOK_SMTP_FROM must be a valid email address")
+		}
+		if _, _, splitErr := net.SplitHostPort(host); splitErr != nil {
+			return authHandler{}, errors.New("COOKBOOK_SMTP_HOST must include a port")
+		}
+		if (username == "") != (password == "") {
+			return authHandler{}, errors.New("COOKBOOK_SMTP_USERNAME and COOKBOOK_SMTP_PASSWORD must be set together")
+		}
+		sender = smtpEmailSender{address: host, from: from, username: username, password: password}
 	}
 	rpID := strings.TrimSpace(os.Getenv("COOKBOOK_RP_ID"))
 	if rpID == "" {
@@ -284,10 +350,65 @@ func authConfig(db *sql.DB) (authHandler, error) {
 	if err != nil {
 		return authHandler{}, errors.New("WebAuthn relying party configuration is invalid")
 	}
-	return authHandler{db: db, sender: commandEmailSender{command: driver}, baseURL: base, origin: baseOrigin, secureCookies: parsedBase.Scheme == "https", webauthn: wa}, nil
+	return authHandler{db: db, sender: sender, baseURL: base, origin: baseOrigin, secureCookies: parsedBase.Scheme == "https", webauthn: wa}, nil
 }
 
 type commandEmailSender struct{ command string }
+
+type smtpEmailSender struct{ address, from, username, password string }
+
+func (s smtpEmailSender) SendLoginLink(to, link string) error {
+	toAddress, err := mail.ParseAddress(to)
+	if err != nil || toAddress.Address != to {
+		return errors.New("invalid recipient")
+	}
+	fromAddress, err := mail.ParseAddress(s.from)
+	if err != nil {
+		return errors.New("invalid sender")
+	}
+	host, _, err := net.SplitHostPort(s.address)
+	if err != nil {
+		return errors.New("invalid SMTP address")
+	}
+	client, err := smtp.Dial(s.address)
+	if err != nil {
+		return errors.New("email delivery failed")
+	}
+	defer client.Close()
+	if ok, _ := client.Extension("STARTTLS"); !ok {
+		return errors.New("SMTP server does not support required STARTTLS")
+	}
+	if err := client.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
+		return errors.New("SMTP TLS negotiation failed")
+	}
+	if s.username != "" {
+		if err := client.Auth(smtp.PlainAuth("", s.username, s.password, host)); err != nil {
+			return errors.New("SMTP authentication failed")
+		}
+	}
+	if err := client.Mail(fromAddress.Address); err != nil {
+		return errors.New("SMTP sender rejected")
+	}
+	if err := client.Rcpt(toAddress.Address); err != nil {
+		return errors.New("SMTP recipient rejected")
+	}
+	writer, err := client.Data()
+	if err != nil {
+		return errors.New("SMTP message rejected")
+	}
+	message := fmt.Sprintf("To: %s\r\nFrom: %s\r\nSubject: Your Cookbook sign-in link\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\nUse this one-time link to sign in. It expires in 15 minutes.\r\n\r\n%s\r\n", toAddress.String(), fromAddress.String(), link)
+	if _, err = writer.Write([]byte(message)); err != nil {
+		_ = writer.Close()
+		return errors.New("SMTP message write failed")
+	}
+	if err = writer.Close(); err != nil {
+		return errors.New("SMTP message delivery failed")
+	}
+	if err = client.Quit(); err != nil {
+		return errors.New("SMTP connection close failed")
+	}
+	return nil
+}
 
 func (s commandEmailSender) SendLoginLink(to, link string) error {
 	payload, err := json.Marshal(loginEmail{To: to, Subject: "Your Cookbook sign-in link", Text: "Use this one-time link to sign in. It expires in 15 minutes.", SignInURL: link})

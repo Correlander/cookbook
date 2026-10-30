@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 )
@@ -73,5 +74,35 @@ func TestSchemaBackfillsCurrentRecipeRevision(t *testing.T) {
 	}
 	if version != 4 || title != "Old title" {
 		t.Fatalf("backfilled revision = version %d, title %q", version, title)
+	}
+}
+
+func TestExistingAccountsAndChallengesReceiveAdminInvitationColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-auth.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = legacy.Exec(`CREATE TABLE users(id TEXT PRIMARY KEY,email TEXT NOT NULL UNIQUE,display_name TEXT NOT NULL,created_at TEXT NOT NULL); CREATE TABLE email_challenges(id TEXT PRIMARY KEY,email TEXT NOT NULL,token_hash TEXT NOT NULL UNIQUE,expires_at TEXT NOT NULL,consumed_at TEXT,attempts INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL); INSERT INTO users VALUES('existing','existing@example.test','Existing','now');`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, column := range []struct{ table, name string }{{"users", "is_admin"}, {"email_challenges", "display_name"}, {"email_challenges", "invitation_id"}} {
+		var found int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, column.table, column.name).Scan(&found); err != nil || found != 1 {
+			t.Fatalf("missing %s.%s: found=%d err=%v", column.table, column.name, found, err)
+		}
+	}
+	var admin int
+	if err := db.QueryRow(`SELECT is_admin FROM users WHERE id='existing'`).Scan(&admin); err != nil || admin != 0 {
+		t.Fatalf("existing account admin=%d err=%v", admin, err)
 	}
 }

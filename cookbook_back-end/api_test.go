@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -238,6 +239,87 @@ func TestPasskeyCredentialCannotBeRegisteredToTwoAccounts(t *testing.T) {
 	var owner string
 	if err := db.QueryRow(`SELECT user_id FROM webauthn_credentials WHERE credential_id=?`, credential.ID).Scan(&owner); err != nil || owner != "owner" {
 		t.Fatalf("credential owner = %q, err = %v", owner, err)
+	}
+}
+
+func TestAdminInvitationRequiresVerifiedEmailAndCanBeRevoked(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,is_admin,created_at) VALUES('admin','admin@example.test','Admin',1,'now')`); err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := issueSession(db, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := testAuth(db)
+	handler := handlerWithAuth(db, auth)
+	cookie := &http.Cookie{Name: sessionCookie, Value: token}
+	created := callAPI(handler, http.MethodPost, "/api/admin/invitations", map[string]string{"email": "new@example.test"}, cookie)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create invitation = %d: %s", created.Code, created.Body)
+	}
+	var invitation struct {
+		ID    string `json:"id"`
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &invitation); err != nil || invitation.ID == "" || invitation.Token == "" {
+		t.Fatalf("invalid invitation response: %s (%v)", created.Body, err)
+	}
+	request := callAPI(handler, http.MethodPost, "/api/auth/email", map[string]string{"email": "new@example.test", "invitation": invitation.Token}, nil)
+	if request.Code != http.StatusOK {
+		t.Fatalf("invited registration request = %d: %s", request.Code, request.Body)
+	}
+	var users int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE email='new@example.test'`).Scan(&users); err != nil || users != 0 {
+		t.Fatalf("unverified invited users = %d, err %v", users, err)
+	}
+	var link string
+	select {
+	case link = <-auth.sender.(testEmailSender).sent:
+	default:
+		t.Fatal("email sender channel unavailable")
+	}
+	parsed, err := url.Parse(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	magicToken := parsed.Query().Get("token")
+	consumed := callAPI(handler, http.MethodPost, "/api/auth/consume", map[string]string{"token": magicToken}, nil)
+	if consumed.Code != http.StatusOK {
+		t.Fatalf("consume invite email link = %d: %s", consumed.Code, consumed.Body)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE email='new@example.test'`).Scan(&users); err != nil || users != 1 {
+		t.Fatalf("verified invited users = %d, err %v", users, err)
+	}
+	listed := callAPI(handler, http.MethodGet, "/api/admin/invitations", nil, cookie)
+	if listed.Code != http.StatusOK || strings.Contains(listed.Body.String(), invitation.Token) {
+		t.Fatalf("invitation listing leaked token or failed: %d %s", listed.Code, listed.Body)
+	}
+	second := callAPI(handler, http.MethodPost, "/api/admin/invitations", map[string]string{"email": "other@example.test"}, cookie)
+	var secondInvitation struct {
+		ID string `json:"id"`
+	}
+	if second.Code != http.StatusCreated || json.Unmarshal(second.Body.Bytes(), &secondInvitation) != nil {
+		t.Fatalf("second invitation failed: %d %s", second.Code, second.Body)
+	}
+	revoked := callAPI(handler, http.MethodDelete, "/api/admin/invitations?id="+secondInvitation.ID, nil, cookie)
+	if revoked.Code != http.StatusOK {
+		t.Fatalf("revoke invitation = %d: %s", revoked.Code, revoked.Body)
+	}
+}
+
+func TestNonAdminCannotManageInvitations(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('member','member@example.test','Member','now')`); err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := issueSession(db, "member")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := callAPI(handlerWithAuth(db, testAuth(db)), http.MethodPost, "/api/admin/invitations", map[string]string{"email": "other@example.test"}, &http.Cookie{Name: sessionCookie, Value: token})
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("non-admin invitation status = %d, want 403", response.Code)
 	}
 }
 

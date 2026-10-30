@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/mail"
 	"strings"
 	"time"
 )
@@ -134,12 +136,101 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.cookbookByID(w, r, parts[1])
 	case len(parts) == 1 && parts[0] == "recipes":
 		h.recipes(w, r)
+	case len(parts) == 2 && parts[0] == "admin" && parts[1] == "invitations":
+		h.invitations(w, r)
 	case len(parts) == 2 && parts[0] == "recipes":
 		h.recipeByID(w, r, parts[1])
 	case len(parts) == 3 && parts[0] == "recipes" && parts[2] == "revisions":
 		h.recipeRevisions(w, r, parts[1])
 	default:
 		writeError(w, http.StatusNotFound, "not_found")
+	}
+}
+
+func (h apiHandler) invitations(w http.ResponseWriter, r *http.Request) {
+	uid := authenticatedUser(r)
+	var admin int
+	if err := h.db.QueryRow(`SELECT is_admin FROM users WHERE id=?`, uid).Scan(&admin); err != nil || admin != 1 {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		rows, err := h.db.Query(`SELECT i.id,i.email,i.expires_at,i.created_at,u.display_name FROM invitations i JOIN users u ON u.id=i.invited_by WHERE i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at>? ORDER BY i.created_at DESC`, timestamp())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		defer rows.Close()
+		type item struct {
+			ID        string `json:"id"`
+			Email     string `json:"email"`
+			ExpiresAt string `json:"expires_at"`
+			CreatedAt string `json:"created_at"`
+			InvitedBy string `json:"invited_by"`
+		}
+		items := []item{}
+		for rows.Next() {
+			var current item
+			if rows.Scan(&current.ID, &current.Email, &current.ExpiresAt, &current.CreatedAt, &current.InvitedBy) != nil {
+				writeError(w, 500, "storage_error")
+				return
+			}
+			items = append(items, current)
+		}
+		if rows.Err() != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		writeJSON(w, http.StatusOK, items)
+	case http.MethodPost:
+		var input struct {
+			Email string `json:"email"`
+		}
+		if !decodeJSON(w, r, &input) {
+			return
+		}
+		parsed, err := mail.ParseAddress(strings.TrimSpace(input.Email))
+		if err != nil || parsed.Address != strings.TrimSpace(input.Email) {
+			writeError(w, 400, "invalid_email")
+			return
+		}
+		email := strings.ToLower(parsed.Address)
+		var existing string
+		if h.db.QueryRow(`SELECT id FROM users WHERE email=?`, email).Scan(&existing) == nil {
+			writeError(w, 409, "account_already_exists")
+			return
+		}
+		var raw [32]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			writeError(w, 500, "internal_error")
+			return
+		}
+		token := hex.EncodeToString(raw[:])
+		sum := sha256.Sum256([]byte(token))
+		now := time.Now().UTC()
+		id := newID()
+		_, err = h.db.Exec(`INSERT INTO invitations(id,token_hash,email,invited_by,expires_at,created_at) VALUES(?,?,?,?,?,?)`, id, hex.EncodeToString(sum[:]), email, uid, now.Add(7*24*time.Hour).Format(time.RFC3339Nano), timestamp())
+		if err != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]string{"id": id, "email": email, "token": token})
+	case http.MethodDelete:
+		id := r.URL.Query().Get("id")
+		result, err := h.db.Exec(`UPDATE invitations SET revoked_at=? WHERE id=? AND accepted_at IS NULL AND revoked_at IS NULL`, timestamp(), id)
+		if err != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		count, _ := result.RowsAffected()
+		if count != 1 {
+			writeError(w, 404, "not_found")
+			return
+		}
+		writeJSON(w, 200, map[string]string{"status": "invitation_revoked"})
+	default:
+		writeError(w, 405, "method_not_allowed")
 	}
 }
 

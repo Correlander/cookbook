@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -13,22 +14,22 @@ func TestHealthEndpoint(t *testing.T) {
 	handlerWithAuth(db, testAuth(db)).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
 	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+		t.Fatalf("status = %d, location=%q body=%q, want %d", recorder.Code, recorder.Header().Get("Location"), recorder.Body.String(), http.StatusOK)
 	}
 	if got := recorder.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
 	}
 }
 
-func TestUnknownRouteReturnsJSONNotFound(t *testing.T) {
+func TestUnknownPageServesFrontendShell(t *testing.T) {
 	db := testDatabase(t)
 	recorder := httptest.NewRecorder()
 	handlerWithAuth(db, testAuth(db)).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/missing", nil))
 
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d location=%q body=%q, want %d", recorder.Code, recorder.Header().Get("Location"), recorder.Body.String(), http.StatusOK)
 	}
-	if got := recorder.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
+	if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
 		t.Fatalf("Content-Type = %q", got)
 	}
 }
@@ -60,6 +61,23 @@ func TestRegistrationPolicyConfiguration(t *testing.T) {
 	t.Setenv("COOKBOOK_REGISTRATION", "unknown")
 	if err := configureRegistrationPolicy(db); err == nil {
 		t.Fatal("invalid registration policy should be rejected")
+	}
+}
+
+func TestAdministratorBootstrapIsOneTimeAndConfigurable(t *testing.T) {
+	db := testDatabase(t)
+	t.Setenv("COOKBOOK_ADMIN_EMAIL", "owner@example.test")
+	t.Setenv("COOKBOOK_ADMIN_NAME", "Instance Owner")
+	if err := provisionAdministrator(db); err != nil {
+		t.Fatal(err)
+	}
+	var email, name string
+	var admin int
+	if err := db.QueryRow(`SELECT email,display_name,is_admin FROM users`).Scan(&email, &name, &admin); err != nil || email != "owner@example.test" || name != "Instance Owner" || admin != 1 {
+		t.Fatalf("bootstrap account = %q %q admin=%d, err=%v", email, name, admin, err)
+	}
+	if err := provisionAdministrator(db); err != nil {
+		t.Fatalf("persistent bootstrap setting should be harmless after first admin: %v", err)
 	}
 }
 

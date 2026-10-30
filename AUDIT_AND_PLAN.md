@@ -16,9 +16,9 @@ At audit time the repository was an early prototype. Implementation has since ad
 
 ## Implementation progress (2026-10-30)
 
-- M1 foundation: Go configuration, health endpoint, security headers, SQLite startup schema, and backend verification are in place. Production static asset serving and deploy packaging remain open.
-- M2 authentication: passwordless email links, hashed one-time challenges, durable sessions, same-origin checks, WebAuthn passkeys, and frontend request/confirmation/management are implemented. Administrator invitation management and broader abuse controls remain open. New databases default to invite-only; provisioned accounts can sign in, but invite flows do not exist yet.
-- M3 local core: private-first users/cookbooks/recipes/membership schema, API authorization, structured recipes, public recipe listing, private recipe creation, and basic cookbook listing/creation/assignment UI are implemented. Member/invitation management UI, recipe/cookbook editing, uploads, and pagination remain open.
+- M1 foundation: Go configuration, health endpoint, security headers, SQLite startup schema, and backend verification are in place. The Go service serves embedded frontend assets, and a multi-stage Dockerfile/Compose setup persists SQLite and health-checks the app; the Docker image build is not verified on this host because no Docker daemon is running.
+- M2 authentication: passwordless email links, hashed one-time challenges, durable sessions, same-origin checks, WebAuthn passkeys, and frontend request/confirmation/management are implemented. First-administrator bootstrap and admin-issued email-bound account invitations are implemented. Invitations are accepted only after mailbox verification. Broader abuse controls and in-app admin role management remain open.
+- M3 local core: private-first users/cookbooks/recipes/membership schema, API authorization, structured recipes, public recipe listing, private recipe creation, and basic cookbook listing/creation/assignment UI are implemented. Cookbook member invitations/roles, recipe/cookbook editing, uploads, and pagination remain open. The dashboard now manages instance account invitations.
 - M4 history: recipe snapshots are written atomically at create/update, updates use optimistic versions, and authorized users can read revision history. Existing recipes receive a latest-version backfill during schema initialization. Diff, restore-as-new-version, distinct security audit, soft delete/trash, and retention are not implemented.
 - Frontend dependencies were updated within existing semver ranges; `npm audit` currently reports no advisories. Go tests/vet and frontend lint/build have been run successfully at recent checkpoints.
 - WebAuthn uses `github.com/go-webauthn/webauthn` v0.14.0 and raises the backend minimum to Go 1.24. Automated tests cover RP configuration, option creation, origin checks, and one-time ceremony use; a real browser/authenticator enrollment and assertion has not been exercised.
@@ -75,7 +75,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 
 ### M5 — Self-hosting and portability
 - Dockerfile/Compose, `.env.example`, health checks, persistent SQLite/media volumes, admin bootstrap, upgrade and backup/restore runbook, import/export format with attribution.
-- Acceptance: reproducible local deployment, backup/restore rehearsal, portable import/export tests.
+- Acceptance: reproducible local deployment and backup/restore rehearsal remain outstanding; Dockerfile and Compose configuration are prepared, and upgrade paths have migration tests.
 
 ### M6 — Visual and accessibility polish
 - Refine the app using reference 02; ensure keyboard/focus, contrast, reduced motion, mobile layouts, loading/empty/error states, accessible dialogs and cooking mode.

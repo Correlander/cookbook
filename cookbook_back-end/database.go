@@ -22,11 +22,25 @@ CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
   display_name TEXT NOT NULL,
+  is_admin INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1)),
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS invitations (
+  id TEXT PRIMARY KEY,
+  token_hash TEXT NOT NULL UNIQUE,
+  email TEXT NOT NULL,
+  invited_by TEXT NOT NULL REFERENCES users(id),
+  expires_at TEXT NOT NULL,
+  accepted_at TEXT,
+  revoked_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_invitations_email_state ON invitations(email,accepted_at,revoked_at,expires_at);
 CREATE TABLE IF NOT EXISTS email_challenges (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL,
+  display_name TEXT NOT NULL DEFAULT '',
+  invitation_id TEXT REFERENCES invitations(id),
   token_hash TEXT NOT NULL UNIQUE,
   expires_at TEXT NOT NULL,
   consumed_at TEXT,
@@ -133,6 +147,23 @@ func openDatabase(path string) (*sql.DB, error) {
 	if _, err := db.ExecContext(ctx, schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply initial schema: %w", err)
+	}
+	for _, column := range []struct{ table, name, declaration string }{
+		{"users", "is_admin", `INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1))`},
+		{"email_challenges", "display_name", `TEXT NOT NULL DEFAULT ''`},
+		{"email_challenges", "invitation_id", `TEXT REFERENCES invitations(id)`},
+	} {
+		var exists int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, column.table, column.name).Scan(&exists); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("inspect email challenge schema: %w", err)
+		}
+		if exists == 0 {
+			if _, err := db.ExecContext(ctx, `ALTER TABLE `+column.table+` ADD COLUMN `+column.name+` `+column.declaration); err != nil {
+				db.Close()
+				return nil, fmt.Errorf("upgrade email challenge schema: %w", err)
+			}
+		}
 	}
 	return db, nil
 }

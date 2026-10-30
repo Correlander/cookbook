@@ -1,48 +1,40 @@
 # Cookbook
 
-A self-hostable cookbook for collecting recipes and organizing them into cookbooks. The current application includes a Go API backed by SQLite and a React/Vite discovery interface. The discovery page reads explicitly public recipes from the instance. Signed-in users can create private recipes and cookbooks, add recipes to their own cookbooks, and browse recipes and cookbooks they own or can access.
-
-## Requirements
-
-- Go 1.24 or newer
-- Node.js 20 or newer and npm
-- A mail delivery command that accepts a JSON object on stdin (for email sign-in)
+A self-hostable cookbook for collecting recipes and organizing them into cookbooks. The application uses a Go HTTP service, SQLite, and a React/Vite interface. Instances start private, and public browsing, account registration, courses, and federation are controlled independently.
 
 ## Local development
 
-1. Copy `cookbook_back-end/.env.example` to `cookbook_back-end/.env` and configure the database path, public URL, registration policy, and mail command. The backend reads environment variables directly; load the file in your shell or use your preferred environment loader.
-2. Start the API:
+Requirements: Go 1.24+, Node.js 20+, and npm.
 
-   ```sh
-   cd cookbook_back-end
-   go run .
-   ```
+1. Copy `cookbook_back-end/.env.example` to `cookbook_back-end/.env` and configure the public URL and mail delivery. The Go service reads environment variables directly; load the file with your shell or preferred environment loader.
+2. Run the API from `cookbook_back-end` with `go run .` (defaults to `127.0.0.1:8000`). It initializes the SQLite schema. Its embedded frontend is a placeholder during local development; the Vite server is the development UI.
+3. In a second terminal, run `npm ci && npm run dev` from `coobook_front-end`. Vite serves the development UI at `http://localhost:5173` and proxies API requests to the Go service.
 
-   It listens on `127.0.0.1:8000` by default and initializes the SQLite schema at the configured database path.
-3. In another terminal, start the frontend:
+## Self-host with Docker Compose
 
-   ```sh
-   cd coobook_front-end
-   npm ci
-   npm run dev
-   ```
+1. Copy `.env.example` to `.env`, then set `COOKBOOK_PUBLIC_URL`, `COOKBOOK_RP_ID`, `COOKBOOK_RP_ORIGIN`, and the SMTP host/from values. SMTP delivery requires STARTTLS; credentials are optional for relays that do not require authentication. Alternatively, configure `COOKBOOK_EMAIL_COMMAND` with an executable in the container that accepts the documented JSON payload on stdin.
+2. Set `COOKBOOK_ADMIN_EMAIL` and optionally `COOKBOOK_ADMIN_NAME` for the first startup. This creates the first administrator account. Leave the email challenge/sign-in flow configured before making the instance reachable.
+3. Run `docker compose up --build -d`. Compose binds the service to `127.0.0.1:8000`; put a trusted HTTPS reverse proxy in front. The `cookbook-data` volume stores SQLite data at `/data/cookbook.db`.
+4. After setup, remove `COOKBOOK_ADMIN_EMAIL` from `.env`. It has no effect once an administrator already exists.
 
-   Vite proxies `/api` requests to the local API.
+For a consistent SQLite backup, stop the service, copy the database file from the `cookbook-data` volume, then start it again. Restore by stopping the service, replacing `/data/cookbook.db` with the saved file, and starting the service. Keep the backup private; it contains accounts, private recipes, and sessions. Database schema upgrades run when the service starts.
 
-The initial instance is private, registration is invite-only, and courses and federation are disabled. `COOKBOOK_REGISTRATION` accepts `invite_only`, `open`, or `disabled` and is applied at API startup. Set it to `open` only when you intend to allow anyone to create an account. Invitation management is not implemented yet, so invite-only currently means only accounts provisioned by an administrator can sign in.
+## Authentication and registration
 
-`COOKBOOK_PUBLIC_URL` must identify the browser-facing app origin. For the local Vite setup it is `http://localhost:5173`; in production use the HTTPS URL served by the reverse proxy. `COOKBOOK_RP_ID` and `COOKBOOK_RP_ORIGIN` configure the WebAuthn relying party and origin. The local example uses `localhost`; production passkeys require HTTPS and the app's exact origin.
+Sign-in uses one-time email links and WebAuthn passkeys. `COOKBOOK_PUBLIC_URL` must be the browser-facing app origin; passkeys require HTTPS outside localhost. `COOKBOOK_RP_ID` defaults to its hostname and `COOKBOOK_RP_ORIGIN` must match the public origin.
 
-## Email command contract
+`COOKBOOK_REGISTRATION` accepts `invite_only` (default), `open`, or `disabled`. An administrator can create and revoke account invitations from the signed-in dashboard. The invitation link is bound to the specified email address and expires after seven days. The recipient must verify that mailbox by consuming the one-time email link before an account is created.
 
-`COOKBOOK_EMAIL_COMMAND` names an executable. For each sign-in request, Cookbook writes one JSON object to its stdin:
+`COOKBOOK_ADMIN_EMAIL` bootstraps the first administrator on startup if no administrator exists. The account can sign in through its verified email address. Keep control of the environment file and email account; subsequent administrators must be managed through operational database procedures until an in-app role management flow is added.
+
+For command-based email delivery, Cookbook writes one JSON object to the executable's stdin:
 
 ```json
 {"to":"person@example.test","subject":"Your Cookbook sign-in link","text":"Use this one-time link to sign in. It expires in 15 minutes.","sign_in_url":"https://cookbook.example/auth/confirm?token=..."}
 ```
 
-The command should deliver the message and exit with status 0 on success. It must not log the one-time URL. The link expires after 15 minutes and can only be used once. Use HTTPS for `COOKBOOK_PUBLIC_URL` outside local development and terminate TLS at a trusted reverse proxy. Keep the API bound to loopback behind that proxy.
+The command must deliver the message and exit with status 0. Do not log the one-time URL. SMTP configuration requires STARTTLS and supports optional SMTP authentication.
 
-## Current scope
+## Current scope and remaining work
 
-Email-link and passkey authentication, durable sessions, private-first SQLite schema, access checks, structured recipe/cookbook APIs, public recipe browsing, private recipe and cookbook creation, and recipe revision history are present. Invitation administration, revision restore/trash, media uploads, and federation are not implemented. Federation is disabled by default; protocol evaluation and design are tracked in `AUDIT_AND_PLAN.md`.
+Email-link and passkey authentication, first-admin bootstrap, account invitations, private-first SQLite storage, authorization checks, cookbook and recipe APIs, public recipe browsing, private recipe/cookbook creation, and atomic recipe revision history are implemented. Recovery tools (diff/restore/trash/retention), cookbook member sharing, full recipe/cookbook editing UI, image uploads, pagination, richer recipe metadata, audit log, and federation protocol research remain open. The Go service can embed and serve a production frontend build; the Dockerfile creates that build. Courses and federation remain disabled by default.

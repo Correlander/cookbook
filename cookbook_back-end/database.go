@@ -98,6 +98,10 @@ CREATE TABLE IF NOT EXISTS recipes (
   description TEXT NOT NULL DEFAULT '',
   ingredients_json TEXT NOT NULL DEFAULT '[]',
   steps_json TEXT NOT NULL DEFAULT '[]',
+  servings INTEGER NOT NULL DEFAULT 0 CHECK (servings BETWEEN 0 AND 1000),
+  prep_time_minutes INTEGER NOT NULL DEFAULT 0 CHECK (prep_time_minutes BETWEEN 0 AND 1440),
+  cook_time_minutes INTEGER NOT NULL DEFAULT 0 CHECK (cook_time_minutes BETWEEN 0 AND 1440),
+  tags_json TEXT NOT NULL DEFAULT '[]',
   visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'public', 'unlisted')),
   edit_policy TEXT NOT NULL DEFAULT 'owner_only' CHECK (edit_policy IN ('owner_only', 'cookbook_editors')),
   version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
@@ -113,6 +117,10 @@ CREATE TABLE IF NOT EXISTS recipe_revisions (
   description TEXT NOT NULL,
   ingredients_json TEXT NOT NULL,
   steps_json TEXT NOT NULL,
+  servings INTEGER NOT NULL DEFAULT 0 CHECK (servings BETWEEN 0 AND 1000),
+  prep_time_minutes INTEGER NOT NULL DEFAULT 0 CHECK (prep_time_minutes BETWEEN 0 AND 1440),
+  cook_time_minutes INTEGER NOT NULL DEFAULT 0 CHECK (cook_time_minutes BETWEEN 0 AND 1440),
+  tags_json TEXT NOT NULL DEFAULT '[]',
   visibility TEXT NOT NULL CHECK (visibility IN ('private', 'public', 'unlisted')),
   created_at TEXT NOT NULL,
   UNIQUE(recipe_id, version)
@@ -156,6 +164,14 @@ func openDatabase(path string) (*sql.DB, error) {
 		{"email_challenges", "invitation_id", `TEXT REFERENCES invitations(id)`},
 		{"invitations", "cookbook_id", `TEXT REFERENCES cookbooks(id) ON DELETE CASCADE`},
 		{"invitations", "role", `TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('viewer', 'editor'))`},
+		{"recipes", "servings", `INTEGER NOT NULL DEFAULT 0 CHECK (servings BETWEEN 0 AND 1000)`},
+		{"recipes", "prep_time_minutes", `INTEGER NOT NULL DEFAULT 0 CHECK (prep_time_minutes BETWEEN 0 AND 1440)`},
+		{"recipes", "cook_time_minutes", `INTEGER NOT NULL DEFAULT 0 CHECK (cook_time_minutes BETWEEN 0 AND 1440)`},
+		{"recipes", "tags_json", `TEXT NOT NULL DEFAULT '[]'`},
+		{"recipe_revisions", "servings", `INTEGER NOT NULL DEFAULT 0 CHECK (servings BETWEEN 0 AND 1000)`},
+		{"recipe_revisions", "prep_time_minutes", `INTEGER NOT NULL DEFAULT 0 CHECK (prep_time_minutes BETWEEN 0 AND 1440)`},
+		{"recipe_revisions", "cook_time_minutes", `INTEGER NOT NULL DEFAULT 0 CHECK (cook_time_minutes BETWEEN 0 AND 1440)`},
+		{"recipe_revisions", "tags_json", `TEXT NOT NULL DEFAULT '[]'`},
 	} {
 		var exists int
 		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, column.table, column.name).Scan(&exists); err != nil {

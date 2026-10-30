@@ -77,6 +77,35 @@ func TestSchemaBackfillsCurrentRecipeRevision(t *testing.T) {
 	}
 }
 
+func TestRecipeMetadataColumnsMigrateWithDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "recipe-metadata-upgrade.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = legacy.Exec(`CREATE TABLE users(id TEXT PRIMARY KEY,email TEXT NOT NULL UNIQUE,display_name TEXT NOT NULL,created_at TEXT NOT NULL); CREATE TABLE recipes(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),creator_name TEXT NOT NULL,title TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',ingredients_json TEXT NOT NULL DEFAULT '[]',steps_json TEXT NOT NULL DEFAULT '[]',visibility TEXT NOT NULL DEFAULT 'private',edit_policy TEXT NOT NULL DEFAULT 'owner_only',version INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL,updated_at TEXT NOT NULL); CREATE TABLE recipe_revisions(id TEXT PRIMARY KEY,recipe_id TEXT NOT NULL REFERENCES recipes(id),version INTEGER NOT NULL,editor_id TEXT NOT NULL REFERENCES users(id),title TEXT NOT NULL,description TEXT NOT NULL,ingredients_json TEXT NOT NULL,steps_json TEXT NOT NULL,visibility TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(recipe_id,version)); INSERT INTO users VALUES('owner','owner@example.test','Owner','now'); INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,version,created_at,updated_at) VALUES('recipe','owner','Owner','Legacy recipe','','[]','[]','private','owner_only',1,'now','now');`)
+	if err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var servings, prepTime, cookTime int
+	var tags string
+	if err := db.QueryRow(`SELECT servings,prep_time_minutes,cook_time_minutes,tags_json FROM recipes WHERE id='recipe'`).Scan(&servings, &prepTime, &cookTime, &tags); err != nil || servings != 0 || prepTime != 0 || cookTime != 0 || tags != "[]" {
+		t.Fatalf("migrated recipe metadata=%d/%d/%d %q err=%v", servings, prepTime, cookTime, tags, err)
+	}
+	if err := db.QueryRow(`SELECT servings,prep_time_minutes,cook_time_minutes,tags_json FROM recipe_revisions WHERE recipe_id='recipe'`).Scan(&servings, &prepTime, &cookTime, &tags); err != nil || servings != 0 || prepTime != 0 || cookTime != 0 || tags != "[]" {
+		t.Fatalf("migrated revision metadata=%d/%d/%d %q err=%v", servings, prepTime, cookTime, tags, err)
+	}
+}
+
 func TestExistingAccountsAndChallengesReceiveAdminInvitationColumns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy-auth.db")
 	legacy, err := sql.Open("sqlite", path)

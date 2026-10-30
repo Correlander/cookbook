@@ -36,3 +36,7 @@ func canEditResource(userID string, resource access) bool {
 	}
 	return userID == resource.ownerID || resource.memberRole == roleOwner || resource.memberRole == roleEditor
 }
+
+func canEditRecipe(userID string, resource access, editPolicy string) bool {
+	return userID != "" && (userID == resource.ownerID || (editPolicy == "cookbook_editors" && resource.memberRole == roleEditor))
+}

@@ -91,6 +91,9 @@ func TestPublicRecipeSearchAndPagination(t *testing.T) {
 	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1; INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'); INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,created_at,updated_at) VALUES('soup-a','owner','Owner','Soup A','','[]','[]','public','owner_only','now','2026-01-01'),('soup-b','owner','Owner','Soup B','','[]','[]','public','owner_only','now','2026-01-02'),('cake','owner','Owner','Cake','','[]','[]','public','owner_only','now','2026-01-03')`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`UPDATE recipes SET tags_json='["quick"]' WHERE id='soup-b'`); err != nil {
+		t.Fatal(err)
+	}
 	handler := handlerWithAuth(db, testAuth(db))
 	first := httptest.NewRecorder()
 	handler.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/api/public/recipes?q=SOUP&limit=1&offset=0", nil))
@@ -110,6 +113,11 @@ func TestPublicRecipeSearchAndPagination(t *testing.T) {
 	handler.ServeHTTP(second, httptest.NewRequest(http.MethodGet, "/api/public/recipes?q=soup&limit=1&offset=1", nil))
 	if second.Code != http.StatusOK || json.Unmarshal(second.Body.Bytes(), &page) != nil || len(page) != 1 || page[0].ID != "soup-a" {
 		t.Fatalf("second search page = %d %s", second.Code, second.Body)
+	}
+	tagSearch := httptest.NewRecorder()
+	handler.ServeHTTP(tagSearch, httptest.NewRequest(http.MethodGet, "/api/public/recipes?q=quick", nil))
+	if tagSearch.Code != http.StatusOK || json.Unmarshal(tagSearch.Body.Bytes(), &page) != nil || len(page) != 1 || page[0].ID != "soup-b" {
+		t.Fatalf("tag search = %d %s", tagSearch.Code, tagSearch.Body)
 	}
 	invalid := httptest.NewRecorder()
 	handler.ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/api/public/recipes?limit=101", nil))
@@ -137,7 +145,7 @@ func TestRecipeRevisionsAndOptimisticUpdates(t *testing.T) {
 	if err := json.Unmarshal(bookResponse.Body.Bytes(), &book); err != nil {
 		t.Fatal(err)
 	}
-	create := map[string]any{"title": "First title", "ingredients": []map[string]string{{"name": "flour"}}, "steps": []map[string]string{{"text": "Mix"}}, "cookbook_ids": []string{book.ID}}
+	create := map[string]any{"title": "First title", "ingredients": []map[string]string{{"name": "flour"}}, "steps": []map[string]string{{"text": "Mix"}}, "servings": 4, "prep_time_minutes": 15, "cook_time_minutes": 35, "tags": []string{"Dinner", " vegetarian ", "dinner"}, "cookbook_ids": []string{book.ID}}
 	created := callAPI(h, http.MethodPost, "/api/recipes", create, cookie)
 	if created.Code != http.StatusOK {
 		t.Fatalf("create status = %d: %s", created.Code, created.Body)
@@ -149,7 +157,10 @@ func TestRecipeRevisionsAndOptimisticUpdates(t *testing.T) {
 	if len(current.CookbookIDs) != 1 || current.CookbookIDs[0] != book.ID {
 		t.Fatalf("recipe cookbook association = %#v", current.CookbookIDs)
 	}
-	update := map[string]any{"title": "Second title", "ingredients": []map[string]string{{"name": "flour"}}, "steps": []map[string]string{{"text": "Mix"}}, "version": current.Version}
+	if current.Servings != 4 || current.PrepTime != 15 || current.CookTime != 35 || len(current.Tags) != 2 || current.Tags[0] != "dinner" || current.Tags[1] != "vegetarian" {
+		t.Fatalf("recipe metadata normalization = %+v", current)
+	}
+	update := map[string]any{"title": "Second title", "ingredients": []map[string]string{{"name": "flour"}}, "steps": []map[string]string{{"text": "Mix"}}, "servings": 2, "prep_time_minutes": 10, "cook_time_minutes": 25, "tags": []string{"quick"}, "version": current.Version}
 	updated := callAPI(h, http.MethodPut, "/api/recipes/"+current.ID, update, cookie)
 	if updated.Code != http.StatusOK {
 		t.Fatalf("update status = %d: %s", updated.Code, updated.Body)
@@ -163,7 +174,7 @@ func TestRecipeRevisionsAndOptimisticUpdates(t *testing.T) {
 	if revisions.Code != http.StatusOK || json.Unmarshal(revisions.Body.Bytes(), &history) != nil {
 		t.Fatalf("revision listing status = %d: %s", revisions.Code, revisions.Body)
 	}
-	if len(history) != 2 || history[0].Version != 2 || history[0].Title != "Second title" || history[1].Version != 1 || history[1].Title != "First title" {
+	if len(history) != 2 || history[0].Version != 2 || history[0].Title != "Second title" || history[0].Servings != 2 || history[0].CookTime != 25 || len(history[0].Tags) != 1 || history[0].Tags[0] != "quick" || history[1].Version != 1 || history[1].Title != "First title" || history[1].Servings != 4 || history[1].PrepTime != 15 || len(history[1].Tags) != 2 {
 		t.Fatalf("unexpected revision history: %#v", history)
 	}
 	restored := callAPI(h, http.MethodPost, "/api/recipes/"+current.ID+"/revisions/1/restore", map[string]int{"expected_version": current.Version + 1}, cookie)
@@ -171,7 +182,7 @@ func TestRecipeRevisionsAndOptimisticUpdates(t *testing.T) {
 		t.Fatalf("restore revision status = %d: %s", restored.Code, restored.Body)
 	}
 	var afterRestore recipe
-	if err := json.Unmarshal(restored.Body.Bytes(), &afterRestore); err != nil || afterRestore.Version != 3 || afterRestore.Title != "First title" {
+	if err := json.Unmarshal(restored.Body.Bytes(), &afterRestore); err != nil || afterRestore.Version != 3 || afterRestore.Title != "First title" || afterRestore.Servings != 4 || afterRestore.PrepTime != 15 || afterRestore.CookTime != 35 || len(afterRestore.Tags) != 2 || afterRestore.Tags[0] != "dinner" {
 		t.Fatalf("restored recipe = %#v, err=%v", afterRestore, err)
 	}
 	staleRestore := callAPI(h, http.MethodPost, "/api/recipes/"+current.ID+"/revisions/2/restore", map[string]int{"expected_version": current.Version + 1}, cookie)
@@ -379,6 +390,16 @@ func TestCookbookEditorPolicyAndViewerRestrictions(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := handlerWithAuth(db, testAuth(db))
+	editorToken, _, err := issueSession(db, "editor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	editorCookie := &http.Cookie{Name: sessionCookie, Value: editorToken}
+	ownerOnlyRecipe := callAPI(handler, http.MethodGet, "/api/recipes/recipe", nil, editorCookie)
+	var editorView recipe
+	if ownerOnlyRecipe.Code != http.StatusOK || json.Unmarshal(ownerOnlyRecipe.Body.Bytes(), &editorView) != nil || editorView.CanEdit {
+		t.Fatalf("owner-only recipe edit capability = %d %+v", ownerOnlyRecipe.Code, editorView)
+	}
 	makeUpdate := func(userID string, version int) *httptest.ResponseRecorder {
 		token, _, issueErr := issueSession(db, userID)
 		if issueErr != nil {
@@ -391,6 +412,10 @@ func TestCookbookEditorPolicyAndViewerRestrictions(t *testing.T) {
 	}
 	if _, err := db.Exec(`UPDATE recipes SET edit_policy='cookbook_editors' WHERE id='recipe'`); err != nil {
 		t.Fatal(err)
+	}
+	editableRecipe := callAPI(handler, http.MethodGet, "/api/recipes/recipe", nil, editorCookie)
+	if editableRecipe.Code != http.StatusOK || json.Unmarshal(editableRecipe.Body.Bytes(), &editorView) != nil || !editorView.CanEdit {
+		t.Fatalf("editor-enabled recipe edit capability = %d %+v", editableRecipe.Code, editorView)
 	}
 	if response := makeUpdate("viewer", 1); response.Code != http.StatusForbidden {
 		t.Fatalf("viewer changed editor-enabled recipe: %d", response.Code)

@@ -134,6 +134,18 @@ func TestRecipeRevisionsAndOptimisticUpdates(t *testing.T) {
 	if len(history) != 2 || history[0].Version != 2 || history[0].Title != "Second title" || history[1].Version != 1 || history[1].Title != "First title" {
 		t.Fatalf("unexpected revision history: %#v", history)
 	}
+	restored := callAPI(h, http.MethodPost, "/api/recipes/"+current.ID+"/revisions/1/restore", map[string]int{"expected_version": current.Version + 1}, cookie)
+	if restored.Code != http.StatusOK {
+		t.Fatalf("restore revision status = %d: %s", restored.Code, restored.Body)
+	}
+	var afterRestore recipe
+	if err := json.Unmarshal(restored.Body.Bytes(), &afterRestore); err != nil || afterRestore.Version != 3 || afterRestore.Title != "First title" {
+		t.Fatalf("restored recipe = %#v, err=%v", afterRestore, err)
+	}
+	staleRestore := callAPI(h, http.MethodPost, "/api/recipes/"+current.ID+"/revisions/2/restore", map[string]int{"expected_version": current.Version + 1}, cookie)
+	if staleRestore.Code != http.StatusConflict {
+		t.Fatalf("stale restore status = %d, want 409", staleRestore.Code)
+	}
 	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('reader','reader@example.test','Reader','now')`); err != nil {
 		t.Fatal(err)
 	}
@@ -305,6 +317,26 @@ func TestAdminInvitationRequiresVerifiedEmailAndCanBeRevoked(t *testing.T) {
 	revoked := callAPI(handler, http.MethodDelete, "/api/admin/invitations?id="+secondInvitation.ID, nil, cookie)
 	if revoked.Code != http.StatusOK {
 		t.Fatalf("revoke invitation = %d: %s", revoked.Code, revoked.Body)
+	}
+}
+
+func TestRecipeOwnerUpdatePreservesReferenceToSharedCookbook(t *testing.T) {
+	db := testDatabase(t)
+	_, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('recipe-owner','recipe@example.test','Recipe owner','now'),('book-owner','book@example.test','Book owner','now'); INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at) VALUES('shared-book','book-owner','Shared','private','now','now'); INSERT INTO cookbook_memberships(cookbook_id,user_id,role,created_at) VALUES('shared-book','recipe-owner','viewer','now'); INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,version,created_at,updated_at) VALUES('shared-recipe','recipe-owner','Recipe owner','Soup','','[]','[]','private','owner_only',1,'now','now'); INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES('shared-book','shared-recipe','book-owner','now')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := issueSession(db, "recipe-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := callAPI(handlerWithAuth(db, testAuth(db)), http.MethodPut, "/api/recipes/shared-recipe", map[string]any{"title": "Better soup", "ingredients": []map[string]string{}, "steps": []map[string]string{}, "visibility": "private", "edit_policy": "owner_only", "version": 1, "cookbook_ids": []string{"shared-book"}}, &http.Cookie{Name: sessionCookie, Value: token})
+	if response.Code != http.StatusOK {
+		t.Fatalf("owner update = %d: %s", response.Code, response.Body)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM cookbook_recipes WHERE cookbook_id='shared-book' AND recipe_id='shared-recipe'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("shared cookbook reference count=%d, err=%v", count, err)
 	}
 }
 

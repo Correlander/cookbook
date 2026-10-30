@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/mail"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -142,6 +143,8 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.recipeByID(w, r, parts[1])
 	case len(parts) == 3 && parts[0] == "recipes" && parts[2] == "revisions":
 		h.recipeRevisions(w, r, parts[1])
+	case len(parts) == 5 && parts[0] == "recipes" && parts[2] == "revisions" && parts[4] == "restore":
+		h.restoreRecipeRevision(w, r, parts[1], parts[3])
 	default:
 		writeError(w, http.StatusNotFound, "not_found")
 	}
@@ -641,6 +644,78 @@ func (h apiHandler) recipeRevisions(w http.ResponseWriter, r *http.Request, id s
 	writeJSON(w, 200, items)
 }
 
+func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request, recipeID, versionText string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	revisionVersion, err := strconv.Atoi(versionText)
+	if err != nil || revisionVersion < 1 {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	var input struct {
+		ExpectedVersion int `json:"expected_version"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	userID := authenticatedUser(r)
+	var owner, editPolicy string
+	var currentVersion int
+	if err := h.db.QueryRow(`SELECT owner_id,edit_policy,version FROM recipes WHERE id=?`, recipeID).Scan(&owner, &editPolicy, &currentVersion); err != nil {
+		writeError(w, 404, "not_found")
+		return
+	}
+	var memberRole role
+	_ = h.db.QueryRow(`SELECT role FROM cookbook_memberships m JOIN cookbook_recipes cr ON cr.cookbook_id=m.cookbook_id WHERE cr.recipe_id=? AND m.user_id=? ORDER BY CASE m.role WHEN 'editor' THEN 0 ELSE 1 END LIMIT 1`, recipeID, userID).Scan(&memberRole)
+	if !canEditResource(userID, access{ownerID: owner, memberRole: memberRole}) || (userID != owner && (editPolicy != "cookbook_editors" || memberRole != roleEditor)) {
+		writeError(w, 403, "forbidden")
+		return
+	}
+	if input.ExpectedVersion != currentVersion {
+		writeError(w, 409, "version_conflict")
+		return
+	}
+	var title, description, ingredients, steps string
+	var restoredVisibility visibility
+	if err := h.db.QueryRow(`SELECT title,description,ingredients_json,steps_json,visibility FROM recipe_revisions WHERE recipe_id=? AND version=?`, recipeID, revisionVersion).Scan(&title, &description, &ingredients, &steps, &restoredVisibility); err != nil {
+		writeError(w, 404, "not_found")
+		return
+	}
+	if restoredVisibility != visibilityPrivate && !h.instancePublic() {
+		writeError(w, 403, "instance_private")
+		return
+	}
+	tx, err := h.db.Begin()
+	if err != nil {
+		writeError(w, 500, "storage_error")
+		return
+	}
+	result, err := tx.Exec(`UPDATE recipes SET title=?,description=?,ingredients_json=?,steps_json=?,visibility=?,version=version+1,updated_at=? WHERE id=? AND version=?`, title, description, ingredients, steps, restoredVisibility, timestamp(), recipeID, currentVersion)
+	if err != nil {
+		_ = tx.Rollback()
+		writeError(w, 500, "storage_error")
+		return
+	}
+	updated, _ := result.RowsAffected()
+	if updated != 1 {
+		_ = tx.Rollback()
+		writeError(w, 409, "version_conflict")
+		return
+	}
+	if err := insertRecipeRevision(tx, recipeID, currentVersion+1, userID, title, description, []byte(ingredients), []byte(steps), restoredVisibility); err != nil {
+		_ = tx.Rollback()
+		writeError(w, 500, "storage_error")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, 500, "storage_error")
+		return
+	}
+	h.recipeByID(w, requestForUser(http.MethodGet, "/api/recipes/"+recipeID, userID), recipeID)
+}
+
 func insertRecipeRevision(tx *sql.Tx, recipeID string, version int, editorID, title, description string, ingredients, steps []byte, visibilityValue visibility) error {
 	_, err := tx.Exec(`INSERT INTO recipe_revisions(id,recipe_id,version,editor_id,title,description,ingredients_json,steps_json,visibility,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, newID(), recipeID, version, editorID, title, description, string(ingredients), string(steps), visibilityValue, timestamp())
 	return err
@@ -662,13 +737,20 @@ func (h apiHandler) setRecipeCookbooks(recipeID, userID string, ids []string) er
 	return tx.Commit()
 }
 func replaceCookbookRefs(tx *sql.Tx, recipeID, userID string, ids []string) error {
-	if _, err := tx.Exec(`DELETE FROM cookbook_recipes WHERE recipe_id=?`, recipeID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM cookbook_recipes WHERE recipe_id=? AND cookbook_id IN (SELECT id FROM cookbooks WHERE owner_id=?)`, recipeID, userID); err != nil {
 		return err
 	}
 	for _, id := range ids {
 		var owner string
-		if err := tx.QueryRow(`SELECT owner_id FROM cookbooks WHERE id=?`, id).Scan(&owner); err != nil || owner != userID {
-			return errors.New("not cookbook owner")
+		if err := tx.QueryRow(`SELECT owner_id FROM cookbooks WHERE id=?`, id).Scan(&owner); err != nil {
+			return errors.New("cookbook does not exist")
+		}
+		if owner != userID {
+			var associated int
+			if err := tx.QueryRow(`SELECT COUNT(*) FROM cookbook_recipes WHERE cookbook_id=? AND recipe_id=?`, id, recipeID).Scan(&associated); err != nil || associated != 1 {
+				return errors.New("not cookbook owner")
+			}
+			continue
 		}
 		if _, err := tx.Exec(`INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES(?,?,?,?)`, id, recipeID, userID, timestamp()); err != nil {
 			return err

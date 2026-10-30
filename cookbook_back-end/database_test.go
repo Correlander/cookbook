@@ -13,11 +13,15 @@ func TestDatabaseCreatesPrivateInstanceAndConstraints(t *testing.T) {
 	defer db.Close()
 
 	var public, courses, federation int
-	if err := db.QueryRowContext(context.Background(), `SELECT public_instance, courses_enabled, federation_enabled FROM instance_settings WHERE id = 1`).Scan(&public, &courses, &federation); err != nil {
+	var registration string
+	if err := db.QueryRowContext(context.Background(), `SELECT public_instance, courses_enabled, federation_enabled, registration_policy FROM instance_settings WHERE id = 1`).Scan(&public, &courses, &federation, &registration); err != nil {
 		t.Fatal(err)
 	}
 	if public != 0 || courses != 0 || federation != 0 {
 		t.Fatalf("unsafe defaults: public=%d courses=%d federation=%d", public, courses, federation)
+	}
+	if registration != "invite_only" {
+		t.Fatalf("registration default = %q, want invite_only", registration)
 	}
 	if _, err := db.Exec(`INSERT INTO cookbooks (id, owner_id, title, visibility, created_at, updated_at) VALUES ('book', 'missing-user', 'title', 'private', 'now', 'now')`); err == nil {
 		t.Fatal("expected foreign key constraint to reject unknown owner")

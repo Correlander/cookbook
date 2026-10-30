@@ -31,6 +31,10 @@ type authHandler struct {
 }
 
 func (h authHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost && !validRequestOrigin(r) {
+		writeError(w, http.StatusForbidden, "csrf_origin_mismatch")
+		return
+	}
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/api/auth/email":
 		h.requestEmail(w, r)
@@ -43,6 +47,15 @@ func (h authHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, 404, "not_found")
 	}
+}
+
+func validRequestOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return false
+	}
+	u, err := url.Parse(origin)
+	return err == nil && u.Host != "" && (u.Scheme == "https" || u.Scheme == "http") && u.Host == r.Host
 }
 
 func (h authHandler) requestEmail(w http.ResponseWriter, r *http.Request) {

@@ -13,7 +13,7 @@ const schema = `
 CREATE TABLE IF NOT EXISTS instance_settings (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   public_instance INTEGER NOT NULL DEFAULT 0 CHECK (public_instance IN (0, 1)),
-  registration_policy TEXT NOT NULL DEFAULT 'open' CHECK (registration_policy IN ('open', 'invite_only', 'disabled')),
+  registration_policy TEXT NOT NULL DEFAULT 'invite_only' CHECK (registration_policy IN ('open', 'invite_only', 'disabled')),
   courses_enabled INTEGER NOT NULL DEFAULT 0 CHECK (courses_enabled IN (0, 1)),
   federation_enabled INTEGER NOT NULL DEFAULT 0 CHECK (federation_enabled IN (0, 1))
 );

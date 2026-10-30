@@ -27,6 +27,19 @@ func callAPI(h http.Handler, method, path string, body any, cookie *http.Cookie)
 	h.ServeHTTP(rec, req)
 	return rec
 }
+
+func TestAuthStateChangesRequireSameOrigin(t *testing.T) {
+	db := testDatabase(t)
+	h := handlerWithAuth(db, testAuth(db))
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/consume", strings.NewReader(`{"token":"invalid"}`))
+	req.Host = "example.test"
+	req.Header.Set("Origin", "https://attacker.test")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin auth request status = %d, want 403", rec.Code)
+	}
+}
 func TestUnauthenticatedAndForgedUserCannotCreateCookbook(t *testing.T) {
 	db := testDatabase(t)
 	sender := testEmailSender{sent: make(chan string, 1)}
@@ -40,6 +53,7 @@ func TestUnauthenticatedAndForgedUserCannotCreateCookbook(t *testing.T) {
 }
 func TestPasswordlessLoginAndSessionGatesAPI(t *testing.T) {
 	db := testDatabase(t)
+	_, _ = db.Exec(`UPDATE instance_settings SET registration_policy='open' WHERE id=1`)
 	sender := testEmailSender{sent: make(chan string, 1)}
 	auth := testAuth(db)
 	auth.sender = sender
@@ -79,6 +93,7 @@ func TestPasswordlessLoginAndSessionGatesAPI(t *testing.T) {
 }
 func TestLoginTokenSingleUse(t *testing.T) {
 	db := testDatabase(t)
+	_, _ = db.Exec(`UPDATE instance_settings SET registration_policy='open' WHERE id=1`)
 	sender := testEmailSender{sent: make(chan string, 1)}
 	h := handlerWithAuth(db, func() authHandler { a := testAuth(db); a.sender = sender; return a }())
 	_ = callAPI(h, http.MethodPost, "/api/auth/email", map[string]string{"email": "one@example.test"}, nil)
@@ -93,6 +108,7 @@ func TestLoginTokenSingleUse(t *testing.T) {
 
 func TestExpiredLoginChallengeRejected(t *testing.T) {
 	db := testDatabase(t)
+	_, _ = db.Exec(`UPDATE instance_settings SET registration_policy='open' WHERE id=1`)
 	sender := testEmailSender{sent: make(chan string, 1)}
 	auth := testAuth(db)
 	auth.sender = sender
@@ -112,6 +128,7 @@ func TestExpiredLoginChallengeRejected(t *testing.T) {
 
 func TestPrivateInstanceCannotPublishCookbook(t *testing.T) {
 	db := testDatabase(t)
+	_, _ = db.Exec(`UPDATE instance_settings SET registration_policy='open' WHERE id=1`)
 	h := testAuth(db)
 	auth := h
 	sender := testEmailSender{sent: make(chan string, 1)}

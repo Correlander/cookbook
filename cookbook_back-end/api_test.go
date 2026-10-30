@@ -340,6 +340,111 @@ func TestRecipeOwnerUpdatePreservesReferenceToSharedCookbook(t *testing.T) {
 	}
 }
 
+func TestCookbookEditorPolicyAndViewerRestrictions(t *testing.T) {
+	db := testDatabase(t)
+	_, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('editor','editor@example.test','Editor','now'),('viewer','viewer@example.test','Viewer','now'); INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at) VALUES('book','owner','Shared','private','now','now'); INSERT INTO cookbook_memberships(cookbook_id,user_id,role,created_at) VALUES('book','editor','editor','now'),('book','viewer','viewer','now'); INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,version,created_at,updated_at) VALUES('recipe','owner','Owner','Soup','','[]','[]','private','owner_only',1,'now','now'); INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES('book','recipe','owner','now')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := handlerWithAuth(db, testAuth(db))
+	makeUpdate := func(userID string, version int) *httptest.ResponseRecorder {
+		token, _, issueErr := issueSession(db, userID)
+		if issueErr != nil {
+			t.Fatal(issueErr)
+		}
+		return callAPI(handler, http.MethodPut, "/api/recipes/recipe", map[string]any{"title": "Changed", "ingredients": []map[string]string{}, "steps": []map[string]string{}, "visibility": "private", "edit_policy": "owner_only", "version": version, "cookbook_ids": []string{"book"}}, &http.Cookie{Name: sessionCookie, Value: token})
+	}
+	if response := makeUpdate("editor", 1); response.Code != http.StatusForbidden {
+		t.Fatalf("editor changed owner-only recipe: %d", response.Code)
+	}
+	if _, err := db.Exec(`UPDATE recipes SET edit_policy='cookbook_editors' WHERE id='recipe'`); err != nil {
+		t.Fatal(err)
+	}
+	if response := makeUpdate("viewer", 1); response.Code != http.StatusForbidden {
+		t.Fatalf("viewer changed editor-enabled recipe: %d", response.Code)
+	}
+	if response := makeUpdate("editor", 1); response.Code != http.StatusOK {
+		t.Fatalf("editor could not update editor-enabled recipe: %d %s", response.Code, response.Body)
+	}
+}
+
+func TestCookbookOwnerCanInviteChangeRoleAndRemoveMember(t *testing.T) {
+	db := testDatabase(t)
+	_, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('guest','guest@example.test','Guest','now'); INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at) VALUES('book','owner','Family recipes','private','now','now')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := testAuth(db)
+	handler := handlerWithAuth(db, auth)
+	ownerToken, _, err := issueSession(db, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerCookie := &http.Cookie{Name: sessionCookie, Value: ownerToken}
+	created := callAPI(handler, http.MethodPost, "/api/cookbooks/book/members/invitations", map[string]string{"email": "guest@example.test", "role": "editor"}, ownerCookie)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create cookbook invitation = %d: %s", created.Code, created.Body)
+	}
+	var invitation struct {
+		ID    string `json:"id"`
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &invitation); err != nil || invitation.ID == "" || invitation.Token == "" {
+		t.Fatalf("invalid invitation response: %s (%v)", created.Body, err)
+	}
+	wrongAddress := callAPI(handler, http.MethodPost, "/api/auth/email", map[string]string{"email": "other@example.test", "invitation": invitation.Token}, nil)
+	if wrongAddress.Code != http.StatusOK {
+		t.Fatalf("wrong-address invitation response=%d", wrongAddress.Code)
+	}
+	select {
+	case <-auth.sender.(testEmailSender).sent:
+		t.Fatal("invitation was sent to an address other than the one invited")
+	default:
+	}
+	guestRequest := callAPI(handler, http.MethodPost, "/api/auth/email", map[string]string{"email": "guest@example.test", "invitation": invitation.Token}, nil)
+	if guestRequest.Code != http.StatusOK {
+		t.Fatalf("guest email request = %d: %s", guestRequest.Code, guestRequest.Body)
+	}
+	link := <-auth.sender.(testEmailSender).sent
+	parsed, err := url.Parse(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumed := callAPI(handler, http.MethodPost, "/api/auth/consume", map[string]string{"token": parsed.Query().Get("token")}, nil)
+	if consumed.Code != http.StatusOK {
+		t.Fatalf("consume cookbook invite = %d: %s", consumed.Code, consumed.Body)
+	}
+	guestCookie := consumed.Result().Cookies()[0]
+	nonOwnerInvite := callAPI(handler, http.MethodPost, "/api/cookbooks/book/members/invitations", map[string]string{"email": "other@example.test", "role": "viewer"}, guestCookie)
+	if nonOwnerInvite.Code != http.StatusForbidden {
+		t.Fatalf("non-owner invitation status=%d, want 403", nonOwnerInvite.Code)
+	}
+	var memberRole role
+	if err := db.QueryRow(`SELECT role FROM cookbook_memberships WHERE cookbook_id='book' AND user_id='guest'`).Scan(&memberRole); err != nil || memberRole != roleEditor {
+		t.Fatalf("invited member role=%q err=%v", memberRole, err)
+	}
+	listed := callAPI(handler, http.MethodGet, "/api/cookbooks/book/members", nil, guestCookie)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("member listing = %d: %s", listed.Code, listed.Body)
+	}
+	changed := callAPI(handler, http.MethodPatch, "/api/cookbooks/book/members", map[string]string{"user_id": "guest", "role": "viewer"}, ownerCookie)
+	if changed.Code != http.StatusOK {
+		t.Fatalf("change member role = %d: %s", changed.Code, changed.Body)
+	}
+	removed := callAPI(handler, http.MethodDelete, "/api/cookbooks/book/members?user_id=guest", nil, ownerCookie)
+	if removed.Code != http.StatusOK {
+		t.Fatalf("remove member = %d: %s", removed.Code, removed.Body)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM cookbook_memberships WHERE cookbook_id='book' AND user_id='guest'`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("removed membership count=%d err=%v", count, err)
+	}
+	deniedAfterRemoval := callAPI(handler, http.MethodGet, "/api/cookbooks/book/members", nil, guestCookie)
+	if deniedAfterRemoval.Code != http.StatusNotFound {
+		t.Fatalf("removed member can still list members: status=%d", deniedAfterRemoval.Code)
+	}
+}
+
 func TestNonAdminCannotManageInvitations(t *testing.T) {
 	db := testDatabase(t)
 	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('member','member@example.test','Member','now')`); err != nil {

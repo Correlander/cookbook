@@ -135,6 +135,10 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.cookbooks(w, r)
 	case len(parts) == 2 && parts[0] == "cookbooks":
 		h.cookbookByID(w, r, parts[1])
+	case len(parts) == 3 && parts[0] == "cookbooks" && parts[2] == "members":
+		h.cookbookMembers(w, r, parts[1])
+	case len(parts) == 4 && parts[0] == "cookbooks" && parts[2] == "members" && parts[3] == "invitations":
+		h.cookbookInvitations(w, r, parts[1])
 	case len(parts) == 1 && parts[0] == "recipes":
 		h.recipes(w, r)
 	case len(parts) == 2 && parts[0] == "admin" && parts[1] == "invitations":
@@ -159,7 +163,7 @@ func (h apiHandler) invitations(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := h.db.Query(`SELECT i.id,i.email,i.expires_at,i.created_at,u.display_name FROM invitations i JOIN users u ON u.id=i.invited_by WHERE i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at>? ORDER BY i.created_at DESC`, timestamp())
+		rows, err := h.db.Query(`SELECT i.id,i.email,i.expires_at,i.created_at,u.display_name FROM invitations i JOIN users u ON u.id=i.invited_by WHERE i.cookbook_id IS NULL AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at>? ORDER BY i.created_at DESC`, timestamp())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "storage_error")
 			return
@@ -212,6 +216,19 @@ func (h apiHandler) invitations(w http.ResponseWriter, r *http.Request) {
 		token := hex.EncodeToString(raw[:])
 		sum := sha256.Sum256([]byte(token))
 		now := time.Now().UTC()
+		if _, err := h.db.Exec(`UPDATE invitations SET revoked_at=? WHERE cookbook_id IS NULL AND lower(email)=? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at<=?`, timestamp(), email, timestamp()); err != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		var pending int
+		if err := h.db.QueryRow(`SELECT COUNT(*) FROM invitations WHERE cookbook_id IS NULL AND lower(email)=? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>?`, email, timestamp()).Scan(&pending); err != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		if pending != 0 {
+			writeError(w, 409, "invitation_already_pending")
+			return
+		}
 		id := newID()
 		_, err = h.db.Exec(`INSERT INTO invitations(id,token_hash,email,invited_by,expires_at,created_at) VALUES(?,?,?,?,?,?)`, id, hex.EncodeToString(sum[:]), email, uid, now.Add(7*24*time.Hour).Format(time.RFC3339Nano), timestamp())
 		if err != nil {
@@ -222,6 +239,220 @@ func (h apiHandler) invitations(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		id := r.URL.Query().Get("id")
 		result, err := h.db.Exec(`UPDATE invitations SET revoked_at=? WHERE id=? AND accepted_at IS NULL AND revoked_at IS NULL`, timestamp(), id)
+		if err != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		count, _ := result.RowsAffected()
+		if count != 1 {
+			writeError(w, 404, "not_found")
+			return
+		}
+		writeJSON(w, 200, map[string]string{"status": "invitation_revoked"})
+	default:
+		writeError(w, 405, "method_not_allowed")
+	}
+}
+
+func (h apiHandler) cookbookMembers(w http.ResponseWriter, r *http.Request, cookbookID string) {
+	uid := authenticatedUser(r)
+	var ownerID string
+	if err := h.db.QueryRow(`SELECT owner_id FROM cookbooks WHERE id=?`, cookbookID).Scan(&ownerID); err != nil {
+		writeError(w, 404, "not_found")
+		return
+	}
+	if r.Method == http.MethodGet {
+		var member int
+		_ = h.db.QueryRow(`SELECT COUNT(*) FROM cookbook_memberships WHERE cookbook_id=? AND user_id=?`, cookbookID, uid).Scan(&member)
+		if uid == "" || (uid != ownerID && member != 1) {
+			writeError(w, 404, "not_found")
+			return
+		}
+		type item struct {
+			UserID      string `json:"user_id"`
+			Email       string `json:"email"`
+			DisplayName string `json:"display_name"`
+			Role        role   `json:"role"`
+		}
+		items := []item{}
+		var owner item
+		if err := h.db.QueryRow(`SELECT id,email,display_name FROM users WHERE id=?`, ownerID).Scan(&owner.UserID, &owner.Email, &owner.DisplayName); err != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		owner.Role = roleOwner
+		items = append(items, owner)
+		rows, err := h.db.Query(`SELECT u.id,u.email,u.display_name,m.role FROM cookbook_memberships m JOIN users u ON u.id=m.user_id WHERE m.cookbook_id=? ORDER BY u.display_name`, cookbookID)
+		if err != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var current item
+			if rows.Scan(&current.UserID, &current.Email, &current.DisplayName, &current.Role) != nil {
+				writeError(w, 500, "storage_error")
+				return
+			}
+			items = append(items, current)
+		}
+		if rows.Err() != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		writeJSON(w, 200, items)
+		return
+	}
+	if uid != ownerID {
+		writeError(w, 403, "forbidden")
+		return
+	}
+	switch r.Method {
+	case http.MethodPatch:
+		var input struct {
+			UserID string `json:"user_id"`
+			Role   role   `json:"role"`
+		}
+		if !decodeJSON(w, r, &input) {
+			return
+		}
+		if input.UserID == ownerID || (input.Role != roleViewer && input.Role != roleEditor) {
+			writeError(w, 400, "invalid_member_role")
+			return
+		}
+		result, err := h.db.Exec(`UPDATE cookbook_memberships SET role=? WHERE cookbook_id=? AND user_id=?`, input.Role, cookbookID, input.UserID)
+		if err != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		count, _ := result.RowsAffected()
+		if count != 1 {
+			writeError(w, 404, "not_found")
+			return
+		}
+		writeJSON(w, 200, map[string]string{"status": "member_updated"})
+	case http.MethodDelete:
+		userID := r.URL.Query().Get("user_id")
+		if userID == ownerID {
+			writeError(w, 400, "owner_cannot_be_removed")
+			return
+		}
+		result, err := h.db.Exec(`DELETE FROM cookbook_memberships WHERE cookbook_id=? AND user_id=?`, cookbookID, userID)
+		if err != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		count, _ := result.RowsAffected()
+		if count != 1 {
+			writeError(w, 404, "not_found")
+			return
+		}
+		writeJSON(w, 200, map[string]string{"status": "member_removed"})
+	default:
+		writeError(w, 405, "method_not_allowed")
+	}
+}
+
+func (h apiHandler) cookbookInvitations(w http.ResponseWriter, r *http.Request, cookbookID string) {
+	uid := authenticatedUser(r)
+	var ownerID string
+	if err := h.db.QueryRow(`SELECT owner_id FROM cookbooks WHERE id=?`, cookbookID).Scan(&ownerID); err != nil {
+		writeError(w, 404, "not_found")
+		return
+	}
+	if uid != ownerID {
+		writeError(w, 403, "forbidden")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		type item struct {
+			ID        string `json:"id"`
+			Email     string `json:"email"`
+			Role      role   `json:"role"`
+			ExpiresAt string `json:"expires_at"`
+			CreatedAt string `json:"created_at"`
+		}
+		rows, err := h.db.Query(`SELECT id,email,role,expires_at,created_at FROM invitations WHERE cookbook_id=? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>? ORDER BY created_at DESC`, cookbookID, timestamp())
+		if err != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		defer rows.Close()
+		items := []item{}
+		for rows.Next() {
+			var current item
+			if rows.Scan(&current.ID, &current.Email, &current.Role, &current.ExpiresAt, &current.CreatedAt) != nil {
+				writeError(w, 500, "storage_error")
+				return
+			}
+			items = append(items, current)
+		}
+		if rows.Err() != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		writeJSON(w, 200, items)
+	case http.MethodPost:
+		var input struct {
+			Email string `json:"email"`
+			Role  role   `json:"role"`
+		}
+		if !decodeJSON(w, r, &input) {
+			return
+		}
+		parsed, err := mail.ParseAddress(strings.TrimSpace(input.Email))
+		if err != nil || parsed.Address != strings.TrimSpace(input.Email) || len(parsed.Address) > 254 {
+			writeError(w, 400, "invalid_email")
+			return
+		}
+		if input.Role == "" {
+			input.Role = roleViewer
+		}
+		if input.Role != roleViewer && input.Role != roleEditor {
+			writeError(w, 400, "invalid_member_role")
+			return
+		}
+		email := strings.ToLower(parsed.Address)
+		if _, err := h.db.Exec(`UPDATE invitations SET revoked_at=? WHERE cookbook_id=? AND lower(email)=? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at<=?`, timestamp(), cookbookID, email, timestamp()); err != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		var existing int
+		if err := h.db.QueryRow(`SELECT COUNT(*) FROM users u LEFT JOIN cookbook_memberships m ON m.user_id=u.id AND m.cookbook_id=? WHERE u.email=? AND (u.id=? OR m.user_id IS NOT NULL)`, cookbookID, email, ownerID).Scan(&existing); err != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		if existing > 0 {
+			writeError(w, 409, "already_a_member")
+			return
+		}
+		var pending int
+		if err := h.db.QueryRow(`SELECT COUNT(*) FROM invitations WHERE cookbook_id=? AND lower(email)=? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>?`, cookbookID, email, timestamp()).Scan(&pending); err != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		if pending > 0 {
+			writeError(w, 409, "invitation_already_pending")
+			return
+		}
+		var raw [32]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			writeError(w, 500, "internal_error")
+			return
+		}
+		token := hex.EncodeToString(raw[:])
+		sum := sha256.Sum256([]byte(token))
+		id := newID()
+		expires := time.Now().UTC().Add(7 * 24 * time.Hour).Format(time.RFC3339Nano)
+		if _, err := h.db.Exec(`INSERT INTO invitations(id,token_hash,email,cookbook_id,role,invited_by,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?)`, id, hex.EncodeToString(sum[:]), email, cookbookID, input.Role, uid, expires, timestamp()); err != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		writeJSON(w, 201, map[string]string{"id": id, "email": email, "role": string(input.Role), "token": token, "expires_at": expires})
+	case http.MethodDelete:
+		id := r.URL.Query().Get("id")
+		result, err := h.db.Exec(`UPDATE invitations SET revoked_at=? WHERE id=? AND cookbook_id=? AND accepted_at IS NULL AND revoked_at IS NULL`, timestamp(), id, cookbookID)
 		if err != nil {
 			writeError(w, 500, "storage_error")
 			return

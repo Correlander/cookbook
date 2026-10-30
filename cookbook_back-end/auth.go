@@ -102,22 +102,24 @@ func (h authHandler) requestEmail(w http.ResponseWriter, r *http.Request) {
 	email := strings.ToLower(parsed.Address)
 	var uid, registrationPolicy string
 	var registrationName, registrationInvitation string
-	err = h.db.QueryRow(`SELECT id FROM users WHERE email=?`, email).Scan(&uid)
-	if errors.Is(err, sql.ErrNoRows) {
-		var invitationID string
+	var invitationValid bool
+	invitationID := ""
+	if invitation := strings.TrimSpace(body.Invitation); invitation != "" {
+		sum := sha256.Sum256([]byte(invitation))
 		var invitationExpiry string
-		var invitationToken string
-		var invitationValid bool
-		invitation := strings.TrimSpace(body.Invitation)
-		if invitation != "" {
-			sum := sha256.Sum256([]byte(invitation))
-			invitationToken = hex.EncodeToString(sum[:])
-			if h.db.QueryRow(`SELECT id,expires_at FROM invitations WHERE token_hash=? AND lower(email)=? AND accepted_at IS NULL AND revoked_at IS NULL`, invitationToken, email).Scan(&invitationID, &invitationExpiry) == nil {
-				if expiry, parseErr := time.Parse(time.RFC3339Nano, invitationExpiry); parseErr == nil && time.Now().Before(expiry) {
-					invitationValid = true
-				}
+		err := h.db.QueryRow(`SELECT id,expires_at FROM invitations WHERE token_hash=? AND lower(email)=? AND accepted_at IS NULL AND revoked_at IS NULL`, hex.EncodeToString(sum[:]), email).Scan(&invitationID, &invitationExpiry)
+		if err == nil {
+			if parsedExpiry, parseErr := time.Parse(time.RFC3339Nano, invitationExpiry); parseErr == nil && time.Now().Before(parsedExpiry) {
+				invitationValid = true
 			}
 		}
+		if !invitationValid {
+			writeJSON(w, 200, map[string]string{"status": "if_account_can_sign_in_link_sent"})
+			return
+		}
+	}
+	err = h.db.QueryRow(`SELECT id FROM users WHERE email=?`, email).Scan(&uid)
+	if errors.Is(err, sql.ErrNoRows) {
 		if err := h.db.QueryRow(`SELECT registration_policy FROM instance_settings WHERE id=1`).Scan(&registrationPolicy); err != nil {
 			writeError(w, 500, "storage_error")
 			return
@@ -134,12 +136,12 @@ func (h authHandler) requestEmail(w http.ResponseWriter, r *http.Request) {
 		if registrationName == "" {
 			registrationName = strings.Split(email, "@")[0]
 		}
-		if invitationValid {
-			registrationInvitation = invitationID
-		}
 	} else if err != nil {
 		writeError(w, 500, "storage_error")
 		return
+	}
+	if invitationValid {
+		registrationInvitation = invitationID
 	}
 	var count int
 	err = h.db.QueryRow(`SELECT COUNT(*) FROM email_challenges WHERE email=? AND created_at>?`, email, time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)).Scan(&count)
@@ -218,14 +220,6 @@ func (h authHandler) consumeEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	var uid string
 	if err := tx.QueryRow(`SELECT id FROM users WHERE email=?`, email).Scan(&uid); errors.Is(err, sql.ErrNoRows) {
-		if invitationID.Valid {
-			var accepted string
-			if err := tx.QueryRow(`SELECT id FROM invitations WHERE id=? AND lower(email)=? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>?`, invitationID.String, email, timestamp()).Scan(&accepted); err != nil {
-				tx.Rollback()
-				writeError(w, 400, "invalid_or_expired_token")
-				return
-			}
-		}
 		if displayName == "" {
 			displayName = strings.Split(email, "@")[0]
 		}
@@ -235,17 +229,37 @@ func (h authHandler) consumeEmail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 400, "invalid_or_expired_token")
 			return
 		}
-		if invitationID.Valid {
-			if _, err := tx.Exec(`UPDATE invitations SET accepted_at=? WHERE id=?`, timestamp(), invitationID.String); err != nil {
+	} else if err != nil {
+		tx.Rollback()
+		writeError(w, 500, "storage_error")
+		return
+	}
+	if invitationID.Valid {
+		var cookbookID sql.NullString
+		var invitedRole role
+		if err := tx.QueryRow(`SELECT cookbook_id,role FROM invitations WHERE id=? AND lower(email)=? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>?`, invitationID.String, email, timestamp()).Scan(&cookbookID, &invitedRole); err != nil {
+			tx.Rollback()
+			writeError(w, 400, "invalid_or_expired_token")
+			return
+		}
+		if cookbookID.Valid {
+			if _, err := tx.Exec(`INSERT INTO cookbook_memberships(cookbook_id,user_id,role,created_at) VALUES(?,?,?,?) ON CONFLICT(cookbook_id,user_id) DO UPDATE SET role=excluded.role`, cookbookID.String, uid, invitedRole, timestamp()); err != nil {
 				tx.Rollback()
 				writeError(w, 500, "storage_error")
 				return
 			}
 		}
-	} else if err != nil {
-		tx.Rollback()
-		writeError(w, 500, "storage_error")
-		return
+		result, err := tx.Exec(`UPDATE invitations SET accepted_at=? WHERE id=? AND accepted_at IS NULL AND revoked_at IS NULL`, timestamp(), invitationID.String)
+		if err != nil {
+			tx.Rollback()
+			writeError(w, 500, "storage_error")
+			return
+		}
+		if count, _ := result.RowsAffected(); count != 1 {
+			tx.Rollback()
+			writeError(w, 400, "invalid_or_expired_token")
+			return
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, 500, "storage_error")

@@ -83,7 +83,7 @@ func TestExistingAccountsAndChallengesReceiveAdminInvitationColumns(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = legacy.Exec(`CREATE TABLE users(id TEXT PRIMARY KEY,email TEXT NOT NULL UNIQUE,display_name TEXT NOT NULL,created_at TEXT NOT NULL); CREATE TABLE email_challenges(id TEXT PRIMARY KEY,email TEXT NOT NULL,token_hash TEXT NOT NULL UNIQUE,expires_at TEXT NOT NULL,consumed_at TEXT,attempts INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL); INSERT INTO users VALUES('existing','existing@example.test','Existing','now');`)
+	_, err = legacy.Exec(`CREATE TABLE users(id TEXT PRIMARY KEY,email TEXT NOT NULL UNIQUE,display_name TEXT NOT NULL,created_at TEXT NOT NULL); CREATE TABLE email_challenges(id TEXT PRIMARY KEY,email TEXT NOT NULL,token_hash TEXT NOT NULL UNIQUE,expires_at TEXT NOT NULL,consumed_at TEXT,attempts INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL); CREATE TABLE invitations(id TEXT PRIMARY KEY,token_hash TEXT NOT NULL UNIQUE,email TEXT NOT NULL,invited_by TEXT NOT NULL REFERENCES users(id),expires_at TEXT NOT NULL,accepted_at TEXT,revoked_at TEXT,created_at TEXT NOT NULL); INSERT INTO users VALUES('existing','existing@example.test','Existing','now'); INSERT INTO invitations(id,token_hash,email,invited_by,expires_at,created_at) VALUES('old','oldhash','invite@example.test','existing','2099-01-01T00:00:00Z','2025-01-01T00:00:00Z'),('new','newhash','invite@example.test','existing','2099-01-01T00:00:00Z','2025-01-02T00:00:00Z');`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestExistingAccountsAndChallengesReceiveAdminInvitationColumns(t *testing.T
 		t.Fatal(err)
 	}
 	defer db.Close()
-	for _, column := range []struct{ table, name string }{{"users", "is_admin"}, {"email_challenges", "display_name"}, {"email_challenges", "invitation_id"}} {
+	for _, column := range []struct{ table, name string }{{"users", "is_admin"}, {"email_challenges", "display_name"}, {"email_challenges", "invitation_id"}, {"invitations", "cookbook_id"}, {"invitations", "role"}} {
 		var found int
 		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, column.table, column.name).Scan(&found); err != nil || found != 1 {
 			t.Fatalf("missing %s.%s: found=%d err=%v", column.table, column.name, found, err)
@@ -104,5 +104,9 @@ func TestExistingAccountsAndChallengesReceiveAdminInvitationColumns(t *testing.T
 	var admin int
 	if err := db.QueryRow(`SELECT is_admin FROM users WHERE id='existing'`).Scan(&admin); err != nil || admin != 0 {
 		t.Fatalf("existing account admin=%d err=%v", admin, err)
+	}
+	var active, revoked int
+	if err := db.QueryRow(`SELECT SUM(CASE WHEN revoked_at IS NULL THEN 1 ELSE 0 END),SUM(CASE WHEN revoked_at IS NOT NULL THEN 1 ELSE 0 END) FROM invitations WHERE email='invite@example.test'`).Scan(&active, &revoked); err != nil || active != 1 || revoked != 1 {
+		t.Fatalf("duplicate invitation migration: active=%d revoked=%d err=%v", active, revoked, err)
 	}
 }

@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS invitations (
   id TEXT PRIMARY KEY,
   token_hash TEXT NOT NULL UNIQUE,
   email TEXT NOT NULL,
+  cookbook_id TEXT REFERENCES cookbooks(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('viewer', 'editor')),
   invited_by TEXT NOT NULL REFERENCES users(id),
   expires_at TEXT NOT NULL,
   accepted_at TEXT,
@@ -152,18 +154,28 @@ func openDatabase(path string) (*sql.DB, error) {
 		{"users", "is_admin", `INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1))`},
 		{"email_challenges", "display_name", `TEXT NOT NULL DEFAULT ''`},
 		{"email_challenges", "invitation_id", `TEXT REFERENCES invitations(id)`},
+		{"invitations", "cookbook_id", `TEXT REFERENCES cookbooks(id) ON DELETE CASCADE`},
+		{"invitations", "role", `TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('viewer', 'editor'))`},
 	} {
 		var exists int
 		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, column.table, column.name).Scan(&exists); err != nil {
 			db.Close()
-			return nil, fmt.Errorf("inspect email challenge schema: %w", err)
+			return nil, fmt.Errorf("inspect %s schema: %w", column.table, err)
 		}
 		if exists == 0 {
 			if _, err := db.ExecContext(ctx, `ALTER TABLE `+column.table+` ADD COLUMN `+column.name+` `+column.declaration); err != nil {
 				db.Close()
-				return nil, fmt.Errorf("upgrade email challenge schema: %w", err)
+				return nil, fmt.Errorf("upgrade %s schema: %w", column.table, err)
 			}
 		}
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE invitations AS older SET revoked_at=COALESCE(older.created_at,?) WHERE older.accepted_at IS NULL AND older.revoked_at IS NULL AND EXISTS (SELECT 1 FROM invitations AS newer WHERE COALESCE(newer.cookbook_id,'')=COALESCE(older.cookbook_id,'') AND lower(newer.email)=lower(older.email) AND newer.accepted_at IS NULL AND newer.revoked_at IS NULL AND (newer.created_at>older.created_at OR (newer.created_at=older.created_at AND newer.id>older.id)))`, timestamp()); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("deduplicate pending invitations: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_invitations_pending_email_scope ON invitations(COALESCE(cookbook_id,''),lower(email)) WHERE accepted_at IS NULL AND revoked_at IS NULL`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("index pending invitations: %w", err)
 	}
 	return db, nil
 }

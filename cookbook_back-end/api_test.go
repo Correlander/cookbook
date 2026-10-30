@@ -40,6 +40,39 @@ func TestAuthStateChangesRequireSameOrigin(t *testing.T) {
 		t.Fatalf("cross-origin auth request status = %d, want 403", rec.Code)
 	}
 }
+
+func TestPublicRecipeListingRequiresPublicInstanceAndPublishedRecipe(t *testing.T) {
+	db := testDatabase(t)
+	_, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,created_at,updated_at) VALUES('private','owner','Owner','Private dish','','[]','[]','private','owner_only','now','now'),('public','owner','Owner','Shared dish','','[]','[]','public','owner_only','now','now')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := handlerWithAuth(db, testAuth(db))
+	privateInstance := httptest.NewRecorder()
+	h.ServeHTTP(privateInstance, httptest.NewRequest(http.MethodGet, "/api/public/recipes", nil))
+	if privateInstance.Code != http.StatusOK || strings.TrimSpace(privateInstance.Body.String()) != "[]" {
+		t.Fatalf("private instance listing = %d %s", privateInstance.Code, privateInstance.Body)
+	}
+	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	publicInstance := httptest.NewRecorder()
+	h.ServeHTTP(publicInstance, httptest.NewRequest(http.MethodGet, "/api/public/recipes", nil))
+	var items []recipe
+	if publicInstance.Code != http.StatusOK || json.Unmarshal(publicInstance.Body.Bytes(), &items) != nil {
+		t.Fatalf("public instance listing = %d %s", publicInstance.Code, publicInstance.Body)
+	}
+	if len(items) != 1 || items[0].ID != "public" {
+		t.Fatalf("public listing leaked or omitted content: %#v", items)
+	}
+	if strings.Contains(publicInstance.Body.String(), `"owner_id"`) {
+		t.Fatalf("public listing exposed the internal owner ID: %s", publicInstance.Body)
+	}
+}
 func TestUnauthenticatedAndForgedUserCannotCreateCookbook(t *testing.T) {
 	db := testDatabase(t)
 	sender := testEmailSender{sent: make(chan string, 1)}

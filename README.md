@@ -1,6 +1,6 @@
 # Cookbook
 
-A self-hostable cookbook for collecting recipes and organizing them into cookbooks. The current application includes a Go API backed by SQLite and a React/Vite discovery interface. Recipe discovery still uses sample content; authenticated recipe and cookbook APIs are being connected to the interface incrementally.
+A self-hostable cookbook for collecting recipes and organizing them into cookbooks. The current application includes a Go API backed by SQLite and a React/Vite discovery interface. The discovery page reads explicitly public recipes from the instance. Signed-in users can create private recipes and browse recipes they own or can access.
 
 ## Requirements
 
@@ -43,4 +43,4 @@ The command should deliver the message and exit with status 0 on success. It mus
 
 ## Current scope
 
-Email-link authentication, durable sessions, private-first SQLite schema, access checks, and structured recipe/cookbook APIs are present. Passkeys, invitation administration, recipe revision history, media uploads, and federation are not implemented. Federation is disabled by default; protocol evaluation and design are tracked in `AUDIT_AND_PLAN.md`.
+Email-link authentication, durable sessions, private-first SQLite schema, access checks, structured recipe/cookbook APIs, public recipe browsing, and private recipe creation are present. Passkeys, invitation administration, recipe revision history, media uploads, and federation are not implemented. Federation is disabled by default; protocol evaluation and design are tracked in `AUDIT_AND_PLAN.md`.

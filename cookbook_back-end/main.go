@@ -16,6 +16,7 @@ func handlerWithAuth(db *sql.DB, auth authHandler) http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.Handle("/api/auth/", auth)
+	mux.Handle("GET /api/public/recipes", publicRecipeHandler{db: db})
 	mux.Handle("/api/", csrfProtection(requireSession(db, apiHandler{db: db})))
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})

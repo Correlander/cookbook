@@ -15,6 +15,58 @@ import (
 )
 
 type apiHandler struct{ db *sql.DB }
+type publicRecipeHandler struct{ db *sql.DB }
+
+func (h publicRecipeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	var public int
+	if err := h.db.QueryRow(`SELECT public_instance FROM instance_settings WHERE id=1`).Scan(&public); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	if public != 1 {
+		writeJSON(w, http.StatusOK, []recipe{})
+		return
+	}
+	rows, err := h.db.Query(`SELECT id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,version,created_at,updated_at FROM recipes WHERE visibility='public' ORDER BY updated_at DESC LIMIT 100`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	defer rows.Close()
+	items := []recipe{}
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	for rows.Next() {
+		it := recipe{}
+		var ingredients, steps string
+		if err := rows.Scan(&it.ID, &it.OwnerID, &it.CreatorName, &it.Title, &it.Description, &ingredients, &steps, &it.Visibility, &it.EditPolicy, &it.Version, &it.CreatedAt, &it.UpdatedAt); err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		if err := json.Unmarshal([]byte(ingredients), &it.Ingredients); err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		if err := json.Unmarshal([]byte(steps), &it.Steps); err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		if query != "" && !strings.Contains(strings.ToLower(it.Title+" "+it.Description), query) {
+			continue
+		}
+		it.OwnerID = ""
+		it.CookbookIDs = []string{}
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
 
 type user struct {
 	ID          string `json:"id"`
@@ -41,7 +93,7 @@ type recipeStep struct {
 	Text string `json:"text"`
 }
 type recipe struct {
-	OwnerID     string       `json:"owner_id"`
+	OwnerID     string       `json:"owner_id,omitempty"`
 	ID          string       `json:"id"`
 	CreatorName string       `json:"creator_name"`
 	Title       string       `json:"title"`

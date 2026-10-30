@@ -32,20 +32,28 @@ type cookbook struct {
 	UpdatedAt   string     `json:"updated_at"`
 }
 
+type ingredient struct {
+	Name     string `json:"name"`
+	Quantity string `json:"quantity,omitempty"`
+	Notes    string `json:"notes,omitempty"`
+}
+type recipeStep struct {
+	Text string `json:"text"`
+}
 type recipe struct {
-	OwnerID     string          `json:"owner_id"`
-	ID          string          `json:"id"`
-	CreatorName string          `json:"creator_name"`
-	Title       string          `json:"title"`
-	Description string          `json:"description"`
-	Ingredients json.RawMessage `json:"ingredients"`
-	Steps       json.RawMessage `json:"steps"`
-	Visibility  visibility      `json:"visibility"`
-	EditPolicy  string          `json:"edit_policy"`
-	Version     int             `json:"version"`
-	CookbookIDs []string        `json:"cookbook_ids"`
-	CreatedAt   string          `json:"created_at"`
-	UpdatedAt   string          `json:"updated_at"`
+	OwnerID     string       `json:"owner_id"`
+	ID          string       `json:"id"`
+	CreatorName string       `json:"creator_name"`
+	Title       string       `json:"title"`
+	Description string       `json:"description"`
+	Ingredients []ingredient `json:"ingredients"`
+	Steps       []recipeStep `json:"steps"`
+	Visibility  visibility   `json:"visibility"`
+	EditPolicy  string       `json:"edit_policy"`
+	Version     int          `json:"version"`
+	CookbookIDs []string     `json:"cookbook_ids"`
+	CreatedAt   string       `json:"created_at"`
+	UpdatedAt   string       `json:"updated_at"`
 }
 
 func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -88,10 +96,6 @@ func (h apiHandler) cookbooks(w http.ResponseWriter, r *http.Request) {
 		}
 		if input.Visibility == "" {
 			input.Visibility = visibilityPrivate
-		}
-		if input.Visibility != visibilityPrivate && !h.instancePublic() {
-			writeError(w, 403, "instance_private")
-			return
 		}
 		if !validVisibility(input.Visibility) {
 			writeError(w, http.StatusBadRequest, "invalid_visibility")
@@ -213,9 +217,11 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 		if edit == "" {
 			edit = "owner_only"
 		}
+		ingredientsJSON, _ := json.Marshal(in.Ingredients)
+		stepsJSON, _ := json.Marshal(in.Steps)
 		tx, err := h.db.Begin()
 		if err == nil {
-			_, err = tx.Exec(`INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, id, in.OwnerID, creator, in.Title, in.Description, string(in.Ingredients), string(in.Steps), in.Visibility, edit, now, now)
+			_, err = tx.Exec(`INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, id, in.OwnerID, creator, in.Title, in.Description, string(ingredientsJSON), string(stepsJSON), in.Visibility, edit, now, now)
 		}
 		if err != nil {
 			if tx != nil {
@@ -255,11 +261,16 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 500, "storage_error")
 			return
 		}
-		it.Ingredients, it.Steps = json.RawMessage(ingredients), json.RawMessage(steps)
+		if json.Unmarshal([]byte(ingredients), &it.Ingredients) != nil || json.Unmarshal([]byte(steps), &it.Steps) != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
 		if q != "" && !strings.Contains(strings.ToLower(it.Title+" "+it.Description), strings.ToLower(q)) {
 			continue
 		}
-		if canReadResource(uid, access{instancePublic: public == 1, visibility: it.Visibility, ownerID: it.OwnerID}) {
+		var member role
+		_ = h.db.QueryRow(`SELECT m.role FROM cookbook_memberships m JOIN cookbook_recipes cr ON cr.cookbook_id=m.cookbook_id WHERE cr.recipe_id=? AND m.user_id=? LIMIT 1`, it.ID, uid).Scan(&member)
+		if canReadResource(uid, access{instancePublic: public == 1, visibility: it.Visibility, ownerID: it.OwnerID, memberRole: member}) {
 			it.CookbookIDs = h.recipeCookbooks(it.ID)
 			items = append(items, it)
 		}
@@ -268,22 +279,26 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 }
 
 type recipeInput struct {
-	OwnerID     string          `json:"-"`
-	UserID      string          `json:"-"`
-	Title       string          `json:"title"`
-	Description string          `json:"description"`
-	Ingredients json.RawMessage `json:"ingredients"`
-	Steps       json.RawMessage `json:"steps"`
-	Visibility  visibility      `json:"visibility"`
-	EditPolicy  string          `json:"edit_policy"`
-	CookbookIDs []string        `json:"cookbook_ids"`
-	Version     int             `json:"version"`
+	OwnerID     string       `json:"-"`
+	UserID      string       `json:"-"`
+	Title       string       `json:"title"`
+	Description string       `json:"description"`
+	Ingredients []ingredient `json:"ingredients"`
+	Steps       []recipeStep `json:"steps"`
+	Visibility  visibility   `json:"visibility"`
+	EditPolicy  string       `json:"edit_policy"`
+	CookbookIDs []string     `json:"cookbook_ids"`
+	Version     int          `json:"version"`
 }
 
 func (in *recipeInput) validate() error {
 	in.Title = strings.TrimSpace(in.Title)
-	if in.Title == "" {
-		return errors.New("title required")
+	if in.Title == "" || len(in.Title) > 200 {
+		return errors.New("invalid title")
+	}
+	in.Description = strings.TrimSpace(in.Description)
+	if len(in.Description) > 5000 {
+		return errors.New("description too long")
 	}
 	if in.Visibility == "" {
 		in.Visibility = visibilityPrivate
@@ -291,18 +306,26 @@ func (in *recipeInput) validate() error {
 	if !validVisibility(in.Visibility) {
 		return errors.New("invalid visibility")
 	}
-	if len(in.Ingredients) == 0 {
-		in.Ingredients = json.RawMessage("[]")
+	if in.EditPolicy == "" {
+		in.EditPolicy = "owner_only"
 	}
-	if len(in.Steps) == 0 {
-		in.Steps = json.RawMessage("[]")
+	if in.EditPolicy != "owner_only" && in.EditPolicy != "cookbook_editors" {
+		return errors.New("invalid edit policy")
 	}
-	var a, b any
-	if json.Unmarshal(in.Ingredients, &a) != nil || json.Unmarshal(in.Steps, &b) != nil {
-		return errors.New("invalid structured content")
+	if len(in.Ingredients) > 200 || len(in.Steps) > 200 || len(in.CookbookIDs) > 50 {
+		return errors.New("recipe too large")
 	}
-	if a == nil || b == nil {
-		return errors.New("content must be arrays")
+	for i := range in.Ingredients {
+		in.Ingredients[i].Name = strings.TrimSpace(in.Ingredients[i].Name)
+		if in.Ingredients[i].Name == "" || len(in.Ingredients[i].Name) > 300 || len(in.Ingredients[i].Quantity) > 100 || len(in.Ingredients[i].Notes) > 500 {
+			return errors.New("invalid ingredient")
+		}
+	}
+	for i := range in.Steps {
+		in.Steps[i].Text = strings.TrimSpace(in.Steps[i].Text)
+		if in.Steps[i].Text == "" || len(in.Steps[i].Text) > 5000 {
+			return errors.New("invalid recipe step")
+		}
 	}
 	return nil
 }
@@ -321,7 +344,10 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 			writeError(w, 500, "storage_error")
 			return
 		}
-		it.Ingredients, it.Steps = json.RawMessage(ingredients), json.RawMessage(steps)
+		if json.Unmarshal([]byte(ingredients), &it.Ingredients) != nil || json.Unmarshal([]byte(steps), &it.Steps) != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
 		uid := authenticatedUser(r)
 		var member role
 		_ = h.db.QueryRow(`SELECT m.role FROM cookbook_memberships m JOIN cookbook_recipes cr ON cr.cookbook_id=m.cookbook_id WHERE cr.recipe_id=? AND m.user_id=? LIMIT 1`, id, uid).Scan(&member)
@@ -345,7 +371,6 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 		writeError(w, 400, "invalid_recipe")
 		return
 	}
-	in.UserID = authenticatedUser(r)
 	in.UserID = authenticatedUser(r)
 	if in.Visibility != visibilityPrivate && !h.instancePublic() {
 		writeError(w, 403, "instance_private")
@@ -372,12 +397,14 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 		writeError(w, 409, "version_conflict")
 		return
 	}
+	ingredientsJSON, _ := json.Marshal(in.Ingredients)
+	stepsJSON, _ := json.Marshal(in.Steps)
 	tx, err := h.db.Begin()
 	if err != nil {
 		writeError(w, 500, "storage_error")
 		return
 	}
-	res, err := tx.Exec(`UPDATE recipes SET title=?,description=?,ingredients_json=?,steps_json=?,visibility=?,version=version+1,updated_at=? WHERE id=? AND version=?`, in.Title, in.Description, string(in.Ingredients), string(in.Steps), in.Visibility, timestamp(), id, in.Version)
+	res, err := tx.Exec(`UPDATE recipes SET title=?,description=?,ingredients_json=?,steps_json=?,visibility=?,version=version+1,updated_at=? WHERE id=? AND version=?`, in.Title, in.Description, string(ingredientsJSON), string(stepsJSON), in.Visibility, timestamp(), id, in.Version)
 	if err != nil {
 		tx.Rollback()
 		writeError(w, 500, "storage_error")

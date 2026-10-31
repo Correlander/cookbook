@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/mail"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -12,6 +13,7 @@ import (
 type config struct {
 	address            string
 	database           string
+	mediaDir           string
 	trashRetentionDays int
 }
 
@@ -77,6 +79,10 @@ func loadConfig() (config, error) {
 	if database == "" {
 		database = "cookbook.db"
 	}
+	mediaDir := strings.TrimSpace(os.Getenv("COOKBOOK_MEDIA_DIR"))
+	if mediaDir == "" {
+		mediaDir = filepath.Join(filepath.Dir(database), "media")
+	}
 	retentionDays := 30
 	if raw := strings.TrimSpace(os.Getenv("COOKBOOK_TRASH_RETENTION_DAYS")); raw != "" {
 		parsed, err := strconv.Atoi(raw)
@@ -85,5 +91,5 @@ func loadConfig() (config, error) {
 		}
 		retentionDays = parsed
 	}
-	return config{address: address, database: database, trashRetentionDays: retentionDays}, nil
+	return config{address: address, database: database, mediaDir: mediaDir, trashRetentionDays: retentionDays}, nil
 }

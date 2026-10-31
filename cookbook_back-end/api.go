@@ -18,7 +18,10 @@ import (
 	"time"
 )
 
-type apiHandler struct{ db *sql.DB }
+type apiHandler struct {
+	db       *sql.DB
+	mediaDir string
+}
 type publicRecipeHandler struct{ db *sql.DB }
 
 func listPage(r *http.Request) (int, int, error) {
@@ -92,7 +95,7 @@ func (h publicRecipeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, []recipe{})
 		return
 	}
-	rows, err := h.db.Query(`SELECT id,owner_id,creator_name,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,edit_policy,version,created_at,updated_at FROM recipes WHERE deleted_at IS NULL AND visibility='public' AND (?='' OR instr(lower(title||' '||description||' '||tags_json),lower(?))>0) ORDER BY updated_at DESC,id LIMIT ? OFFSET ?`, query, query, limit, offset)
+	rows, err := h.db.Query(`SELECT id,owner_id,creator_name,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,edit_policy,version,created_at,updated_at,image_path FROM recipes WHERE deleted_at IS NULL AND visibility='public' AND (?='' OR instr(lower(title||' '||description||' '||tags_json),lower(?))>0) ORDER BY updated_at DESC,id LIMIT ? OFFSET ?`, query, query, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
@@ -102,7 +105,8 @@ func (h publicRecipeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		it := recipe{}
 		var ingredients, steps, tags string
-		if err := rows.Scan(&it.ID, &it.OwnerID, &it.CreatorName, &it.Title, &it.Description, &ingredients, &steps, &it.Servings, &it.PrepTime, &it.CookTime, &tags, &it.Visibility, &it.EditPolicy, &it.Version, &it.CreatedAt, &it.UpdatedAt); err != nil {
+		var imagePath string
+		if err := rows.Scan(&it.ID, &it.OwnerID, &it.CreatorName, &it.Title, &it.Description, &ingredients, &steps, &it.Servings, &it.PrepTime, &it.CookTime, &tags, &it.Visibility, &it.EditPolicy, &it.Version, &it.CreatedAt, &it.UpdatedAt, &imagePath); err != nil {
 			writeError(w, http.StatusInternalServerError, "storage_error")
 			return
 		}
@@ -120,6 +124,9 @@ func (h publicRecipeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		it.OwnerID = ""
 		it.CookbookIDs = []string{}
+		if imagePath != "" {
+			it.Image = "/api/recipes/" + it.ID + "/image"
+		}
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
@@ -174,6 +181,7 @@ type recipe struct {
 	CreatedAt   string       `json:"created_at"`
 	UpdatedAt   string       `json:"updated_at"`
 	DeletedAt   string       `json:"deleted_at,omitempty"`
+	Image       string       `json:"image,omitempty"`
 }
 
 func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -695,7 +703,7 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 403, "cookbook_access_denied")
 			return
 		}
-		if err = insertRecipeRevision(tx, id, 1, in.OwnerID, in.Title, in.Description, ingredientsJSON, stepsJSON, in.Servings, in.PrepTime, in.CookTime, tagsJSON, in.Visibility); err != nil {
+		if err = insertRecipeRevision(tx, id, 1, in.OwnerID, in.Title, in.Description, ingredientsJSON, stepsJSON, in.Servings, in.PrepTime, in.CookTime, tagsJSON, in.Visibility, ""); err != nil {
 			_ = tx.Rollback()
 			writeError(w, 500, "storage_error")
 			return
@@ -717,7 +725,7 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_pagination_or_query")
 		return
 	}
-	rows, err := h.db.Query(`SELECT r.id,r.owner_id,r.creator_name,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,s.public_instance FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.deleted_at IS NULL AND ((r.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_recipes cr JOIN cookbook_memberships m ON m.cookbook_id=cr.cookbook_id WHERE cr.recipe_id=r.id AND m.user_id=?)) OR (s.public_instance=1 AND r.visibility='public')) AND (?='' OR instr(lower(r.title||' '||r.description||' '||r.tags_json),lower(?))>0) ORDER BY r.updated_at DESC,r.id LIMIT ? OFFSET ?`, uid, uid, q, q, limit, offset)
+	rows, err := h.db.Query(`SELECT r.id,r.owner_id,r.creator_name,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,s.public_instance,r.image_path FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.deleted_at IS NULL AND ((r.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_recipes cr JOIN cookbook_memberships m ON m.cookbook_id=cr.cookbook_id WHERE cr.recipe_id=r.id AND m.user_id=?)) OR (s.public_instance=1 AND r.visibility='public')) AND (?='' OR instr(lower(r.title||' '||r.description||' '||r.tags_json),lower(?))>0) ORDER BY r.updated_at DESC,r.id LIMIT ? OFFSET ?`, uid, uid, q, q, limit, offset)
 	if err != nil {
 		writeError(w, 500, "storage_error")
 		return
@@ -727,7 +735,8 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		it, public := recipe{}, 0
 		var ingredients, steps, tags string
-		if err := rows.Scan(&it.ID, &it.OwnerID, &it.CreatorName, &it.Title, &it.Description, &ingredients, &steps, &it.Servings, &it.PrepTime, &it.CookTime, &tags, &it.Visibility, &it.EditPolicy, &it.Version, &it.CreatedAt, &it.UpdatedAt, &public); err != nil {
+		var imagePath string
+		if err := rows.Scan(&it.ID, &it.OwnerID, &it.CreatorName, &it.Title, &it.Description, &ingredients, &steps, &it.Servings, &it.PrepTime, &it.CookTime, &tags, &it.Visibility, &it.EditPolicy, &it.Version, &it.CreatedAt, &it.UpdatedAt, &public, &imagePath); err != nil {
 			rows.Close()
 			writeError(w, 500, "storage_error")
 			return
@@ -743,6 +752,9 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		items = append(items, it)
+		if imagePath != "" {
+			items[len(items)-1].Image = "/api/recipes/" + it.ID + "/image"
+		}
 		publicFlags = append(publicFlags, public == 1)
 	}
 	if err := rows.Err(); err != nil {
@@ -873,7 +885,8 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 		it := recipe{}
 		var public int
 		var ingredients, steps, tags string
-		err := h.db.QueryRow(`SELECT r.id,r.owner_id,r.creator_name,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,s.public_instance FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.id=? AND r.deleted_at IS NULL`, id).Scan(&it.ID, &it.OwnerID, &it.CreatorName, &it.Title, &it.Description, &ingredients, &steps, &it.Servings, &it.PrepTime, &it.CookTime, &tags, &it.Visibility, &it.EditPolicy, &it.Version, &it.CreatedAt, &it.UpdatedAt, &public)
+		var imagePath string
+		err := h.db.QueryRow(`SELECT r.id,r.owner_id,r.creator_name,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,s.public_instance,r.image_path FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.id=? AND r.deleted_at IS NULL`, id).Scan(&it.ID, &it.OwnerID, &it.CreatorName, &it.Title, &it.Description, &ingredients, &steps, &it.Servings, &it.PrepTime, &it.CookTime, &tags, &it.Visibility, &it.EditPolicy, &it.Version, &it.CreatedAt, &it.UpdatedAt, &public, &imagePath)
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, 404, "not_found")
 			return
@@ -898,6 +911,9 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 			return
 		}
 		it.CookbookIDs = h.recipeCookbooks(id)
+		if imagePath != "" {
+			it.Image = "/api/recipes/" + id + "/image"
+		}
 		it.CanEdit = canEditRecipe(uid, access{ownerID: it.OwnerID, memberRole: member}, it.EditPolicy)
 		it.CanDelete = uid != "" && uid == it.OwnerID
 		writeJSON(w, 200, it)
@@ -966,7 +982,13 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 		writeError(w, 403, "cookbook_access_denied")
 		return
 	}
-	if err := insertRecipeRevision(tx, id, in.Version+1, in.UserID, in.Title, in.Description, ingredientsJSON, stepsJSON, in.Servings, in.PrepTime, in.CookTime, tagsJSON, in.Visibility); err != nil {
+	var imagePath string
+	if err := tx.QueryRow(`SELECT image_path FROM recipes WHERE id=?`, id).Scan(&imagePath); err != nil {
+		_ = tx.Rollback()
+		writeError(w, 500, "storage_error")
+		return
+	}
+	if err := insertRecipeRevision(tx, id, in.Version+1, in.UserID, in.Title, in.Description, ingredientsJSON, stepsJSON, in.Servings, in.PrepTime, in.CookTime, tagsJSON, in.Visibility, imagePath); err != nil {
 		tx.Rollback()
 		writeError(w, 500, "storage_error")
 		return
@@ -1212,10 +1234,10 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 		writeError(w, 409, "version_conflict")
 		return
 	}
-	var title, description, ingredients, steps, tags string
+	var title, description, ingredients, steps, tags, restoredImage string
 	var servings, prepTime, cookTime int
 	var restoredVisibility visibility
-	if err := h.db.QueryRow(`SELECT title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility FROM recipe_revisions WHERE recipe_id=? AND version=?`, recipeID, revisionVersion).Scan(&title, &description, &ingredients, &steps, &servings, &prepTime, &cookTime, &tags, &restoredVisibility); err != nil {
+	if err := h.db.QueryRow(`SELECT title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,image_path FROM recipe_revisions WHERE recipe_id=? AND version=?`, recipeID, revisionVersion).Scan(&title, &description, &ingredients, &steps, &servings, &prepTime, &cookTime, &tags, &restoredVisibility, &restoredImage); err != nil {
 		writeError(w, 404, "not_found")
 		return
 	}
@@ -1228,7 +1250,7 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 		writeError(w, 500, "storage_error")
 		return
 	}
-	result, err := tx.Exec(`UPDATE recipes SET title=?,description=?,ingredients_json=?,steps_json=?,servings=?,prep_time_minutes=?,cook_time_minutes=?,tags_json=?,visibility=?,version=version+1,updated_at=? WHERE id=? AND version=? AND deleted_at IS NULL`, title, description, ingredients, steps, servings, prepTime, cookTime, tags, restoredVisibility, timestamp(), recipeID, currentVersion)
+	result, err := tx.Exec(`UPDATE recipes SET title=?,description=?,ingredients_json=?,steps_json=?,servings=?,prep_time_minutes=?,cook_time_minutes=?,tags_json=?,visibility=?,image_path=?,version=version+1,updated_at=? WHERE id=? AND version=? AND deleted_at IS NULL`, title, description, ingredients, steps, servings, prepTime, cookTime, tags, restoredVisibility, restoredImage, timestamp(), recipeID, currentVersion)
 	if err != nil {
 		_ = tx.Rollback()
 		writeError(w, 500, "storage_error")
@@ -1240,7 +1262,7 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 		writeError(w, 409, "version_conflict")
 		return
 	}
-	if err := insertRecipeRevision(tx, recipeID, currentVersion+1, userID, title, description, []byte(ingredients), []byte(steps), servings, prepTime, cookTime, []byte(tags), restoredVisibility); err != nil {
+	if err := insertRecipeRevision(tx, recipeID, currentVersion+1, userID, title, description, []byte(ingredients), []byte(steps), servings, prepTime, cookTime, []byte(tags), restoredVisibility, restoredImage); err != nil {
 		_ = tx.Rollback()
 		writeError(w, 500, "storage_error")
 		return
@@ -1252,8 +1274,8 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 	h.recipeByID(w, requestForUser(http.MethodGet, "/api/recipes/"+recipeID, userID), recipeID)
 }
 
-func insertRecipeRevision(tx *sql.Tx, recipeID string, version int, editorID, title, description string, ingredients, steps []byte, servings, prepTime, cookTime int, tags []byte, visibilityValue visibility) error {
-	_, err := tx.Exec(`INSERT INTO recipe_revisions(id,recipe_id,version,editor_id,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, newID(), recipeID, version, editorID, title, description, string(ingredients), string(steps), servings, prepTime, cookTime, string(tags), visibilityValue, timestamp())
+func insertRecipeRevision(tx *sql.Tx, recipeID string, version int, editorID, title, description string, ingredients, steps []byte, servings, prepTime, cookTime int, tags []byte, visibilityValue visibility, imagePath string) error {
+	_, err := tx.Exec(`INSERT INTO recipe_revisions(id,recipe_id,version,editor_id,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,image_path,visibility,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, newID(), recipeID, version, editorID, title, description, string(ingredients), string(steps), servings, prepTime, cookTime, string(tags), imagePath, visibilityValue, timestamp())
 	return err
 }
 

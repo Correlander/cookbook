@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS recipes (
   prep_time_minutes INTEGER NOT NULL DEFAULT 0 CHECK (prep_time_minutes BETWEEN 0 AND 1440),
   cook_time_minutes INTEGER NOT NULL DEFAULT 0 CHECK (cook_time_minutes BETWEEN 0 AND 1440),
   tags_json TEXT NOT NULL DEFAULT '[]',
+  image_path TEXT NOT NULL DEFAULT '',
   visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'public', 'unlisted')),
   edit_policy TEXT NOT NULL DEFAULT 'owner_only' CHECK (edit_policy IN ('owner_only', 'cookbook_editors')),
   version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
@@ -122,6 +123,7 @@ CREATE TABLE IF NOT EXISTS recipe_revisions (
   prep_time_minutes INTEGER NOT NULL DEFAULT 0 CHECK (prep_time_minutes BETWEEN 0 AND 1440),
   cook_time_minutes INTEGER NOT NULL DEFAULT 0 CHECK (cook_time_minutes BETWEEN 0 AND 1440),
   tags_json TEXT NOT NULL DEFAULT '[]',
+  image_path TEXT NOT NULL DEFAULT '',
   visibility TEXT NOT NULL CHECK (visibility IN ('private', 'public', 'unlisted')),
   created_at TEXT NOT NULL,
   UNIQUE(recipe_id, version)
@@ -170,10 +172,12 @@ func openDatabase(path string) (*sql.DB, error) {
 		{"recipes", "cook_time_minutes", `INTEGER NOT NULL DEFAULT 0 CHECK (cook_time_minutes BETWEEN 0 AND 1440)`},
 		{"recipes", "tags_json", `TEXT NOT NULL DEFAULT '[]'`},
 		{"recipes", "deleted_at", `TEXT`},
+		{"recipes", "image_path", `TEXT NOT NULL DEFAULT ''`},
 		{"recipe_revisions", "servings", `INTEGER NOT NULL DEFAULT 0 CHECK (servings BETWEEN 0 AND 1000)`},
 		{"recipe_revisions", "prep_time_minutes", `INTEGER NOT NULL DEFAULT 0 CHECK (prep_time_minutes BETWEEN 0 AND 1440)`},
 		{"recipe_revisions", "cook_time_minutes", `INTEGER NOT NULL DEFAULT 0 CHECK (cook_time_minutes BETWEEN 0 AND 1440)`},
 		{"recipe_revisions", "tags_json", `TEXT NOT NULL DEFAULT '[]'`},
+		{"recipe_revisions", "image_path", `TEXT NOT NULL DEFAULT ''`},
 	} {
 		var exists int
 		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, column.table, column.name).Scan(&exists); err != nil {

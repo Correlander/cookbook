@@ -4,9 +4,16 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -247,6 +254,127 @@ func TestCookbookPagination(t *testing.T) {
 	invalid := callAPI(h, http.MethodGet, "/api/cookbooks?limit=101", nil, &http.Cookie{Name: sessionCookie, Value: token})
 	if invalid.Code != http.StatusBadRequest {
 		t.Fatalf("invalid pagination status = %d, want 400", invalid.Code)
+	}
+}
+
+func TestRecipeImageUploadAccessAndRevisionRestore(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('other','other@example.test','Other','now'); INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,version,created_at,updated_at) VALUES('private-recipe','owner','Owner','Soup','','[]','[]','private','owner_only',1,'now','now')`); err != nil {
+		t.Fatal(err)
+	}
+	ownerToken, _, err := issueSession(db, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherToken, _, err := issueSession(db, "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaDir := filepath.Join(t.TempDir(), "media")
+	h := handlerWithAuthConfig(db, testAuth(db), config{mediaDir: mediaDir})
+	encodePNG := func() []byte {
+		var buffer bytes.Buffer
+		pixels := image.NewRGBA(image.Rect(0, 0, 2, 2))
+		for y := 0; y < 2; y++ {
+			for x := 0; x < 2; x++ {
+				pixels.Set(x, y, color.RGBA{R: 180, G: 70, B: 30, A: 255})
+			}
+		}
+		if err := png.Encode(&buffer, pixels); err != nil {
+			t.Fatal(err)
+		}
+		return buffer.Bytes()
+	}
+	upload := func(cookie *http.Cookie, data []byte) *httptest.ResponseRecorder {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		part, err := writer.CreateFormFile("image", "food.png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = part.Write(data)
+		_ = writer.Close()
+		request := httptest.NewRequest(http.MethodPut, "/api/recipes/private-recipe/image", &body)
+		request.Header.Set("Content-Type", writer.FormDataContentType())
+		request.Header.Set("Origin", "http://localhost:5173")
+		request.Host = "localhost:5173"
+		request.AddCookie(cookie)
+		recorder := httptest.NewRecorder()
+		h.ServeHTTP(recorder, request)
+		return recorder
+	}
+	denied := upload(&http.Cookie{Name: sessionCookie, Value: otherToken}, encodePNG())
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("non-owner upload status = %d, want 403", denied.Code)
+	}
+	accepted := upload(&http.Cookie{Name: sessionCookie, Value: ownerToken}, encodePNG())
+	if accepted.Code != http.StatusOK {
+		t.Fatalf("valid upload status = %d: %s", accepted.Code, accepted.Body)
+	}
+	var uploaded struct {
+		Image   string `json:"image"`
+		Version int    `json:"version"`
+	}
+	if err := json.Unmarshal(accepted.Body.Bytes(), &uploaded); err != nil {
+		t.Fatal(err)
+	}
+	storedFiles, err := os.ReadDir(mediaDir)
+	if err != nil || len(storedFiles) != 1 {
+		t.Fatalf("stored image files = %d, err=%v", len(storedFiles), err)
+	}
+	privateFetch := httptest.NewRecorder()
+	h.ServeHTTP(privateFetch, httptest.NewRequest(http.MethodGet, uploaded.Image, nil))
+	if privateFetch.Code != http.StatusNotFound {
+		t.Fatalf("anonymous private image status = %d, want 404", privateFetch.Code)
+	}
+	ownerFetch := httptest.NewRequest(http.MethodGet, uploaded.Image, nil)
+	ownerFetch.AddCookie(&http.Cookie{Name: sessionCookie, Value: ownerToken})
+	privateFetch = httptest.NewRecorder()
+	h.ServeHTTP(privateFetch, ownerFetch)
+	if privateFetch.Code != http.StatusOK || privateFetch.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("owner image response = %d %q", privateFetch.Code, privateFetch.Header().Get("Content-Type"))
+	}
+	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1; UPDATE recipes SET visibility='public' WHERE id='private-recipe'`); err != nil {
+		t.Fatal(err)
+	}
+	publicFetch := httptest.NewRecorder()
+	h.ServeHTTP(publicFetch, httptest.NewRequest(http.MethodGet, uploaded.Image, nil))
+	if publicFetch.Code != http.StatusOK {
+		t.Fatalf("public image response = %d", publicFetch.Code)
+	}
+	invalid := upload(&http.Cookie{Name: sessionCookie, Value: ownerToken}, []byte("not an image"))
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("spoofed upload status = %d, want 400", invalid.Code)
+	}
+	tooLarge := upload(&http.Cookie{Name: sessionCookie, Value: ownerToken}, make([]byte, maxRecipeImageBytes+1))
+	if tooLarge.Code != http.StatusBadRequest {
+		t.Fatalf("oversized upload status = %d, want 400", tooLarge.Code)
+	}
+	var currentVersion int
+	var currentPath string
+	if err := db.QueryRow(`SELECT version,image_path FROM recipes WHERE id='private-recipe'`).Scan(&currentVersion, &currentPath); err != nil {
+		t.Fatal(err)
+	}
+	var revisionPath string
+	if err := db.QueryRow(`SELECT image_path FROM recipe_revisions WHERE recipe_id='private-recipe' AND version=?`, currentVersion).Scan(&revisionPath); err != nil || revisionPath != currentPath {
+		t.Fatalf("revision image path=%q current=%q err=%v", revisionPath, currentPath, err)
+	}
+	deleteRequest := httptest.NewRequest(http.MethodDelete, "/api/recipes/private-recipe/image", nil)
+	deleteRequest.Header.Set("Origin", "http://localhost:5173")
+	deleteRequest.Host = "localhost:5173"
+	deleteRequest.AddCookie(&http.Cookie{Name: sessionCookie, Value: ownerToken})
+	deleteResponse := httptest.NewRecorder()
+	h.ServeHTTP(deleteResponse, deleteRequest)
+	if deleteResponse.Code != http.StatusNoContent {
+		t.Fatalf("image removal status = %d", deleteResponse.Code)
+	}
+	restore := callAPI(h, http.MethodPost, "/api/recipes/private-recipe/revisions/"+strconv.Itoa(currentVersion)+"/restore", map[string]int{"expected_version": currentVersion + 1}, &http.Cookie{Name: sessionCookie, Value: ownerToken})
+	if restore.Code != http.StatusOK {
+		t.Fatalf("revision restore status = %d: %s", restore.Code, restore.Body)
+	}
+	var restored recipe
+	if err := json.Unmarshal(restore.Body.Bytes(), &restored); err != nil || restored.Image == "" {
+		t.Fatalf("restored image=%q err=%v", restored.Image, err)
 	}
 }
 

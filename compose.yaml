@@ -8,6 +8,7 @@ services:
     environment:
       COOKBOOK_ADDR: 0.0.0.0:8000
       COOKBOOK_DATABASE: /data/cookbook.db
+      COOKBOOK_MEDIA_DIR: /data/media
     ports:
       - "127.0.0.1:8000:8000"
     volumes:

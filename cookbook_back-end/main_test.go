@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -36,15 +37,18 @@ func TestUnknownPageServesFrontendShell(t *testing.T) {
 
 func TestConfigDefaultsAndOverride(t *testing.T) {
 	t.Setenv("COOKBOOK_ADDR", "")
+	t.Setenv("COOKBOOK_DATABASE", "./data/cookbook.db")
+	t.Setenv("COOKBOOK_MEDIA_DIR", "")
 	t.Setenv("COOKBOOK_TRASH_RETENTION_DAYS", "")
 	cfg, err := loadConfig()
-	if err != nil || cfg.address != "127.0.0.1:8000" || cfg.trashRetentionDays != 30 {
+	if err != nil || cfg.address != "127.0.0.1:8000" || cfg.mediaDir != filepath.Join("data", "media") || cfg.trashRetentionDays != 30 {
 		t.Fatalf("default config = %#v, %v", cfg, err)
 	}
 
 	t.Setenv("COOKBOOK_ADDR", "127.0.0.1:9000")
+	t.Setenv("COOKBOOK_MEDIA_DIR", "./custom-images")
 	cfg, err = loadConfig()
-	if err != nil || cfg.address != "127.0.0.1:9000" {
+	if err != nil || cfg.address != "127.0.0.1:9000" || cfg.mediaDir != "./custom-images" {
 		t.Fatalf("override config = %#v, %v", cfg, err)
 	}
 	t.Setenv("COOKBOOK_TRASH_RETENTION_DAYS", "0")

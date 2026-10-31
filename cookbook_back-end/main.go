@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -20,6 +21,11 @@ import (
 var frontendFiles embed.FS
 
 func handlerWithAuth(db *sql.DB, auth authHandler) http.Handler {
+	cfg, _ := loadConfig()
+	return handlerWithAuthConfig(db, auth, cfg)
+}
+
+func handlerWithAuthConfig(db *sql.DB, auth authHandler, cfg config) http.Handler {
 	mux := http.NewServeMux()
 	passkeys := passkeyHandler{db: db, webauthn: auth.webauthn, secureCookies: auth.secureCookies}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -31,7 +37,20 @@ func handlerWithAuth(db *sql.DB, auth authHandler) http.Handler {
 	mux.Handle("/api/auth/passkeys/", csrfProtection(auth.origin, requireSession(db, passkeys)))
 	mux.Handle("/api/auth/", auth)
 	mux.Handle("GET /api/public/recipes", publicRecipeHandler{db: db})
-	mux.Handle("/api/", csrfProtection(auth.origin, requireSession(db, apiHandler{db: db})))
+	api := apiHandler{db: db, mediaDir: cfg.mediaDir}
+	media := mediaHandler{db: db, rootDir: cfg.mediaDir}
+	serveMedia := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if uid, ok := sessionUser(db, r); ok {
+			r = r.WithContext(context.WithValue(r.Context(), userContextKey{}, uid))
+		}
+		media.ServeHTTP(w, r, r.PathValue("id"))
+	})
+	mux.Handle("GET /api/recipes/{id}/image", serveMedia)
+	mux.Handle("HEAD /api/recipes/{id}/image", serveMedia)
+	mux.Handle("POST /api/recipes/{id}/image", csrfProtection(auth.origin, requireSession(db, serveMedia)))
+	mux.Handle("PUT /api/recipes/{id}/image", csrfProtection(auth.origin, requireSession(db, serveMedia)))
+	mux.Handle("DELETE /api/recipes/{id}/image", csrfProtection(auth.origin, requireSession(db, serveMedia)))
+	mux.Handle("/api/", csrfProtection(auth.origin, requireSession(db, api)))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			http.NotFound(w, r)
@@ -106,13 +125,16 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if err := os.MkdirAll(cfg.mediaDir, 0700); err != nil {
+		log.Fatal("create media directory: ", err)
+	}
 
 	db, err := openDatabase(cfg.database)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
-	startTrashCleanup(db, cfg.trashRetentionDays)
+	startTrashCleanup(db, cfg.trashRetentionDays, cfg.mediaDir)
 	if err := configureRegistrationPolicy(db); err != nil {
 		log.Fatal(err)
 	}
@@ -126,7 +148,7 @@ func main() {
 	}
 	server := &http.Server{
 		Addr:              cfg.address,
-		Handler:           handlerWithAuth(db, auth),
+		Handler:           handlerWithAuthConfig(db, auth, cfg),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	log.Printf("Cookbook API listening on %s", cfg.address)

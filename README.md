@@ -14,10 +14,10 @@ Requirements: Go 1.24+, Node.js 20+, and npm.
 
 1. Copy `.env.example` to `.env`, then set `COOKBOOK_PUBLIC_URL`, `COOKBOOK_RP_ID`, `COOKBOOK_RP_ORIGIN`, and the SMTP host/from values. SMTP delivery requires STARTTLS; credentials are optional for relays that do not require authentication. Alternatively, configure `COOKBOOK_EMAIL_COMMAND` with an executable in the container that accepts the documented JSON payload on stdin.
 2. Set `COOKBOOK_ADMIN_EMAIL` and optionally `COOKBOOK_ADMIN_NAME` for the first startup. This creates the first administrator account. Leave the email challenge/sign-in flow configured before making the instance reachable.
-3. Run `docker compose up --build -d`. Compose binds the service to `127.0.0.1:8000`; put a trusted HTTPS reverse proxy in front. The `cookbook-data` volume stores SQLite data at `/data/cookbook.db`.
+3. Run `docker compose up --build -d`. Compose binds the service to `127.0.0.1:8000`; put a trusted HTTPS reverse proxy in front. The `cookbook-data` volume stores SQLite data at `/data/cookbook.db` and recipe images under `/data/media`.
 4. After setup, remove `COOKBOOK_ADMIN_EMAIL` from `.env`. It has no effect once an administrator already exists.
 
-For a consistent SQLite backup, stop the service, copy the database file from the `cookbook-data` volume, then start it again. Restore by stopping the service, replacing `/data/cookbook.db` with the saved file, and starting the service. Keep the backup private; it contains accounts, private recipes, and sessions. Database schema upgrades run when the service starts.
+For a consistent backup, stop the service, copy `/data/cookbook.db` and `/data/media` from the `cookbook-data` volume, then start it again. Restore by stopping the service, replacing the database and media directory, and starting it. Keep the backup private; it contains accounts, private recipes, and sessions. Database schema upgrades run when the service starts.
 
 ## Authentication and registration
 
@@ -39,4 +39,4 @@ The command must deliver the message and exit with status 0. Do not log the one-
 
 ## Current scope and remaining work
 
-Email-link and passkey authentication, first-admin bootstrap, account invitations, private-first SQLite storage, authorization checks, cookbook and recipe APIs, public recipe browsing, private recipe/cookbook creation and editing, cookbook member sharing, server-side recipe and cookbook pagination, structured recipe metadata, revision history/diff/restore, and recipe trash with configurable retention are implemented. Image uploads, a distinct security audit log, and federation protocol research remain open. The Go service can embed and serve a production frontend build; the Dockerfile creates that build. Courses and federation remain disabled by default.
+Email-link and passkey authentication, first-admin bootstrap, account invitations, private-first SQLite storage, authorization checks, cookbook and recipe APIs, public recipe browsing, private recipe/cookbook creation and editing, cookbook member sharing, server-side recipe and cookbook pagination, recipe image uploads, structured recipe metadata, revision history/diff/restore, and recipe trash with configurable retention are implemented. A distinct security audit log and federation protocol research remain open. The Go service can embed and serve a production frontend build; the Dockerfile creates that build. Courses and federation remain disabled by default.

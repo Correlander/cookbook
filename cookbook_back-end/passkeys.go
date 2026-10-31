@@ -163,6 +163,16 @@ func (h passkeyHandler) beginLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h passkeyHandler) finishLogin(w http.ResponseWriter, r *http.Request) {
+	allowed, err := allowAuthRequest(h.db, r, "passkey-login-finish", 60, time.Hour, h.trustedProxies)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	if !allowed {
+		w.Header().Set("Retry-After", "3600")
+		writeError(w, http.StatusTooManyRequests, "rate_limited")
+		return
+	}
 	session, ok := h.consumeCeremony(w, r, "", "login")
 	if !ok {
 		return

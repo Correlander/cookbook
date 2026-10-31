@@ -2,6 +2,7 @@ package main
 
 import (
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
@@ -21,6 +22,25 @@ func TestAuthRequestLimiterBlocksAfterLimit(t *testing.T) {
 	allowed, err := allowAuthRequest(db, req, "email", 2, time.Hour, nil)
 	if err != nil || allowed {
 		t.Fatalf("over-limit request allowed=%v err=%v", allowed, err)
+	}
+	var storedCount int
+	if err := db.QueryRow(`SELECT SUM(request_count) FROM auth_rate_limits`).Scan(&storedCount); err != nil || storedCount != 2 {
+		t.Fatalf("blocked requests changed the stored count to %d (err=%v), want it capped at 2", storedCount, err)
+	}
+}
+
+func TestPasskeyLoginFinishIsRateLimitedByClientIP(t *testing.T) {
+	db := testDatabase(t)
+	handler := handlerWithAuth(db, testAuth(db))
+	for attempt := 1; attempt <= 60; attempt++ {
+		response := callAPI(handler, http.MethodPost, "/api/auth/passkey/login/finish", nil, nil)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("finish attempt %d status = %d, want %d", attempt, response.Code, http.StatusBadRequest)
+		}
+	}
+	blocked := callAPI(handler, http.MethodPost, "/api/auth/passkey/login/finish", nil, nil)
+	if blocked.Code != http.StatusTooManyRequests || blocked.Header().Get("Retry-After") != "3600" {
+		t.Fatalf("over-limit finish status=%d retry-after=%q body=%q", blocked.Code, blocked.Header().Get("Retry-After"), blocked.Body.String())
 	}
 }
 

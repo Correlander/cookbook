@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -24,7 +25,11 @@ func allowAuthBucket(db *sql.DB, action, subject string, limit int, window time.
 	now := time.Now().Unix()
 	windowStart := now - now%windowSeconds
 	var count int
-	if err := db.QueryRow(`INSERT INTO auth_rate_limits(bucket_key,window_start,request_count) VALUES(?,?,1) ON CONFLICT(bucket_key) DO UPDATE SET window_start=excluded.window_start,request_count=CASE WHEN auth_rate_limits.window_start=excluded.window_start THEN auth_rate_limits.request_count+1 ELSE 1 END RETURNING request_count`, hex.EncodeToString(key[:]), windowStart).Scan(&count); err != nil {
+	err := db.QueryRow(`INSERT INTO auth_rate_limits(bucket_key,window_start,request_count) VALUES(?,?,1) ON CONFLICT(bucket_key) DO UPDATE SET window_start=excluded.window_start,request_count=CASE WHEN auth_rate_limits.window_start=excluded.window_start THEN auth_rate_limits.request_count+1 ELSE 1 END WHERE auth_rate_limits.window_start<>excluded.window_start OR auth_rate_limits.request_count<? RETURNING request_count`, hex.EncodeToString(key[:]), windowStart, limit).Scan(&count)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
 		return false, err
 	}
 	return count <= limit, nil

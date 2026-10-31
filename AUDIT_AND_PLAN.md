@@ -74,7 +74,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 ### M2 — Passwordless authentication (partial)
 - Implement email challenges and sessions with storage interfaces, expiry, one-time consumption, rate limiting, enumeration-resistant responses, secure cookies/CSRF strategy, and email delivery configuration.
 - Add WebAuthn enrollment/assertion using maintained library, passkey list/revoke, and recovery via verified email.
-- Email-link requests are limited per address and client IP; passkey ceremony starts are limited per client IP. Forwarded client IPs are used only behind explicitly configured trusted proxy CIDRs.
+- Email-link requests are limited per address and client IP; passkey ceremony starts are limited to 30 per client IP per hour, and login completions to 60 per client IP per hour. Forwarded client IPs are used only behind explicitly configured trusted proxy CIDRs.
 - Acceptance: expiry/replay/rate/session tests, WebAuthn origin/challenge tests, no password/OAuth endpoints, frontend sign-in and optional passkey prompt.
 
 ### M3 — Cookbook and recipe local core (partial)

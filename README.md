@@ -31,7 +31,7 @@ Signed-in users can download their owned, non-deleted recipes and owned cookbook
 
 ## Authentication and registration
 
-Sign-in uses one-time email links and WebAuthn passkeys. Opening an email link displays a confirmation page; the token is consumed only after the user chooses “Continue to Cookbook,” so link preloading alone does not redeem it. Email sign-in requests are limited to five per email address per hour and 30 per client IP per hour; passkey registration and sign-in ceremonies are limited to 30 starts per client IP per hour. `COOKBOOK_TRUSTED_PROXIES` accepts comma-separated proxy CIDRs; only when the connecting peer matches one of those ranges does the service use the trusted proxy chain in `X-Forwarded-For`. Leave it unset unless the network boundary is controlled.
+Sign-in uses one-time email links and WebAuthn passkeys. Opening an email link displays a confirmation page; the token is consumed only after the user chooses “Continue to Cookbook,” so link preloading alone does not redeem it. Email sign-in requests are limited to five per email address per hour and 30 per client IP per hour; passkey ceremony starts are limited to 30 per client IP per hour, and passkey login completions are limited to 60 per client IP per hour. `COOKBOOK_TRUSTED_PROXIES` accepts comma-separated proxy CIDRs; only when the connecting peer matches one of those ranges does the service use the trusted proxy chain in `X-Forwarded-For`. Leave it unset unless the network boundary is controlled.
 
 `COOKBOOK_PUBLIC_URL` must be the browser-facing app origin; passkeys require HTTPS outside localhost. `COOKBOOK_RP_ID` defaults to its hostname and `COOKBOOK_RP_ORIGIN` must match the public origin.
 

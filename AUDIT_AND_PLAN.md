@@ -112,6 +112,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 - A distraction-reduced cooking view includes touch-sized ingredient checkboxes, one instruction at a time, keyboard step navigation, Escape to close, focus restoration, and live step announcements.
 - App dialogs move keyboard focus inside when opened, keep Tab navigation within the topmost dialog, close on Escape, and return focus to the opener when closed.
 - Landing page was visually reviewed in Firefox at 320px, 390px, and desktop width; the compressed local hero image and compact search placeholder fit those layouts.
+- Contrast spot-checks found terracotta and muted text below 4.5:1 on light surfaces; those text colors now meet the WCAG AA threshold on their checked backgrounds.
 - Acceptance: responsive/accessibility review and frontend checks.
 
 ### M7 — Courses (optional)

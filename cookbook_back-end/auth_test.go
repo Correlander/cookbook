@@ -1,13 +1,38 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestOpeningMagicLinkDoesNotConsumeEmailChallenge(t *testing.T) {
+	db := testDatabase(t)
+	token := strings.Repeat("a", 64)
+	hash := sha256.Sum256([]byte(token))
+	if _, err := db.Exec(`INSERT INTO email_challenges(id,email,token_hash,expires_at,created_at) VALUES('challenge','cook@example.test',?,?,?)`, hex.EncodeToString(hash[:]), time.Now().Add(15*time.Minute).UTC().Format(time.RFC3339Nano), timestamp()); err != nil {
+		t.Fatal(err)
+	}
+	handler := handlerWithAuth(db, testAuth(db))
+	opened := callAPI(handler, http.MethodGet, "/auth/confirm?token="+token, nil, nil)
+	if opened.Code != http.StatusOK {
+		t.Fatalf("opening the confirmation page status=%d body=%s", opened.Code, opened.Body)
+	}
+	var consumed *string
+	if err := db.QueryRow(`SELECT consumed_at FROM email_challenges WHERE id='challenge'`).Scan(&consumed); err != nil {
+		t.Fatal(err)
+	}
+	if consumed != nil {
+		t.Fatalf("opening the email link consumed its challenge at %s", *consumed)
+	}
+}
 
 func TestAuthConfigBuildsWebAuthnRelyingPartyFromInstanceURL(t *testing.T) {
 	db := testDatabase(t)

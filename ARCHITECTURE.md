@@ -14,7 +14,7 @@ This document describes the implementation in this checkout. It is a working arc
 | Tables | Purpose and relationships |
 | --- | --- |
 | `instance_settings` | Singleton policy: public browsing, registration, revision/audit retention, and the courses flag. Courses and federation default off. |
-| `users`, `sessions`, `email_challenges`, `webauthn_credentials`, `webauthn_ceremonies`, `auth_rate_limits` | Accounts and passwordless authentication state. Sessions and one-time email tokens are stored as hashes; passkey credentials use the maintained Go WebAuthn library. Expired transient rows are removed in bounded daily batches. |
+| `users`, `sessions`, `email_challenges`, `webauthn_credentials`, `webauthn_ceremonies`, `auth_rate_limits` | Accounts and passwordless authentication state. Session tokens and one-time email tokens are stored as hashes; each session has a separate stable identifier and a bounded browser user-agent string for per-session identification and revocation. Passkey credentials use the maintained Go WebAuthn library. Expired transient rows are removed in bounded daily batches. |
 | `cookbooks`, `cookbook_memberships`, `invitations` | Cookbook ownership, editor/viewer membership, and hashed, expiring invitations. Membership does not change recipe ownership. |
 | `recipes`, `cookbook_recipes`, `recipe_revisions` | Canonical recipe data and structured ingredients, ordered steps, servings, times, tags, visibility, image reference, owner, creator attribution, optional source recipe, optimistic version, cookbook references, and snapshots. A recipe may be referenced by multiple cookbooks without copying its canonical record. |
 | `audit_events` | Paged administrative security events for successful authenticated mutations and authenticated 403 denials. Request bodies and query strings are omitted. |
@@ -49,6 +49,7 @@ All API JSON responses are `no-store`. Mutating API requests use same-origin che
 | `/api/auth/email`, `/api/auth/consume`, `/api/auth/me`, `/api/auth/logout` | Email sign-in request and explicit one-time token consumption (`POST`), session read (`GET`), and logout (`POST`). |
 | `/api/auth/passkey/register/{begin,finish}`, `/api/auth/passkey/login/{begin,finish}` | `POST`; passkey ceremonies. Registration requires a session; ceremony origin, challenge, and replay checks are server-side. |
 | `/api/auth/passkeys`, `/api/auth/passkeys/{credential}` | `GET` list and `DELETE` revoke; session required. |
+| `/api/auth/sessions`, `/api/auth/sessions/{id}` | `GET` lists the signed-in account's active sessions; `DELETE` revokes one of that account's sessions. |
 | `/api/public/recipes`, `/api/public/cookbooks`, `/api/public/cookbooks/{id}/recipes` | `GET`; public browsing, search, and pagination. Instance and resource visibility are enforced. |
 | `/api/cookbooks`, `/api/cookbooks/{id}` | `GET`/`POST` collection; `GET`/`PATCH` item. Authenticated; edits are owner-only. |
 | `/api/cookbooks/{id}/members`, `/api/cookbooks/{id}/members/invitations` | Membership and invitation list/update/create/revoke; cookbook owner controls changes. |

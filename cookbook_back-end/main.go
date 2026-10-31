@@ -36,6 +36,9 @@ func handlerWithAuthConfig(db *sql.DB, auth authHandler, cfg config) http.Handle
 	mux.Handle("/api/auth/passkey/login/", csrfProtection(auth.origin, passkeys))
 	mux.Handle("/api/auth/passkeys", csrfProtection(auth.origin, requireSession(db, auditChanges(db, passkeys))))
 	mux.Handle("/api/auth/passkeys/", csrfProtection(auth.origin, requireSession(db, auditChanges(db, passkeys))))
+	sessions := sessionHandler{db: db, secureCookies: auth.secureCookies}
+	mux.Handle("GET /api/auth/sessions", requireSession(db, sessions))
+	mux.Handle("DELETE /api/auth/sessions/{id}", csrfProtection(auth.origin, requireSession(db, auditChanges(db, sessions))))
 	mux.Handle("/api/auth/", auth)
 	mux.Handle("GET /api/public/recipes", publicRecipeHandler{db: db})
 	mux.Handle("/api/public/cookbooks", publicCookbooksHandler{db: db})

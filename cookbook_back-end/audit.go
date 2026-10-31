@@ -72,7 +72,7 @@ func auditAction(method, path string) string {
 	if len(parts) > 2 && parts[0] == "admin" && parts[1] == "users" {
 		parts[2] = "{id}"
 	}
-	if len(parts) > 2 && parts[0] == "auth" && parts[1] == "passkeys" {
+	if len(parts) > 2 && parts[0] == "auth" && (parts[1] == "passkeys" || parts[1] == "sessions") {
 		parts[2] = "{id}"
 	}
 	return method + " /" + strings.Join(parts, "/")

@@ -2,17 +2,26 @@ package main
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
+	"unicode"
 )
 
 const sessionCookie = "cookbook_session"
 
 func issueSession(db *sql.DB, userID string) (string, time.Time, error) {
+	return issueSessionWithUserAgent(db, userID, "")
+}
+
+func issueSessionFromRequest(db *sql.DB, userID string, r *http.Request) (string, time.Time, error) {
+	return issueSessionWithUserAgent(db, userID, normalizedUserAgent(r.UserAgent()))
+}
+
+func issueSessionWithUserAgent(db *sql.DB, userID, userAgent string) (string, time.Time, error) {
 	var exists int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE id=?`, userID).Scan(&exists); err != nil || exists != 1 {
 		return "", time.Time{}, errors.New("account not found")
@@ -23,11 +32,24 @@ func issueSession(db *sql.DB, userID string) (string, time.Time, error) {
 	}
 	token := hex.EncodeToString(raw[:])
 	expires := time.Now().UTC().Add(30 * 24 * time.Hour)
-	sum := sha256.Sum256([]byte(token))
-	if _, err := db.Exec(`INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES(?,?,?,?)`, hex.EncodeToString(sum[:]), userID, expires.Format(time.RFC3339Nano), timestamp()); err != nil {
+	if _, err := db.Exec(`INSERT INTO sessions(id,token_hash,user_id,expires_at,created_at,user_agent) VALUES(?,?,?,?,?,?)`, newID(), sessionTokenHash(token), userID, expires.Format(time.RFC3339Nano), timestamp(), userAgent); err != nil {
 		return "", time.Time{}, err
 	}
 	return token, expires, nil
+}
+
+func normalizedUserAgent(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, value)
+	runes := []rune(value)
+	if len(runes) > 255 {
+		return string(runes[:255])
+	}
+	return value
 }
 
 func sessionUser(db *sql.DB, r *http.Request) (string, bool) {
@@ -35,15 +57,14 @@ func sessionUser(db *sql.DB, r *http.Request) (string, bool) {
 	if err != nil || cookie.Value == "" {
 		return "", false
 	}
-	sum := sha256.Sum256([]byte(cookie.Value))
 	var userID, expires string
-	err = db.QueryRow(`SELECT user_id,expires_at FROM sessions WHERE token_hash=?`, hex.EncodeToString(sum[:])).Scan(&userID, &expires)
+	err = db.QueryRow(`SELECT user_id,expires_at FROM sessions WHERE token_hash=?`, sessionTokenHash(cookie.Value)).Scan(&userID, &expires)
 	if err != nil {
 		return "", false
 	}
 	timeValue, err := time.Parse(time.RFC3339Nano, expires)
 	if err != nil || !time.Now().Before(timeValue) {
-		_, _ = db.Exec(`DELETE FROM sessions WHERE token_hash=?`, hex.EncodeToString(sum[:]))
+		_, _ = db.Exec(`DELETE FROM sessions WHERE token_hash=?`, sessionTokenHash(cookie.Value))
 		return "", false
 	}
 	return userID, true

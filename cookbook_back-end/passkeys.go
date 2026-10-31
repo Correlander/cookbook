@@ -177,7 +177,7 @@ func (h passkeyHandler) finishLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
-	token, expires, err := issueSession(h.db, string(user.WebAuthnID()))
+	token, expires, err := issueSessionFromRequest(h.db, string(user.WebAuthnID()), r)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return

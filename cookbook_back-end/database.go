@@ -55,10 +55,12 @@ CREATE TABLE IF NOT EXISTS email_challenges (
 CREATE INDEX IF NOT EXISTS idx_email_challenges_email_created ON email_challenges(email, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_email_challenges_created ON email_challenges(created_at, id);
 CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT NOT NULL,
   token_hash TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   expires_at TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  user_agent TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at, token_hash);
@@ -210,6 +212,8 @@ func openDatabase(path string) (*sql.DB, error) {
 		{"instance_settings", "revision_retention_days", `INTEGER NOT NULL DEFAULT 365 CHECK (revision_retention_days IN (0, 7, 30, 90, 365))`},
 		{"instance_settings", "audit_retention_days", `INTEGER NOT NULL DEFAULT 365 CHECK (audit_retention_days IN (0, 7, 30, 90, 365))`},
 		{"webauthn_credentials", "name", `TEXT NOT NULL DEFAULT 'Passkey'`},
+		{"sessions", "id", `TEXT NOT NULL DEFAULT ''`},
+		{"sessions", "user_agent", `TEXT NOT NULL DEFAULT ''`},
 		{"users", "is_admin", `INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1))`},
 		{"email_challenges", "display_name", `TEXT NOT NULL DEFAULT ''`},
 		{"email_challenges", "invitation_id", `TEXT REFERENCES invitations(id)`},
@@ -239,6 +243,10 @@ func openDatabase(path string) (*sql.DB, error) {
 				return nil, fmt.Errorf("upgrade %s schema: %w", column.table, err)
 			}
 		}
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE sessions SET id=lower(hex(randomblob(16))) WHERE id=''; CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_id ON sessions(id);`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("upgrade session identifiers: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_recipes_owner_deleted ON recipes(owner_id,deleted_at)`); err != nil {
 		db.Close()

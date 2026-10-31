@@ -85,6 +85,53 @@ func TestExistingPasskeyCredentialsReceiveDefaultName(t *testing.T) {
 	}
 }
 
+func TestExistingSessionsReceiveStableIdentifiers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session-upgrade.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = legacy.Exec(`CREATE TABLE users(id TEXT PRIMARY KEY,email TEXT NOT NULL UNIQUE,display_name TEXT NOT NULL,created_at TEXT NOT NULL); CREATE TABLE sessions(token_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),expires_at TEXT NOT NULL,created_at TEXT NOT NULL); INSERT INTO users VALUES('owner','owner@example.test','Owner','now'); INSERT INTO sessions VALUES('existing-token-hash','owner','2099-01-01T00:00:00Z','2026-10-31T00:00:00Z');`)
+	if err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var firstID string
+	if err := db.QueryRow(`SELECT id FROM sessions WHERE token_hash='existing-token-hash'`).Scan(&firstID); err != nil || firstID == "" {
+		t.Fatalf("migrated session identifier=%q err=%v", firstID, err)
+	}
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('second','second@example.test','Second','now')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := issueSession(db, "second"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = openDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var reopenedID string
+	if err := db.QueryRow(`SELECT id FROM sessions WHERE token_hash='existing-token-hash'`).Scan(&reopenedID); err != nil || reopenedID != firstID {
+		t.Fatalf("session id changed across restart: first=%q reopened=%q err=%v", firstID, reopenedID, err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(DISTINCT id) FROM sessions`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("unique session identifiers=%d err=%v", count, err)
+	}
+}
+
 func TestAccessPolicyDefaults(t *testing.T) {
 	publicBook := access{instancePublic: true, visibility: visibilityPublic, ownerID: "owner"}
 	privateBook := access{instancePublic: true, visibility: visibilityPrivate, ownerID: "owner"}

@@ -127,7 +127,7 @@ func TestExpiredAuthenticationStateIsPurgedInBoundedBatches(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO webauthn_ceremonies(id,purpose,session_data,expires_at,created_at) VALUES('expired','login','{}',?,?),('valid','login','{}',?,?)`, old, old, future, recent); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES('expired','owner',?,?),('valid','owner',?,?)`, old, old, future, recent); err != nil {
+	if _, err := db.Exec(`INSERT INTO sessions(id,token_hash,user_id,expires_at,created_at) VALUES('expired-id','expired','owner',?,?),('valid-id','valid','owner',?,?)`, old, old, future, recent); err != nil {
 		t.Fatal(err)
 	}
 	oldWindow := now.Add(-48 * time.Hour).Unix()

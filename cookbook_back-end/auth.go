@@ -291,7 +291,7 @@ func (h authHandler) consumeEmail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "storage_error")
 		return
 	}
-	token, expiresAt, err := issueSession(h.db, uid)
+	token, expiresAt, err := issueSessionFromRequest(h.db, uid, r)
 	if err != nil {
 		writeError(w, 500, "storage_error")
 		return

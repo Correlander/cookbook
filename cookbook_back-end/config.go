@@ -121,13 +121,8 @@ func configureFederationOrigin(db *sql.DB, configured string) error {
 
 func federationRecipeObjectID(origin, recipeID string) (string, error) {
 	canonical, err := canonicalFederationOrigin(origin)
-	if err != nil || canonical != origin || len(recipeID) != 32 {
+	if err != nil || canonical != origin || !isFederationID(recipeID) {
 		return "", errors.New("invalid federation object identity")
-	}
-	for _, char := range recipeID {
-		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
-			return "", errors.New("invalid federation object identity")
-		}
 	}
 	return origin + "/federation/recipes/" + recipeID, nil
 }

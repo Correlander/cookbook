@@ -8,6 +8,7 @@ from pathlib import Path
 _IMAGE_NAME = re.compile(r"[0-9a-fA-F]{32}\.(?:jpg|png|webp)\Z")
 _DATABASE_FILES = {"cookbook.db", "cookbook.db-wal", "cookbook.db-journal"}
 _MAX_MEMBERS = 100_000
+_MAX_IMAGE_BYTES = 5 << 20
 
 
 class BackupValidationError(ValueError):
@@ -50,6 +51,8 @@ def validate_backup(path: Path) -> None:
                 if len(parts) == 2 and parts[0] == "media" and _IMAGE_NAME.fullmatch(parts[1]):
                     if not member.isfile():
                         raise BackupValidationError("media entries must be regular files")
+                    if member.size > _MAX_IMAGE_BYTES:
+                        raise BackupValidationError("media entry exceeds the upload size limit")
                     continue
                 raise BackupValidationError(f"backup contains an unexpected entry: {raw_name}")
     except (OSError, tarfile.TarError) as exc:

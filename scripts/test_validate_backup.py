@@ -76,6 +76,13 @@ class BackupValidationTests(unittest.TestCase):
         with self.assertRaises(BackupValidationError):
             validate_backup(self.archive(invalid_media))
 
+    def test_rejects_media_larger_than_the_upload_limit(self):
+        oversized = self.valid_entries + [
+            ("media/abcdef0123456789abcdef0123456789.jpg", "file", "x" * ((5 << 20) + 1))
+        ]
+        with self.assertRaises(BackupValidationError):
+            validate_backup(self.archive(oversized))
+
     def test_requires_database_and_media_directory(self):
         with self.assertRaises(BackupValidationError):
             validate_backup(self.archive([("media", "directory", "")]))

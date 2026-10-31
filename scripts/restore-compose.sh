@@ -82,6 +82,14 @@ docker compose run -T --rm --no-deps --user 0:0 \
 	rm -f /data/cookbook.db /data/cookbook.db-wal /data/cookbook.db-shm /data/cookbook.db-journal
 	tar -xzf "/backup/$archive" -C /data
 	chown -R cookbook:cookbook /data
+	chmod 600 /data/cookbook.db
+	for sidecar in /data/cookbook.db-wal /data/cookbook.db-journal; do
+		[ ! -e "$sidecar" ] || chmod 600 "$sidecar"
+	done
+	chmod 700 /data/media
+	for image in /data/media/*; do
+		[ ! -e "$image" ] || chmod 600 "$image"
+	done
 	' sh "$archive_name"
 
 restore_succeeded=yes

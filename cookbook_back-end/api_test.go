@@ -173,6 +173,28 @@ func TestRecipeOwnershipTransferIsOwnerAuthorizedAndKeepsAttribution(t *testing.
 	}
 }
 
+func TestCookbookScopedRecipesRequireCookbookAndRecipeAccess(t *testing.T) {
+	db := testDatabase(t)
+	_, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('member','member@example.test','Member','now'),('outsider','outsider@example.test','Outsider','now'); INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at) VALUES('book','owner','Shared book','private','now','now'); INSERT INTO cookbook_memberships(cookbook_id,user_id,role,created_at) VALUES('book','member','viewer','now'); INSERT INTO recipes(id,owner_id,creator_name,title,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at) VALUES('recipe','owner','Owner','Pie','[]','[]','[]','private','owner_only','now','now'),('unlinked','owner','Owner','Soup','[]','[]','[]','private','owner_only','now','now'); INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES('book','recipe','owner','now')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := apiHandler{db: db}
+	for _, user := range []string{"owner", "member"} {
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, requestForUser(http.MethodGet, "/api/recipes?cookbook_id=book", user))
+		var items []recipe
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &items) != nil || len(items) != 1 || items[0].ID != "recipe" {
+			t.Fatalf("user %s cookbook recipes status=%d body=%s", user, response.Code, response.Body)
+		}
+	}
+	blocked := httptest.NewRecorder()
+	h.ServeHTTP(blocked, requestForUser(http.MethodGet, "/api/recipes?cookbook_id=book", "outsider"))
+	if blocked.Code != http.StatusNotFound {
+		t.Fatalf("non-member cookbook status=%d", blocked.Code)
+	}
+}
+
 func TestAuthStateChangesRequireSameOrigin(t *testing.T) {
 	db := testDatabase(t)
 	h := handlerWithAuth(db, testAuth(db))

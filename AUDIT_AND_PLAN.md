@@ -75,6 +75,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 - Anonymous visitors can search and page through public cookbooks and their public recipes. Cookbook-scoped reads omit private and unlisted recipes even when those recipes are referenced by a public cookbook.
 - Recipe owners alone can change resource visibility; cookbook editors can edit content only when the recipe's edit policy permits it.
 - Signed-in users now land on a compact kitchen dashboard header; the large editorial hero and signup banner remain anonymous-only.
+- Signed-in users can open a cookbook detail view with search and pagination. The API first checks cookbook access and then returns only recipes the user can independently read.
 - A signed-in reader may save an accessible recipe as a private owner-controlled copy. Original creator attribution and source recipe ID are preserved; the new account owns the copy and its new revision history.
 - Recipe owners can transfer ownership to an existing account. The database update is owner-checked, retains creator attribution and revisions, and passes through authenticated mutation auditing.
 

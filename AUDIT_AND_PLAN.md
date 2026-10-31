@@ -78,6 +78,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 - Signed-in users can open a cookbook detail view with search and pagination. The API first checks cookbook access and then returns only recipes the user can independently read.
 - A signed-in reader may save an accessible recipe as a private owner-controlled copy. Original creator attribution and source recipe ID are preserved; the new account owns the copy and its new revision history.
 - Recipe owners can transfer ownership to an existing account. The database update is owner-checked, retains creator attribution and revisions, and passes through authenticated mutation auditing.
+- Recipe detail can scale leading numeric ingredient amounts to a chosen serving count, including decimals and simple fractions, without modifying the saved recipe. Free-text quantities and ranges remain unchanged.
 
 ### M4 — History and recovery (partial)
 - Atomic revision snapshots, concurrency/version checks, diff/restore-as-new-version, distinct audit records, soft delete/trash, configurable retention and cleanup.

@@ -71,6 +71,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 - Cookbook listing now uses the shared bounded `limit`/`offset` contract, stable ordering, and a dashboard load-more control. Backend tests cover page boundaries, ordering, and invalid limits.
 - Recipe images are stored as generated local files (JPEG, PNG, or WebP; 5 MiB maximum), verified by decoding image headers, served through recipe visibility checks, and preserved in revision snapshots. Compose persists them under `/data/media`; backups must include this directory.
 - Administrators can manage the instance's public-browsing and registration settings in the app. Enabling public browsing while resources are already marked public requires an explicit confirmation; private resources remain private.
+- Anonymous visitors can search and page through public cookbooks and their public recipes. Cookbook-scoped reads omit private and unlisted recipes even when those recipes are referenced by a public cookbook.
 
 ### M4 — History and recovery (partial)
 - Atomic revision snapshots, concurrency/version checks, diff/restore-as-new-version, distinct audit records, soft delete/trash, configurable retention and cleanup.

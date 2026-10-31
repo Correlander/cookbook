@@ -124,6 +124,7 @@ func (h publicRecipeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		it.OwnerID = ""
 		it.CookbookIDs = []string{}
+		it.EditPolicy = ""
 		if imagePath != "" {
 			it.Image = "/api/recipes/" + it.ID + "/image"
 		}
@@ -173,11 +174,11 @@ type recipe struct {
 	CookTime    int          `json:"cook_time_minutes"`
 	Tags        []string     `json:"tags"`
 	Visibility  visibility   `json:"visibility"`
-	EditPolicy  string       `json:"edit_policy"`
+	EditPolicy  string       `json:"edit_policy,omitempty"`
 	CanEdit     bool         `json:"can_edit"`
 	CanDelete   bool         `json:"can_delete"`
 	Version     int          `json:"version"`
-	CookbookIDs []string     `json:"cookbook_ids"`
+	CookbookIDs []string     `json:"cookbook_ids,omitempty"`
 	CreatedAt   string       `json:"created_at"`
 	UpdatedAt   string       `json:"updated_at"`
 	DeletedAt   string       `json:"deleted_at,omitempty"`

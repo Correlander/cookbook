@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
@@ -396,9 +397,24 @@ func authConfig(db *sql.DB) (authHandler, error) {
 	return authHandler{db: db, sender: sender, baseURL: base, origin: baseOrigin, secureCookies: parsedBase.Scheme == "https", webauthn: wa}, nil
 }
 
-type commandEmailSender struct{ command string }
+type commandEmailSender struct {
+	command string
+	timeout time.Duration
+}
 
-type smtpEmailSender struct{ address, from, username, password string }
+type smtpEmailSender struct {
+	address, from, username, password string
+	timeout                           time.Duration
+}
+
+const emailDeliveryTimeout = 30 * time.Second
+
+func configuredEmailTimeout(timeout time.Duration) time.Duration {
+	if timeout > 0 {
+		return timeout
+	}
+	return emailDeliveryTimeout
+}
 
 func (s smtpEmailSender) SendLoginLink(to, link string) error {
 	toAddress, err := mail.ParseAddress(to)
@@ -413,8 +429,18 @@ func (s smtpEmailSender) SendLoginLink(to, link string) error {
 	if err != nil {
 		return errors.New("invalid SMTP address")
 	}
-	client, err := smtp.Dial(s.address)
+	timeout := configuredEmailTimeout(s.timeout)
+	conn, err := net.DialTimeout("tcp", s.address, timeout)
 	if err != nil {
+		return errors.New("email delivery failed")
+	}
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		_ = conn.Close()
+		return errors.New("email delivery failed")
+	}
+	client, err := smtp.NewClient(conn, host)
+	if err != nil {
+		_ = conn.Close()
 		return errors.New("email delivery failed")
 	}
 	defer client.Close()
@@ -458,7 +484,9 @@ func (s commandEmailSender) SendLoginLink(to, link string) error {
 	if err != nil {
 		return errors.New("email payload encoding failed")
 	}
-	cmd := exec.Command(s.command)
+	ctx, cancel := context.WithTimeout(context.Background(), configuredEmailTimeout(s.timeout))
+	defer cancel()
+	cmd := exec.CommandContext(ctx, s.command)
 	cmd.Stdin = strings.NewReader(string(payload))
 	if err := cmd.Run(); err != nil {
 		return errors.New("email delivery failed")

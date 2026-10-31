@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -121,5 +122,49 @@ func TestCommandEmailSenderKeepsSignInURLOutOfArguments(t *testing.T) {
 	}
 	if payload.To != "cook@example.test" || payload.SignInURL != link {
 		t.Fatalf("unexpected email payload: %#v", payload)
+	}
+}
+
+func TestCommandEmailSenderTimesOut(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script")
+	}
+	script := filepath.Join(t.TempDir(), "slow-mailer")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexec sleep 5\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	err := (commandEmailSender{command: script, timeout: 100 * time.Millisecond}).SendLoginLink("cook@example.test", "https://cookbook.example/auth/confirm?token=secret")
+	if err == nil {
+		t.Fatal("expected the timed out mail command to fail")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("mail command timeout took %s", elapsed)
+	}
+}
+
+func TestSMTPSenderTimesOutWaitingForGreeting(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var buffer [1]byte
+		_, _ = conn.Read(buffer[:])
+	}()
+
+	started := time.Now()
+	err = (smtpEmailSender{address: listener.Addr().String(), from: "cookbook@example.test", timeout: 100 * time.Millisecond}).SendLoginLink("cook@example.test", "https://cookbook.example/auth/confirm?token=secret")
+	if err == nil {
+		t.Fatal("expected SMTP greeting timeout to fail")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("SMTP greeting timeout took %s", elapsed)
 	}
 }

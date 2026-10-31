@@ -842,7 +842,7 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 		if !canReadResource(uid, access{instancePublic: publicFlags[index], visibility: it.Visibility, ownerID: it.OwnerID, memberRole: member}) {
 			continue
 		}
-		it.CookbookIDs = h.recipeCookbooks(it.ID)
+		it.CookbookIDs = h.recipeCookbooks(it.ID, uid)
 		it.CanEdit = canEditRecipe(uid, access{ownerID: it.OwnerID, memberRole: member}, it.EditPolicy)
 		it.CanDelete = uid != "" && uid == it.OwnerID
 		visibleItems = append(visibleItems, it)
@@ -977,7 +977,7 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 			writeError(w, 404, "not_found")
 			return
 		}
-		it.CookbookIDs = h.recipeCookbooks(id)
+		it.CookbookIDs = h.recipeCookbooks(id, uid)
 		if imagePath != "" {
 			it.Image = "/api/recipes/" + id + "/image"
 		}
@@ -1384,8 +1384,8 @@ func replaceCookbookRefs(tx *sql.Tx, recipeID, userID string, ids []string) erro
 	}
 	return nil
 }
-func (h apiHandler) recipeCookbooks(id string) []string {
-	rows, err := h.db.Query(`SELECT cookbook_id FROM cookbook_recipes WHERE recipe_id=? ORDER BY cookbook_id`, id)
+func (h apiHandler) recipeCookbooks(id, userID string) []string {
+	rows, err := h.db.Query(`SELECT cr.cookbook_id FROM cookbook_recipes cr JOIN cookbooks c ON c.id=cr.cookbook_id JOIN instance_settings s ON s.id=1 WHERE cr.recipe_id=? AND (c.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_memberships m WHERE m.cookbook_id=c.id AND m.user_id=?) OR (s.public_instance=1 AND c.visibility='public')) ORDER BY cr.cookbook_id`, id, userID, userID)
 	if err != nil {
 		return []string{}
 	}

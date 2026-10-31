@@ -527,6 +527,43 @@ func TestRecipeAccessUsesHighestMembershipRoleAcrossCookbooks(t *testing.T) {
 	}
 }
 
+func TestRecipeResponseOnlyIncludesReadableCookbooks(t *testing.T) {
+	db := testDatabase(t)
+	_, err := db.Exec(`
+		UPDATE instance_settings SET public_instance=1;
+		INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('reader','reader@example.test','Reader','now');
+		INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at) VALUES('public-book','owner','Public','public','now','now'),('private-book','owner','Private','private','now','now'),('unlisted-book','owner','Unlisted','unlisted','now','now');
+		INSERT INTO recipes(id,owner_id,creator_name,title,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at) VALUES('recipe','owner','Owner','Shared recipe','[]','[]','[]','public','owner_only','now','now');
+		INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES('public-book','recipe','owner','now'),('private-book','recipe','owner','now'),('unlisted-book','recipe','owner','now')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := issueSession(db, "reader")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := handlerWithAuth(db, testAuth(db))
+	cookie := &http.Cookie{Name: sessionCookie, Value: token}
+
+	response := callAPI(handler, http.MethodGet, "/api/recipes/recipe", nil, cookie)
+	var item recipe
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &item) != nil || len(item.CookbookIDs) != 1 || item.CookbookIDs[0] != "public-book" {
+		t.Fatalf("recipe exposed unreadable cookbook associations: status=%d body=%s", response.Code, response.Body)
+	}
+	listed := callAPI(handler, http.MethodGet, "/api/recipes?limit=24&offset=0", nil, cookie)
+	var items []recipe
+	if listed.Code != http.StatusOK || json.Unmarshal(listed.Body.Bytes(), &items) != nil || len(items) != 1 || len(items[0].CookbookIDs) != 1 || items[0].CookbookIDs[0] != "public-book" {
+		t.Fatalf("recipe listing exposed unreadable cookbook associations: status=%d body=%s", listed.Code, listed.Body)
+	}
+	if _, err := db.Exec(`INSERT INTO cookbook_memberships(cookbook_id,user_id,role,created_at) VALUES('private-book','reader','viewer','now'),('unlisted-book','reader','editor','now')`); err != nil {
+		t.Fatal(err)
+	}
+	response = callAPI(handler, http.MethodGet, "/api/recipes/recipe", nil, cookie)
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &item) != nil || len(item.CookbookIDs) != 3 {
+		t.Fatalf("recipe omitted readable cookbook associations: status=%d body=%s", response.Code, response.Body)
+	}
+}
+
 func TestCookbookPagination(t *testing.T) {
 	db := testDatabase(t)
 	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'); INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at) VALUES('book-a','owner','A','private','now','2026-01-01'),('book-b','owner','B','private','now','2026-01-02'),('book-c','owner','C','private','now','2026-01-03')`); err != nil {

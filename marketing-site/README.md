@@ -10,4 +10,4 @@ Open `index.html` directly, or serve this directory with any static HTTP server.
 
 Upload the contents of this directory to a static host. Keep the application deployment separate. Update the project links in `index.html` if the repository URL changes. Managed hosting is not advertised as available until the project has an actual service and support process.
 
-The page includes a semantic heading structure, responsive layout, skip link, reduced-motion support, page title, description, and Open Graph summary. It uses system fonts and local CSS art without external asset requests.
+The page includes a semantic heading structure, responsive layout, skip link, reduced-motion support, page title, description, and Open Graph summary. It uses system fonts, local CSS art, and a compressed screenshot of the public Cookbook app home; it makes no external asset requests.

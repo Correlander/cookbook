@@ -35,6 +35,8 @@ Recipe owners can transfer ownership to an existing account by email; the transf
 
 Recipe details can adjust ingredient quantities to a different serving count for simple numeric, decimal, and fractional amounts. Text such as “to taste” and quantity ranges are left as entered; scaling is a view-only adjustment and does not edit the saved recipe.
 
+In the recipe editor, instruction steps can be added, removed, and moved up or down before saving.
+
 A signed-in reader with access to a recipe can save a copy into their own account. Copies keep the source creator attribution and source recipe ID, belong to the copying account, start private and owner-only, and begin a separate revision history.
 
 Recipe owners can move recipes to their private trash and restore them. `COOKBOOK_TRASH_RETENTION_DAYS` defaults to `30`; expired trash is permanently deleted during startup and daily cleanup. Set it to `0` to retain trashed recipes indefinitely. Permanent cleanup also removes recipe revision history and cookbook references.

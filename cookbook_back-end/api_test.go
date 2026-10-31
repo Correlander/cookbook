@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -46,21 +47,42 @@ func TestPortableExportAndImportKeepOwnershipAndPrivacySafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := apiHandler{db: db}
+	mediaDir := t.TempDir()
+	var imageData bytes.Buffer
+	if err := png.Encode(&imageData, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	imageName := newID() + ".png"
+	if err := os.WriteFile(filepath.Join(mediaDir, imageName), imageData.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE recipes SET image_path=? WHERE id='recipe'`, imageName); err != nil {
+		t.Fatal(err)
+	}
+	h := apiHandler{db: db, mediaDir: mediaDir}
 	export := httptest.NewRecorder()
 	h.ServeHTTP(export, requestForUser(http.MethodGet, "/api/export", "owner"))
 	if export.Code != http.StatusOK {
 		t.Fatalf("export status=%d body=%s", export.Code, export.Body)
 	}
-	var bundle portableBundle
-	if err := json.Unmarshal(export.Body.Bytes(), &bundle); err != nil {
+	archive, err := zip.NewReader(bytes.NewReader(export.Body.Bytes()), int64(export.Body.Len()))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(bundle.Cookbooks) != 1 || len(bundle.Recipes) != 1 || bundle.Recipes[0].CreatorName != "Grandma" || len(bundle.Cookbooks[0].RecipeIDs) != 1 {
+	manifest, err := archive.File[0].Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bundle portableBundle
+	if err := json.NewDecoder(manifest).Decode(&bundle); err != nil {
+		t.Fatal(err)
+	}
+	_ = manifest.Close()
+	if len(bundle.Cookbooks) != 1 || len(bundle.Recipes) != 1 || bundle.Recipes[0].CreatorName != "Grandma" || len(bundle.Cookbooks[0].RecipeIDs) != 1 || bundle.Recipes[0].ImageFile != imageName {
 		t.Fatalf("incomplete export: %+v", bundle)
 	}
 	importResponse := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/import", strings.NewReader(export.Body.String()))
+	request := httptest.NewRequest(http.MethodPost, "/api/import", bytes.NewReader(export.Body.Bytes()))
 	request = request.WithContext(context.WithValue(request.Context(), userContextKey{}, "owner"))
 	h.ServeHTTP(importResponse, request)
 	if importResponse.Code != http.StatusCreated {
@@ -69,6 +91,13 @@ func TestPortableExportAndImportKeepOwnershipAndPrivacySafe(t *testing.T) {
 	var recipeCount, bookCount, publicCount int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM recipes WHERE owner_id='owner' AND visibility='private' AND creator_name='Grandma'`).Scan(&recipeCount); err != nil || recipeCount != 1 {
 		t.Fatalf("imported private attributed recipes=%d err=%v", recipeCount, err)
+	}
+	var importedImage string
+	if err := db.QueryRow(`SELECT image_path FROM recipes WHERE owner_id='owner' AND creator_name='Grandma' AND id!='recipe'`).Scan(&importedImage); err != nil || importedImage == imageName {
+		t.Fatalf("imported image=%q err=%v", importedImage, err)
+	}
+	if _, err := os.Stat(filepath.Join(mediaDir, importedImage)); err != nil {
+		t.Fatalf("imported media file missing: %v", err)
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM cookbooks WHERE owner_id='owner' AND visibility='private' AND title='Family recipes'`).Scan(&bookCount); err != nil || bookCount != 1 {
 		t.Fatalf("imported private cookbooks=%d err=%v", bookCount, err)
@@ -93,6 +122,33 @@ func TestPortableImportRejectsInvalidAndOversizedBundles(t *testing.T) {
 	h.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("oversized import status=%d", response.Code)
+	}
+}
+
+func TestPortableArchiveAcceptsLegacyJSONAndRejectsUnsafeZIPPaths(t *testing.T) {
+	legacy, err := json.Marshal(portableBundle{Format: legacyPortableFormat, Cookbooks: []portableCookbook{}, Recipes: []portableRecipe{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, media, err := decodePortableArchive(legacy)
+	if err != nil || bundle.Format != legacyPortableFormat || len(media) != 0 {
+		t.Fatalf("legacy import bundle=%+v media=%d err=%v", bundle, len(media), err)
+	}
+
+	var archiveBytes bytes.Buffer
+	archive := zip.NewWriter(&archiveBytes)
+	entry, err := archive.Create("../escape")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write([]byte("bad")); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := decodePortableArchive(archiveBytes.Bytes()); err == nil {
+		t.Fatal("accepted ZIP path traversal entry")
 	}
 }
 

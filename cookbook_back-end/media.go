@@ -186,7 +186,11 @@ func (h mediaHandler) serveImage(w http.ResponseWriter, r *http.Request, recipeI
 		return
 	}
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", "private, max-age=300")
+	if public == 1 && recipeVisibility == visibilityPublic {
+		w.Header().Set("Cache-Control", "public, max-age=300")
+	} else {
+		w.Header().Set("Cache-Control", "private, no-store")
+	}
 	w.Header().Set("Content-Disposition", "inline; filename=recipe-image")
 	http.ServeContent(w, r, "recipe-image", info.ModTime(), file)
 }

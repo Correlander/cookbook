@@ -663,16 +663,16 @@ func TestRecipeImageUploadAccessAndRevisionRestore(t *testing.T) {
 	ownerFetch.AddCookie(&http.Cookie{Name: sessionCookie, Value: ownerToken})
 	privateFetch = httptest.NewRecorder()
 	h.ServeHTTP(privateFetch, ownerFetch)
-	if privateFetch.Code != http.StatusOK || privateFetch.Header().Get("Content-Type") != "image/png" {
-		t.Fatalf("owner image response = %d %q", privateFetch.Code, privateFetch.Header().Get("Content-Type"))
+	if privateFetch.Code != http.StatusOK || privateFetch.Header().Get("Content-Type") != "image/png" || privateFetch.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("owner image response = %d content-type=%q cache-control=%q", privateFetch.Code, privateFetch.Header().Get("Content-Type"), privateFetch.Header().Get("Cache-Control"))
 	}
 	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1; UPDATE recipes SET visibility='public' WHERE id='private-recipe'`); err != nil {
 		t.Fatal(err)
 	}
 	publicFetch := httptest.NewRecorder()
 	h.ServeHTTP(publicFetch, httptest.NewRequest(http.MethodGet, uploaded.Image, nil))
-	if publicFetch.Code != http.StatusOK {
-		t.Fatalf("public image response = %d", publicFetch.Code)
+	if publicFetch.Code != http.StatusOK || publicFetch.Header().Get("Cache-Control") != "public, max-age=300" {
+		t.Fatalf("public image response = %d cache-control=%q", publicFetch.Code, publicFetch.Header().Get("Cache-Control"))
 	}
 	invalid := upload(&http.Cookie{Name: sessionCookie, Value: ownerToken}, []byte("not an image"))
 	if invalid.Code != http.StatusBadRequest {

@@ -768,6 +768,10 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid, q := authenticatedUser(r), strings.TrimSpace(r.URL.Query().Get("q"))
+	if len(q) > 200 {
+		writeError(w, http.StatusBadRequest, "invalid_query")
+		return
+	}
 	cookbookID := strings.TrimSpace(r.URL.Query().Get("cookbook_id"))
 	if len(cookbookID) > 80 {
 		writeError(w, http.StatusBadRequest, "invalid_cookbook")

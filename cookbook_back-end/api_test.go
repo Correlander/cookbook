@@ -328,6 +328,10 @@ func TestPublicRecipeSearchAndPagination(t *testing.T) {
 	if privateEndpoint.Code != http.StatusOK || json.Unmarshal(privateEndpoint.Body.Bytes(), &page) != nil || len(page) != 1 || page[0].ID != "soup-b" {
 		t.Fatalf("authenticated recipe endpoint search page = %d %s", privateEndpoint.Code, privateEndpoint.Body)
 	}
+	longQuery := callAPI(handler, http.MethodGet, "/api/recipes?q="+strings.Repeat("x", 201), nil, &http.Cookie{Name: sessionCookie, Value: token})
+	if longQuery.Code != http.StatusBadRequest || !strings.Contains(longQuery.Body.String(), "invalid_query") {
+		t.Fatalf("oversized recipe search status=%d body=%s", longQuery.Code, longQuery.Body)
+	}
 	second := httptest.NewRecorder()
 	handler.ServeHTTP(second, httptest.NewRequest(http.MethodGet, "/api/public/recipes?q=soup&limit=1&offset=1", nil))
 	if second.Code != http.StatusOK || json.Unmarshal(second.Body.Bytes(), &page) != nil || len(page) != 1 || page[0].ID != "soup-a" {

@@ -33,9 +33,15 @@ func handlerWithAuthConfig(db *sql.DB, auth authHandler, cfg config) http.Handle
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.Handle("/api/auth/passkey/register/", csrfProtection(auth.origin, requireSession(db, auditChanges(db, passkeys))))
+	recentPasskeyChange := func(next http.Handler) http.Handler {
+		return csrfProtection(auth.origin, requireSession(db, auditChanges(db, requireRecentAuthentication(db, next))))
+	}
+	mux.Handle("POST /api/auth/passkey/register/begin", recentPasskeyChange(passkeys))
+	mux.Handle("POST /api/auth/passkey/register/finish", recentPasskeyChange(passkeys))
 	mux.Handle("/api/auth/passkey/login/", csrfProtection(auth.origin, passkeys))
 	mux.Handle("/api/auth/passkeys", csrfProtection(auth.origin, requireSession(db, auditChanges(db, passkeys))))
 	mux.Handle("/api/auth/passkeys/", csrfProtection(auth.origin, requireSession(db, auditChanges(db, passkeys))))
+	mux.Handle("DELETE /api/auth/passkeys/{id}", recentPasskeyChange(passkeys))
 	sessions := sessionHandler{db: db, secureCookies: auth.secureCookies}
 	mux.Handle("GET /api/auth/sessions", requireSession(db, sessions))
 	mux.Handle("DELETE /api/auth/sessions/{id}", csrfProtection(auth.origin, requireSession(db, auditChanges(db, sessions))))
@@ -44,6 +50,8 @@ func handlerWithAuthConfig(db *sql.DB, auth authHandler, cfg config) http.Handle
 	mux.Handle("/api/public/cookbooks", publicCookbooksHandler{db: db})
 	mux.Handle("/api/public/cookbooks/{id}/recipes", publicCookbookRecipesHandler{db: db})
 	api := apiHandler{db: db, mediaDir: cfg.mediaDir}
+	mux.Handle("POST /api/recipes/{id}/transfer", csrfProtection(auth.origin, requireSession(db, auditChanges(db, requireRecentAuthentication(db, api)))))
+	mux.Handle("PATCH /api/admin/users/{id}", csrfProtection(auth.origin, requireSession(db, auditChanges(db, requireRecentAuthentication(db, api)))))
 	mux.Handle("/api/public/courses", api)
 	mux.Handle("/api/public/courses/", api)
 	media := mediaHandler{db: db, rootDir: cfg.mediaDir}

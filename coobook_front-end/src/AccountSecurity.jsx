@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react'
 import { registerPasskey } from './passkeys.js'
 
+async function failureMessage(response, fallback) {
+  const body = await response.clone().json().catch(() => null)
+  if (body?.error === 'reauthentication_required') return 'Sign in again before changing account security settings.'
+  return fallback
+}
+
 export default function AccountSecurity() {
   const [items, setItems] = useState([])
   const [sessions, setSessions] = useState([])
@@ -46,7 +52,7 @@ export default function AccountSecurity() {
     setError('')
     try {
       const response = await fetch(`/api/auth/passkeys/${item.id}`, { method: 'DELETE' })
-      if (!response.ok) throw new Error('Could not remove this passkey.')
+      if (!response.ok) throw new Error(await failureMessage(response, 'Could not remove this passkey.'))
       await reload()
     } catch (err) { setError(err.message) }
   }
@@ -56,7 +62,7 @@ export default function AccountSecurity() {
     setError('')
     try {
       const response = await fetch(`/api/auth/sessions/${session.id}`, { method: 'DELETE' })
-      if (!response.ok) throw new Error('Could not revoke this browser session.')
+      if (!response.ok) throw new Error(await failureMessage(response, 'Could not revoke this browser session.'))
       await reload()
     } catch (err) { setError(err.message) }
   }

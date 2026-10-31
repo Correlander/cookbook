@@ -12,6 +12,7 @@ import (
 )
 
 const sessionCookie = "cookbook_session"
+const recentAuthenticationWindow = 10 * time.Minute
 
 func issueSession(db *sql.DB, userID string) (string, time.Time, error) {
 	return issueSessionWithUserAgent(db, userID, "")
@@ -68,6 +69,34 @@ func sessionUser(db *sql.DB, r *http.Request) (string, bool) {
 		return "", false
 	}
 	return userID, true
+}
+
+func requireRecentAuthentication(db *sql.DB, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uid := authenticatedUser(r)
+		cookie, err := r.Cookie(sessionCookie)
+		if uid == "" || err != nil || cookie.Value == "" {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var createdAt string
+		err = db.QueryRow(`SELECT created_at FROM sessions WHERE token_hash=? AND user_id=?`, sessionTokenHash(cookie.Value), uid).Scan(&createdAt)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeError(w, http.StatusUnauthorized, "unauthorized")
+			} else {
+				writeError(w, http.StatusInternalServerError, "storage_error")
+			}
+			return
+		}
+		issuedAt, err := time.Parse(time.RFC3339Nano, createdAt)
+		now := time.Now().UTC()
+		if err != nil || issuedAt.After(now) || now.Sub(issuedAt) > recentAuthenticationWindow {
+			writeError(w, http.StatusForbidden, "reauthentication_required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func setSessionCookie(w http.ResponseWriter, token string, expires time.Time, secure bool) {

@@ -47,8 +47,8 @@ All API JSON responses are `no-store`. Mutating API requests use same-origin che
 | --- | --- |
 | `/healthz` | `GET`; process health. |
 | `/api/auth/email`, `/api/auth/consume`, `/api/auth/me`, `/api/auth/logout` | Email sign-in request and explicit one-time token consumption (`POST`), session read (`GET`), and logout (`POST`). |
-| `/api/auth/passkey/register/{begin,finish}`, `/api/auth/passkey/login/{begin,finish}` | `POST`; passkey ceremonies. Registration requires a session; ceremony origin, challenge, and replay checks are server-side. |
-| `/api/auth/passkeys`, `/api/auth/passkeys/{credential}` | `GET` list and `DELETE` revoke; session required. |
+| `/api/auth/passkey/register/{begin,finish}`, `/api/auth/passkey/login/{begin,finish}` | `POST`; passkey ceremonies. Registration requires a session issued within ten minutes; ceremony origin, challenge, and replay checks are server-side. |
+| `/api/auth/passkeys`, `/api/auth/passkeys/{credential}` | `GET` list; `DELETE` revoke requires recent authentication. |
 | `/api/auth/sessions`, `/api/auth/sessions/{id}` | `GET` lists the signed-in account's active sessions; `DELETE` revokes one of that account's sessions. |
 | `/api/public/recipes`, `/api/public/cookbooks`, `/api/public/cookbooks/{id}/recipes` | `GET`; public browsing, search, and pagination. Instance and resource visibility are enforced. |
 | `/api/cookbooks`, `/api/cookbooks/{id}` | `GET`/`POST` collection; `GET`/`PATCH` item. Authenticated; edits are owner-only. |
@@ -56,9 +56,9 @@ All API JSON responses are `no-store`. Mutating API requests use same-origin che
 | `/api/recipes`, `/api/recipes/{id}` | `GET`/`POST` collection; `GET`/`PUT`/`DELETE` item. Authenticated writes; delete moves the recipe to trash. |
 | `/api/recipes/{id}/image` | `GET`/`HEAD` visibility-checked reads; `POST`/`PUT`/`DELETE` owner-only writes. |
 | `/api/recipes/{id}/revisions`, `/api/recipes/{id}/revisions/diff`, `/api/recipes/{id}/revisions/{version}/restore` | Revision reads, comparison, and restore-as-new-version require recipe edit rights. |
-| `/api/recipes/trash`, `/api/recipes/{id}/restore`, `/api/recipes/{id}/fork`, `/api/recipes/{id}/transfer` | Owner trash/restore, accessible recipe copy, and owner-initiated ownership transfer. |
+| `/api/recipes/trash`, `/api/recipes/{id}/restore`, `/api/recipes/{id}/fork`, `/api/recipes/{id}/transfer` | Owner trash/restore, accessible recipe copy, and owner-initiated ownership transfer; transfer requires a session issued within ten minutes. |
 | `/api/export`, `/api/import` | Authenticated owner-scoped portability export and import. ZIP imports have bounded compressed/expanded sizes and path/type validation. |
-| `/api/admin/settings`, `/api/admin/users`, `/api/admin/users/{id}`, `/api/admin/invitations`, `/api/admin/audit` | Administrator settings, paged user/audit reads, role updates, and account invitations. |
+| `/api/admin/settings`, `/api/admin/users`, `/api/admin/users/{id}`, `/api/admin/invitations`, `/api/admin/audit` | Administrator settings, paged user/audit reads, role updates (recent authentication required), and account invitations. |
 | `/api/courses`, `/api/courses/{id}`, `/api/courses/{id}/lessons[/<lesson>]` | Authenticated course authoring when enabled. The API returns `404` for course routes while disabled. |
 | `/api/public/courses[/<id>[/lessons]]` | `GET`; public course browsing when both courses and public browsing are enabled. |
 

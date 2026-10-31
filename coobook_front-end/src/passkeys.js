@@ -12,6 +12,12 @@ function encodeBase64URL(value) {
   return window.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
 }
 
+async function failureMessage(response, fallback) {
+  const body = await response.clone().json().catch(() => null)
+  if (body?.error === 'reauthentication_required') return 'Sign in again before changing passkeys.'
+  return fallback
+}
+
 function publicKeyOptions(options, registration) {
   const publicKey = options.publicKey
   publicKey.challenge = decodeBase64URL(publicKey.challenge)
@@ -59,7 +65,7 @@ async function runCeremony(path, finishPath, registration, name) {
     throw new Error('Passkeys require a supported browser and a secure connection.')
   }
   const startResponse = await fetch(path, { method: 'POST' })
-  if (!startResponse.ok) throw new Error('Could not start the passkey ceremony.')
+  if (!startResponse.ok) throw new Error(await failureMessage(startResponse, 'Could not start the passkey ceremony.'))
   const { ceremony_id: ceremonyID, options } = await startResponse.json()
   const publicKey = publicKeyOptions(options, registration)
   const credential = registration
@@ -75,7 +81,7 @@ async function runCeremony(path, finishPath, registration, name) {
     },
     body: JSON.stringify(serializeCredential(credential, registration)),
   })
-  if (!finishResponse.ok) throw new Error('The passkey could not be verified. Try again.')
+  if (!finishResponse.ok) throw new Error(await failureMessage(finishResponse, 'The passkey could not be verified. Try again.'))
   return finishResponse.json()
 }
 

@@ -63,7 +63,12 @@ export default function AdminUsers({ currentUser }) {
       if (response.status === 409) {
         throw new Error('The last administrator must remain assigned. Ask another administrator to make this change.');
       }
-      if (!response.ok) throw new Error('Could not update this account role.');
+      if (!response.ok) {
+        const failure = await response.json().catch(() => null);
+        throw new Error(failure?.error === 'reauthentication_required'
+          ? 'Sign in again before changing administrator access.'
+          : 'Could not update this account role.');
+      }
       const updated = await response.json();
       setUsers((current) => current.map((item) => (item.id === updated.id ? updated : item)));
     } catch (saveError) {

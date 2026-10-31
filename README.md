@@ -37,6 +37,8 @@ Sign-in uses one-time email links and WebAuthn passkeys. Opening an email link d
 
 Account security lists active browser sessions, showing a bounded browser identifier and expiry, and lets you revoke another session without signing out the current browser. Signing out from the current browser remains available from the account menu.
 
+Passkey enrollment/removal, administrator-role changes, and recipe ownership transfers require a sign-in from the last ten minutes. If a session is older, sign in again and retry.
+
 `COOKBOOK_REGISTRATION` sets the initial mode on first startup: `invite_only` (default), `open`, or `disabled`. Administrators can change registration and public browsing settings in the dashboard after setup. Public browsing is off by default; an administrator must explicitly enable it, and existing public cookbooks or recipes require an additional confirmation before they become visible to anonymous visitors. Resources marked private remain private. Administrators can also create and revoke account invitations. Cookbook owners can invite collaborators as viewers or editors, change roles, and remove members. Invitation links are bound to the specified email address and expire after seven days. A cookbook invitation adds the recipient as a member only after they verify their email; the cookbook owner controls the member role. The recipient must verify that mailbox by consuming the one-time email link before an account is created.
 
 Recipe owners can transfer ownership to an existing account by email; the transfer is confirmed in the interface and recorded in the audit log. Creator attribution and revision history remain attached to the recipe.

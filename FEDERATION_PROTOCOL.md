@@ -10,6 +10,8 @@ Each instance configures one immutable HTTPS `federation_origin` before federati
 
 An administrator adds a peer with its HTTPS origin and active key ID/public key through local configuration or an administrator action. Peer URLs and keys never come from an event. Peer records and key changes are audited. Revocation blocks new deliveries and received requests immediately. Key rotation allows a short, explicit overlap between the old and new key IDs; revocation removes the old key from verification rather than accepting it indefinitely.
 
+Each instance's signing key is generated locally and stored as PKCS#8 PEM in a persistent secret directory with owner-only permissions. It is never stored in SQLite, exposed by the API, or passed in command-line arguments. Startup fails closed if the active key ID and private key are missing, malformed, or mismatched. Rotation installs a new key ID and private key, distributes its public key to peers, switches the active signer, then revokes the old key after the overlap. Backups that include this directory must receive the same protection as database backups.
+
 ## Event envelope
 
 All events are UTF-8 JSON with a 128 KiB maximum body. Unknown fields and event types are rejected. Duplicate JSON object keys, invalid UTF-8, trailing values, and values outside the documented bounds are rejected. The version 1 envelope is:

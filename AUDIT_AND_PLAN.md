@@ -1,6 +1,6 @@
 # Cookbook repository audit and implementation plan
 
-Audit date: 2026-10-30  
+Audit date: 2026-10-31
 Repository: `Correlander/cookbook`, cloned at this workspace's `cookbook-repo` directory.  
 Source brief and four visual references are in the sibling `cookbook_agent_handoff_federation/` directory.
 
@@ -14,10 +14,10 @@ At audit time the repository was an early prototype. Implementation has since ad
 - **Operations:** no database, configuration example, Docker setup, health endpoint, backup guidance, deployment docs, or CI found. README is a brief note describing the project as unfinished.
 - **History:** recent commits are starter-level README and repository cleanup changes.
 
-## Implementation progress (2026-10-30)
+## Implementation progress (updated 2026-10-31)
 
 - M1 foundation: Go configuration, health endpoint, security headers, SQLite startup schema, and backend verification are in place. The Go service serves embedded frontend assets, and a multi-stage Dockerfile/Compose setup persists SQLite and health-checks the app; the Docker image build is not verified on this host because no Docker daemon is running.
-- M2 authentication: passwordless email links, hashed one-time challenges, durable sessions, same-origin checks, WebAuthn passkeys, and frontend request/confirmation/management are implemented. First-administrator bootstrap and admin-issued email-bound account invitations are implemented. Invitations are accepted only after mailbox verification. Broader abuse controls and in-app admin role management remain open.
+- M2 authentication: passwordless email links, hashed one-time challenges, durable sessions, same-origin checks, WebAuthn passkeys, and frontend request/confirmation/management are implemented. First-administrator bootstrap and admin-issued email-bound account invitations are implemented. Invitations are accepted only after mailbox verification. Administrators can page through accounts and grant/revoke administrator access; self-role changes are refused and the final administrator is protected. Broader abuse controls remain open.
 - M3 local core: private-first users/cookbooks/recipes/membership schema, API authorization, structured recipes and metadata, public recipe listing, private recipe creation, and basic cookbook listing/creation/editing/assignment UI are implemented. Cookbook owners can invite members as viewers/editors, change roles, revoke pending invitations, and remove members. Recipe discovery and cookbook listing have server-side search/paging. Recipe images use local private storage, access-checked routes, and revision snapshots. Owners can edit recipes through the version-checked API; metadata is captured in revision history and restored with prior versions. The dashboard also manages instance account invitations.
 - M4 history: recipe snapshots are written atomically at create/update, including servings, preparation/cook time, tags, and images. Updates use optimistic versions, authorized users can read history and compare two versions, and restore-as-new-version uses an optimistic version check. Owner-only trash/restore and configurable retention cleanup are implemented. Successful authenticated API mutations and authenticated 403 denials are recorded separately in an administrator-only, paged security audit log.
 - Frontend dependencies were updated within existing semver ranges; the ESLint 10 migration and a minimatch override clear the current audit findings. Go tests/vet and frontend lint/build have been run successfully at recent checkpoints.

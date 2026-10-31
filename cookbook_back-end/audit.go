@@ -69,6 +69,9 @@ func auditAction(method, path string) string {
 			parts[3] = "{version}"
 		}
 	}
+	if len(parts) > 2 && parts[0] == "admin" && parts[1] == "users" {
+		parts[2] = "{id}"
+	}
 	if len(parts) > 2 && parts[0] == "auth" && parts[1] == "passkeys" {
 		parts[2] = "{id}"
 	}

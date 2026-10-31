@@ -19,7 +19,9 @@ Run backend checks with `go test ./...` and `go vet ./...` from `cookbook_back-e
 3. Run `docker compose up --build -d`. Compose binds the service to `127.0.0.1:8000`; put a trusted HTTPS reverse proxy in front. The `cookbook-data` volume stores SQLite data at `/data/cookbook.db` and recipe images under `/data/media`.
 4. After setup, remove `COOKBOOK_ADMIN_EMAIL` from `.env`. It has no effect once an administrator already exists.
 
-For a consistent backup, stop the service, copy `/data/cookbook.db` and `/data/media` from the `cookbook-data` volume, then start it again. Restore by stopping the service, replacing the database and media directory, and starting it. Keep the backup private; it contains accounts, private recipes, and sessions. Database schema upgrades run when the service starts.
+Run `./scripts/backup-compose.sh` to create a private archive in `./backups`. The helper stops the Compose service, archives the SQLite database together with any WAL or rollback-journal sidecar and `/data/media`, and restarts the service if it was running. Set `COOKBOOK_BACKUP_DIR` to change the default directory or pass a directory argument. Keep backups in encrypted storage outside the host as well; archives are not encrypted and contain accounts and private cookbook data.
+
+Restore with `./scripts/restore-compose.sh /path/to/cookbook-....tar.gz` from a host with Docker Compose and Python 3.9+. The archive and its directory must not be group- or world-writable. The script validates archive paths and file types, creates a fresh pre-restore backup in `COOKBOOK_BACKUP_DIR` (default `./backups`), replaces the database and media, and restarts the service if it was running. If applying the restore fails after shutdown, the service remains stopped for inspection. After a successful restore, verify the service health check and sign in before deleting the pre-restore backup. Database schema upgrades run when the service starts.
 
 ## Personal data export and import
 

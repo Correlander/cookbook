@@ -53,3 +53,11 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker compose config --quiet
       - run: docker build --tag cookbook:ci .
+
+  operations:
+    name: Backup tooling checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh -n scripts/backup-compose.sh scripts/restore-compose.sh
+      - run: python3 -m unittest discover -s scripts -p 'test_*.py' -v

@@ -93,7 +93,8 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 ### M5 — Self-hosting and portability
 - Dockerfile/Compose, `.env.example`, health checks, persistent SQLite/media volumes, admin bootstrap, upgrade and backup/restore runbook, import/export format with attribution.
 - Owner-scoped `cookbook-export-v2` ZIP export/import includes referenced media and attribution metadata, validates paths/content with bounded compressed and expanded sizes, and creates fresh private ownership. Legacy v1 JSON imports remain supported; revision history is not transferred.
-- Acceptance: reproducible local deployment and backup/restore rehearsal remain outstanding; Dockerfile and Compose configuration are prepared, and upgrade paths have migration tests.
+- `scripts/backup-compose.sh` and `scripts/restore-compose.sh` back up and restore the SQLite database, WAL/rollback-journal sidecars, and media volume through temporary Compose containers. Restore validates archive paths and member types, creates a pre-restore snapshot, and leaves the service stopped after failure. The archive validator has adversarial path/type tests.
+- Acceptance: reproducible local deployment and a live volume backup/restore rehearsal remain outstanding; this host has no Docker daemon. Dockerfile and Compose configuration are prepared, and upgrade paths have migration tests.
 
 ### M6 — Visual and accessibility polish
 - Refine the app using reference 02; ensure keyboard/focus, contrast, reduced motion, mobile layouts, loading/empty/error states, accessible dialogs and cooking mode.

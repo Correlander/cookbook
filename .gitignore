@@ -1,1 +1,3 @@
 cookbook.code-workspace
+/backups/
+__pycache__/

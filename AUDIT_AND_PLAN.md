@@ -25,6 +25,7 @@ At audit time the repository was an early prototype. Implementation has since ad
 - Backup and restore scripts now require owner-only directory/archive permissions so local group or other accounts cannot read plaintext instance backups.
 - M3 local core: private-first users/cookbooks/recipes/membership schema, API authorization, structured recipes and metadata, public recipe listing, private recipe creation, and basic cookbook listing/creation/editing/assignment UI are implemented. Cookbook owners can invite members as viewers/editors, change roles, revoke pending invitations, and remove members. Recipe discovery and cookbook listing have server-side search/paging. Recipe images use local private storage, access-checked routes, and revision snapshots. Owners can edit recipes through the version-checked API; metadata is captured in revision history and restored with prior versions. The dashboard also manages instance account invitations.
 - Recipe membership role resolution is consistent when a recipe is referenced by multiple cookbooks; editing still requires the recipe's explicit `cookbook_editors` policy.
+- Landing-page visual polish now includes a compressed local food hero image; mobile header controls remain usable at 320px and 390px.
 - Recipe responses include only cookbook associations the requesting user can read, preventing private and unlisted cookbook IDs from leaking through a readable recipe.
 - Private recipe images are served with `no-store`; images on explicitly public recipes are cacheable for five minutes.
 - JSON API responses use `no-store` to prevent browser or intermediary reuse of account-specific data.
@@ -110,6 +111,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 - Refine the app using reference 02; ensure keyboard/focus, contrast, reduced motion, mobile layouts, loading/empty/error states, accessible dialogs and cooking mode.
 - A distraction-reduced cooking view includes touch-sized ingredient checkboxes, one instruction at a time, keyboard step navigation, Escape to close, focus restoration, and live step announcements.
 - App dialogs move keyboard focus inside when opened, keep Tab navigation within the topmost dialog, close on Escape, and return focus to the opener when closed.
+- Landing page was visually reviewed in Firefox at 320px, 390px, and desktop width; the compressed local hero image and compact search placeholder fit those layouts.
 - Acceptance: responsive/accessibility review and frontend checks.
 
 ### M7 — Courses (optional)

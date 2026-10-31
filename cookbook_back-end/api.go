@@ -838,8 +838,7 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 	visibleItems := make([]recipe, 0, len(items))
 	for index := range items {
 		it := items[index]
-		var member role
-		_ = h.db.QueryRow(`SELECT m.role FROM cookbook_memberships m JOIN cookbook_recipes cr ON cr.cookbook_id=m.cookbook_id WHERE cr.recipe_id=? AND m.user_id=? LIMIT 1`, it.ID, uid).Scan(&member)
+		member := recipeMemberRole(h.db, it.ID, uid)
 		if !canReadResource(uid, access{instancePublic: publicFlags[index], visibility: it.Visibility, ownerID: it.OwnerID, memberRole: member}) {
 			continue
 		}
@@ -973,8 +972,7 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 			return
 		}
 		uid := authenticatedUser(r)
-		var member role
-		_ = h.db.QueryRow(`SELECT m.role FROM cookbook_memberships m JOIN cookbook_recipes cr ON cr.cookbook_id=m.cookbook_id WHERE cr.recipe_id=? AND m.user_id=? LIMIT 1`, id, uid).Scan(&member)
+		member := recipeMemberRole(h.db, id, uid)
 		if !canReadResource(uid, access{instancePublic: public == 1, visibility: it.Visibility, ownerID: it.OwnerID, memberRole: member}) {
 			writeError(w, 404, "not_found")
 			return
@@ -1017,8 +1015,7 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 		writeError(w, 404, "not_found")
 		return
 	}
-	var memberRole role
-	_ = h.db.QueryRow(`SELECT m.role FROM cookbook_memberships m JOIN cookbook_recipes cr ON cr.cookbook_id=m.cookbook_id WHERE cr.recipe_id=? AND m.user_id=? ORDER BY CASE m.role WHEN 'editor' THEN 0 ELSE 1 END LIMIT 1`, id, in.UserID).Scan(&memberRole)
+	memberRole := recipeMemberRole(h.db, id, in.UserID)
 	if !canEditResource(in.UserID, access{ownerID: owner, memberRole: memberRole}) || (in.UserID != owner && (edit != "cookbook_editors" || memberRole != roleEditor)) {
 		writeError(w, 403, "forbidden")
 		return
@@ -1154,8 +1151,7 @@ func (h apiHandler) recipeRevisions(w http.ResponseWriter, r *http.Request, id s
 		writeError(w, 404, "not_found")
 		return
 	}
-	var member role
-	_ = h.db.QueryRow(`SELECT m.role FROM cookbook_memberships m JOIN cookbook_recipes cr ON cr.cookbook_id=m.cookbook_id WHERE cr.recipe_id=? AND m.user_id=? LIMIT 1`, id, uid).Scan(&member)
+	member := recipeMemberRole(h.db, id, uid)
 	if !canReadResource(uid, access{instancePublic: public == 1, visibility: visibilityValue, ownerID: owner, memberRole: member}) {
 		writeError(w, 404, "not_found")
 		return
@@ -1210,8 +1206,7 @@ func (h apiHandler) recipeRevisionDiff(w http.ResponseWriter, r *http.Request, r
 		writeError(w, http.StatusNotFound, "not_found")
 		return
 	}
-	var member role
-	_ = h.db.QueryRow(`SELECT m.role FROM cookbook_memberships m JOIN cookbook_recipes cr ON cr.cookbook_id=m.cookbook_id WHERE cr.recipe_id=? AND m.user_id=? LIMIT 1`, recipeID, uid).Scan(&member)
+	member := recipeMemberRole(h.db, recipeID, uid)
 	if !canReadResource(uid, access{instancePublic: public == 1, visibility: visibilityValue, ownerID: owner, memberRole: member}) {
 		writeError(w, http.StatusNotFound, "not_found")
 		return
@@ -1298,8 +1293,7 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 		writeError(w, 404, "not_found")
 		return
 	}
-	var memberRole role
-	_ = h.db.QueryRow(`SELECT role FROM cookbook_memberships m JOIN cookbook_recipes cr ON cr.cookbook_id=m.cookbook_id WHERE cr.recipe_id=? AND m.user_id=? ORDER BY CASE m.role WHEN 'editor' THEN 0 ELSE 1 END LIMIT 1`, recipeID, userID).Scan(&memberRole)
+	memberRole := recipeMemberRole(h.db, recipeID, userID)
 	if !canEditResource(userID, access{ownerID: owner, memberRole: memberRole}) || (userID != owner && (editPolicy != "cookbook_editors" || memberRole != roleEditor)) {
 		writeError(w, 403, "forbidden")
 		return

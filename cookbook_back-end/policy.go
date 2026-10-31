@@ -1,5 +1,7 @@
 package main
 
+import "database/sql"
+
 type visibility string
 
 const (
@@ -21,6 +23,16 @@ type access struct {
 	visibility     visibility
 	ownerID        string
 	memberRole     role
+}
+
+// recipeMemberRole prefers editor when a recipe appears in multiple cookbooks.
+func recipeMemberRole(db *sql.DB, recipeID, userID string) role {
+	if userID == "" {
+		return ""
+	}
+	var memberRole role
+	_ = db.QueryRow(`SELECT m.role FROM cookbook_memberships m JOIN cookbook_recipes cr ON cr.cookbook_id=m.cookbook_id WHERE cr.recipe_id=? AND m.user_id=? ORDER BY CASE m.role WHEN 'editor' THEN 0 ELSE 1 END LIMIT 1`, recipeID, userID).Scan(&memberRole)
+	return memberRole
 }
 
 func canReadResource(userID string, resource access) bool {

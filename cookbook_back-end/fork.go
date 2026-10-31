@@ -30,8 +30,7 @@ func (h apiHandler) forkRecipe(w http.ResponseWriter, r *http.Request, recipeID 
 		writeError(w, 500, "storage_error")
 		return
 	}
-	var member role
-	_ = h.db.QueryRow(`SELECT m.role FROM cookbook_memberships m JOIN cookbook_recipes cr ON cr.cookbook_id=m.cookbook_id WHERE cr.recipe_id=? AND m.user_id=? LIMIT 1`, recipeID, userID).Scan(&member)
+	member := recipeMemberRole(h.db, recipeID, userID)
 	if !canReadResource(userID, access{instancePublic: public == 1, visibility: source.Visibility, ownerID: source.OwnerID, memberRole: member}) {
 		writeError(w, 404, "not_found")
 		return

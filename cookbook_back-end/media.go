@@ -149,8 +149,7 @@ func (h mediaHandler) serveImage(w http.ResponseWriter, r *http.Request, recipeI
 		return
 	}
 	uid := authenticatedUser(r)
-	var member role
-	_ = h.db.QueryRow(`SELECT role FROM cookbook_memberships m JOIN cookbook_recipes cr ON cr.cookbook_id=m.cookbook_id WHERE cr.recipe_id=? AND m.user_id=? LIMIT 1`, recipeID, uid).Scan(&member)
+	member := recipeMemberRole(h.db, recipeID, uid)
 	if !canReadResource(uid, access{instancePublic: public == 1, visibility: recipeVisibility, ownerID: owner, memberRole: member}) {
 		http.NotFound(w, r)
 		return

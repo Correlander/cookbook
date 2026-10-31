@@ -497,6 +497,36 @@ func TestCookbookEditorCannotChangeRecipeVisibility(t *testing.T) {
 	}
 }
 
+func TestRecipeAccessUsesHighestMembershipRoleAcrossCookbooks(t *testing.T) {
+	db := testDatabase(t)
+	_, err := db.Exec(`
+		INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('guest','guest@example.test','Guest','now');
+		INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at) VALUES('a-viewer-book','owner','Viewer book','private','now','now'),('z-editor-book','owner','Editor book','private','now','now');
+		INSERT INTO cookbook_memberships(cookbook_id,user_id,role,created_at) VALUES('a-viewer-book','guest','viewer','now'),('z-editor-book','guest','editor','now');
+		INSERT INTO recipes(id,owner_id,creator_name,title,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at) VALUES('shared','owner','Owner','Shared recipe','[]','[]','[]','private','cookbook_editors','now','now');
+		INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES('a-viewer-book','shared','owner','now'),('z-editor-book','shared','owner','now')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := issueSession(db, "guest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := handlerWithAuth(db, testAuth(db))
+	cookie := &http.Cookie{Name: sessionCookie, Value: token}
+
+	listed := callAPI(handler, http.MethodGet, "/api/recipes?limit=24&offset=0", nil, cookie)
+	var items []recipe
+	if listed.Code != http.StatusOK || json.Unmarshal(listed.Body.Bytes(), &items) != nil || len(items) != 1 || !items[0].CanEdit {
+		t.Fatalf("recipe listing did not apply editor membership consistently: status=%d body=%s", listed.Code, listed.Body)
+	}
+	detail := callAPI(handler, http.MethodGet, "/api/recipes/shared", nil, cookie)
+	var item recipe
+	if detail.Code != http.StatusOK || json.Unmarshal(detail.Body.Bytes(), &item) != nil || !item.CanEdit {
+		t.Fatalf("recipe detail did not apply editor membership consistently: status=%d body=%s", detail.Code, detail.Body)
+	}
+}
+
 func TestCookbookPagination(t *testing.T) {
 	db := testDatabase(t)
 	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'); INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at) VALUES('book-a','owner','A','private','now','2026-01-01'),('book-b','owner','B','private','now','2026-01-02'),('book-c','owner','C','private','now','2026-01-03')`); err != nil {

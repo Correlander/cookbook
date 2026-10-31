@@ -379,9 +379,6 @@ func (h apiHandler) canReadRecipe(recipeID, uid string) bool {
 	if err := h.db.QueryRow(`SELECT r.owner_id,r.visibility,s.public_instance FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.id=? AND r.deleted_at IS NULL`, recipeID).Scan(&owner, &itemVisibility, &public); err != nil {
 		return false
 	}
-	var member role
-	if uid != "" {
-		_ = h.db.QueryRow(`SELECT m.role FROM cookbook_memberships m JOIN cookbook_recipes cr ON cr.cookbook_id=m.cookbook_id WHERE cr.recipe_id=? AND m.user_id=? ORDER BY CASE m.role WHEN 'editor' THEN 0 ELSE 1 END LIMIT 1`, recipeID, uid).Scan(&member)
-	}
+	member := recipeMemberRole(h.db, recipeID, uid)
 	return canReadResource(uid, access{instancePublic: public == 1, visibility: itemVisibility, ownerID: owner, memberRole: member})
 }

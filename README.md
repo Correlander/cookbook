@@ -2,6 +2,8 @@
 
 A self-hostable cookbook for collecting recipes and organizing them into cookbooks. The application uses a Go HTTP service, SQLite, and a React/Vite interface. Instances start private, and public browsing, account registration, courses, and federation are controlled independently.
 
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the data model, access-control rules, API map, and implementation boundaries. [AUDIT_AND_PLAN.md](AUDIT_AND_PLAN.md) tracks milestone acceptance and verification.
+
 ## Local development
 
 Requirements: Go 1.24+, Node.js 20+, and npm.

@@ -28,6 +28,7 @@ At audit time the repository was an early prototype. Implementation has since ad
 - Private recipe images are served with `no-store`; images on explicitly public recipes are cacheable for five minutes.
 - JSON API responses use `no-store` to prevent browser or intermediary reuse of account-specific data.
 - M4 history: recipe snapshots are written atomically at create/update, including servings, preparation/cook time, tags, and images. Updates use optimistic versions, authorized users can read history and compare two versions, and restore-as-new-version uses an optimistic version check. Owner-only trash/restore and configurable retention cleanup are implemented. Successful authenticated API mutations and authenticated 403 denials are recorded separately in an administrator-only, paged security audit log.
+- Revision listing and diff require recipe edit permission, preventing signed-in public readers or cookbook viewers from reading historical snapshots.
 - Frontend dependencies were updated within existing semver ranges; the ESLint 10 migration and a minimatch override clear the current audit findings. Go tests/vet and frontend lint/build have been run successfully at recent checkpoints.
 - GitHub Actions now runs backend tests/vet, frontend unit tests/lint/build, Compose validation, and a Docker image build on pushes to `main` and pull requests.
 - WebAuthn uses `github.com/go-webauthn/webauthn` v0.14.0 and raises the backend minimum to Go 1.24. Automated tests cover RP configuration, option creation, origin checks, and one-time ceremony use; a real browser/authenticator enrollment and assertion has not been exercised.
@@ -58,7 +59,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 ## Milestones
 
 ### M0 — Audit and decision record (complete)
-- Deliver this factual audit, architecture direction, risks, and staged plan.
+- Deliver this factual audit, architecture direction, risks, and staged plan; the current schema, access-control matrix, API map, and implementation boundaries are in [ARCHITECTURE.md](ARCHITECTURE.md).
 - Record baseline verification limitations and repository state.
 
 ### M1 — Secure application foundation (partial)

@@ -75,6 +75,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 - Recipe owners alone can change resource visibility; cookbook editors can edit content only when the recipe's edit policy permits it.
 - Signed-in users now land on a compact kitchen dashboard header; the large editorial hero and signup banner remain anonymous-only.
 - A signed-in reader may save an accessible recipe as a private owner-controlled copy. Original creator attribution and source recipe ID are preserved; the new account owns the copy and its new revision history.
+- Recipe owners can transfer ownership to an existing account. The database update is owner-checked, retains creator attribution and revisions, and passes through authenticated mutation auditing.
 
 ### M4 — History and recovery (partial)
 - Atomic revision snapshots, concurrency/version checks, diff/restore-as-new-version, distinct audit records, soft delete/trash, configurable retention and cleanup.

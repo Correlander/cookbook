@@ -220,6 +220,8 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.instanceSettings(w, r)
 	case len(parts) == 3 && parts[0] == "recipes" && parts[2] == "fork":
 		h.forkRecipe(w, r, parts[1])
+	case len(parts) == 3 && parts[0] == "recipes" && parts[2] == "transfer":
+		h.transferRecipe(w, r, parts[1])
 	case len(parts) == 2 && parts[0] == "recipes":
 		h.recipeByID(w, r, parts[1])
 	case len(parts) == 3 && parts[0] == "recipes" && parts[2] == "revisions":

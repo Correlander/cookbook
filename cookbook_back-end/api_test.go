@@ -138,6 +138,41 @@ func TestForkCannotReadPrivateRecipeWithoutAccess(t *testing.T) {
 	}
 }
 
+func TestRecipeOwnershipTransferIsOwnerAuthorizedAndKeepsAttribution(t *testing.T) {
+	db := testDatabase(t)
+	_, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('recipient','recipient@example.test','Recipient','now'),('other','other@example.test','Other','now'); INSERT INTO recipes(id,owner_id,creator_name,title,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at) VALUES('recipe','owner','Original creator','Pie','[]','[]','[]','private','owner_only','now','now'); INSERT INTO recipe_revisions(id,recipe_id,version,editor_id,title,description,ingredients_json,steps_json,visibility,created_at) VALUES('revision','recipe',1,'owner','Pie','','[]','[]','private','now')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := apiHandler{db: db}
+	unauthorized := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/recipes/recipe/transfer", strings.NewReader(`{"email":"recipient@example.test"}`))
+	h.ServeHTTP(unauthorized, request)
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous transfer status=%d", unauthorized.Code)
+	}
+	notOwner := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/api/recipes/recipe/transfer", strings.NewReader(`{"email":"recipient@example.test"}`)).WithContext(context.WithValue(context.Background(), userContextKey{}, "other"))
+	h.ServeHTTP(notOwner, request)
+	if notOwner.Code != http.StatusNotFound {
+		t.Fatalf("non-owner transfer status=%d", notOwner.Code)
+	}
+	transfer := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/api/recipes/recipe/transfer", strings.NewReader(`{"email":"recipient@example.test"}`)).WithContext(context.WithValue(context.Background(), userContextKey{}, "owner"))
+	h.ServeHTTP(transfer, request)
+	if transfer.Code != http.StatusOK {
+		t.Fatalf("transfer status=%d body=%s", transfer.Code, transfer.Body)
+	}
+	var owner, creator string
+	if err := db.QueryRow(`SELECT owner_id,creator_name FROM recipes WHERE id='recipe'`).Scan(&owner, &creator); err != nil || owner != "recipient" || creator != "Original creator" {
+		t.Fatalf("owner/creator=%s/%s err=%v", owner, creator, err)
+	}
+	var revisions int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM recipe_revisions WHERE recipe_id='recipe'`).Scan(&revisions); err != nil || revisions != 1 {
+		t.Fatalf("transfer changed revision history count=%d err=%v", revisions, err)
+	}
+}
+
 func TestAuthStateChangesRequireSameOrigin(t *testing.T) {
 	db := testDatabase(t)
 	h := handlerWithAuth(db, testAuth(db))

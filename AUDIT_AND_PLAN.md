@@ -79,6 +79,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 - Atomic revision snapshots, concurrency/version checks, diff/restore-as-new-version, distinct audit records, soft delete/trash, configurable retention and cleanup.
 - Acceptance: rollback, conflict, access, retention, restore and migration tests.
 - The security audit log stores the acting account, HTTP route/action, resource type/ID, response status, and timestamp for successful session-authenticated mutations and authenticated 403 denials. It deliberately omits request bodies and query strings; audit reads are administrator-only and paged.
+- Administrators can configure revision and audit retention separately (7/30/90/365 days or unlimited); cleanup is bounded and preserves each recipe's latest snapshot.
 
 ### M5 — Self-hosting and portability
 - Dockerfile/Compose, `.env.example`, health checks, persistent SQLite/media volumes, admin bootstrap, upgrade and backup/restore runbook, import/export format with attribution.

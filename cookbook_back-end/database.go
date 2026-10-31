@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS instance_settings (
   public_instance INTEGER NOT NULL DEFAULT 0 CHECK (public_instance IN (0, 1)),
   registration_policy TEXT NOT NULL DEFAULT 'invite_only' CHECK (registration_policy IN ('open', 'invite_only', 'disabled')),
   registration_policy_configured INTEGER NOT NULL DEFAULT 0 CHECK (registration_policy_configured IN (0, 1)),
+  revision_retention_days INTEGER NOT NULL DEFAULT 365 CHECK (revision_retention_days IN (0, 7, 30, 90, 365)),
+  audit_retention_days INTEGER NOT NULL DEFAULT 365 CHECK (audit_retention_days IN (0, 7, 30, 90, 365)),
   courses_enabled INTEGER NOT NULL DEFAULT 0 CHECK (courses_enabled IN (0, 1)),
   federation_enabled INTEGER NOT NULL DEFAULT 0 CHECK (federation_enabled IN (0, 1))
 );
@@ -174,6 +176,8 @@ func openDatabase(path string) (*sql.DB, error) {
 	}
 	for _, column := range []struct{ table, name, declaration string }{
 		{"instance_settings", "registration_policy_configured", `INTEGER NOT NULL DEFAULT 0 CHECK (registration_policy_configured IN (0, 1))`},
+		{"instance_settings", "revision_retention_days", `INTEGER NOT NULL DEFAULT 365 CHECK (revision_retention_days IN (0, 7, 30, 90, 365))`},
+		{"instance_settings", "audit_retention_days", `INTEGER NOT NULL DEFAULT 365 CHECK (audit_retention_days IN (0, 7, 30, 90, 365))`},
 		{"users", "is_admin", `INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1))`},
 		{"email_challenges", "display_name", `TEXT NOT NULL DEFAULT ''`},
 		{"email_challenges", "invitation_id", `TEXT REFERENCES invitations(id)`},

@@ -4,6 +4,8 @@ export default function AdminSettings() {
   const [settings, setSettings] = useState(null);
   const [publicInstance, setPublicInstance] = useState(false);
   const [registrationPolicy, setRegistrationPolicy] = useState('invite_only');
+  const [revisionRetention, setRevisionRetention] = useState(365);
+  const [auditRetention, setAuditRetention] = useState(365);
   const [confirmPublication, setConfirmPublication] = useState(false);
   const [authorized, setAuthorized] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -26,6 +28,8 @@ export default function AdminSettings() {
         setSettings(data);
         setPublicInstance(data.public_instance);
         setRegistrationPolicy(data.registration_policy);
+        setRevisionRetention(data.revision_retention_days);
+        setAuditRetention(data.audit_retention_days);
         setAuthorized(true);
       })
       .catch((loadError) => {
@@ -46,6 +50,8 @@ export default function AdminSettings() {
         body: JSON.stringify({
           public_instance: publicInstance,
           registration_policy: registrationPolicy,
+          revision_retention_days: Number(revisionRetention),
+          audit_retention_days: Number(auditRetention),
           confirm_publication: confirmPublication,
         }),
       });
@@ -57,6 +63,8 @@ export default function AdminSettings() {
       setSettings(updated);
       setPublicInstance(updated.public_instance);
       setRegistrationPolicy(updated.registration_policy);
+      setRevisionRetention(updated.revision_retention_days);
+      setAuditRetention(updated.audit_retention_days);
       setConfirmPublication(false);
       setNotice('Instance settings saved.');
     } catch (saveError) {
@@ -119,6 +127,23 @@ export default function AdminSettings() {
           <option value="invite_only">Invite only</option>
           <option value="open">Open registration</option>
           <option value="disabled">Disabled</option>
+        </select>
+        <label htmlFor="revision-retention">Recipe revision history retention</label>
+        <select id="revision-retention" value={revisionRetention} onChange={(event) => setRevisionRetention(event.target.value)}>
+          <option value="0">Unlimited</option>
+          <option value="7">7 days</option>
+          <option value="30">30 days</option>
+          <option value="90">90 days</option>
+          <option value="365">365 days</option>
+        </select>
+        <p className="admin-settings-note">Expired revisions are removed in small batches. The current recipe snapshot is always kept.</p>
+        <label htmlFor="audit-retention">Security audit retention</label>
+        <select id="audit-retention" value={auditRetention} onChange={(event) => setAuditRetention(event.target.value)}>
+          <option value="0">Unlimited</option>
+          <option value="7">7 days</option>
+          <option value="30">30 days</option>
+          <option value="90">90 days</option>
+          <option value="365">365 days</option>
         </select>
         <p className="admin-settings-note">Courses and federation remain disabled.</p>
         <button className="button button--green" type="submit" disabled={saving || (needsPublicationReview && !confirmPublication)}>

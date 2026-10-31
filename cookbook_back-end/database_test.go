@@ -31,6 +31,35 @@ func TestDatabaseCreatesPrivateInstanceAndConstraints(t *testing.T) {
 	}
 }
 
+func TestExistingInstanceSettingsReceiveRetentionDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings-upgrade.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE instance_settings(id INTEGER PRIMARY KEY CHECK(id=1),public_instance INTEGER NOT NULL DEFAULT 0,registration_policy TEXT NOT NULL DEFAULT 'invite_only'); INSERT INTO instance_settings(id,public_instance,registration_policy) VALUES(1,1,'open')`); err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var public int
+	var registration string
+	var revisionRetention, auditRetention int
+	if err := db.QueryRow(`SELECT public_instance,registration_policy,revision_retention_days,audit_retention_days FROM instance_settings WHERE id=1`).Scan(&public, &registration, &revisionRetention, &auditRetention); err != nil {
+		t.Fatal(err)
+	}
+	if public != 1 || registration != "open" || revisionRetention != 365 || auditRetention != 365 {
+		t.Fatalf("upgraded settings = public %d, registration %q, revisions %d, audit %d", public, registration, revisionRetention, auditRetention)
+	}
+}
+
 func TestAccessPolicyDefaults(t *testing.T) {
 	publicBook := access{instancePublic: true, visibility: visibilityPublic, ownerID: "owner"}
 	privateBook := access{instancePublic: true, visibility: visibilityPrivate, ownerID: "owner"}

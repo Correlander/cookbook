@@ -3,12 +3,15 @@ package main
 import (
 	"database/sql"
 	"errors"
+	"log"
 	"net/http"
 )
 
 type instanceSettings struct {
 	PublicInstance     bool   `json:"public_instance"`
 	RegistrationPolicy string `json:"registration_policy"`
+	RevisionRetention  int    `json:"revision_retention_days"`
+	AuditRetention     int    `json:"audit_retention_days"`
 	PublicCookbooks    int    `json:"public_cookbooks"`
 	PublicRecipes      int    `json:"public_recipes"`
 }
@@ -30,12 +33,14 @@ func (h apiHandler) instanceSettings(w http.ResponseWriter, r *http.Request) {
 		var input struct {
 			PublicInstance     *bool   `json:"public_instance"`
 			RegistrationPolicy *string `json:"registration_policy"`
+			RevisionRetention  *int    `json:"revision_retention_days"`
+			AuditRetention     *int    `json:"audit_retention_days"`
 			ConfirmPublication bool    `json:"confirm_publication"`
 		}
 		if !decodeJSON(w, r, &input) {
 			return
 		}
-		if input.PublicInstance == nil && input.RegistrationPolicy == nil {
+		if input.PublicInstance == nil && input.RegistrationPolicy == nil && input.RevisionRetention == nil && input.AuditRetention == nil {
 			writeError(w, http.StatusBadRequest, "empty_settings_update")
 			return
 		}
@@ -43,7 +48,15 @@ func (h apiHandler) instanceSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_registration_policy")
 			return
 		}
-		settings, err := updateInstanceSettings(h.db, input.PublicInstance, input.RegistrationPolicy, input.ConfirmPublication)
+		if input.RevisionRetention != nil && !validRetentionDays(*input.RevisionRetention) {
+			writeError(w, http.StatusBadRequest, "invalid_revision_retention")
+			return
+		}
+		if input.AuditRetention != nil && !validRetentionDays(*input.AuditRetention) {
+			writeError(w, http.StatusBadRequest, "invalid_audit_retention")
+			return
+		}
+		settings, err := updateInstanceSettings(h.db, input.PublicInstance, input.RegistrationPolicy, input.RevisionRetention, input.AuditRetention, input.ConfirmPublication)
 		if errors.Is(err, errPublicationConfirmationRequired) {
 			writeError(w, http.StatusConflict, "publication_confirmation_required")
 			return
@@ -51,6 +64,14 @@ func (h apiHandler) instanceSettings(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "storage_error")
 			return
+		}
+		if input.RevisionRetention != nil || input.AuditRetention != nil {
+			if err := purgeExpiredHistory(h.db); err != nil {
+				log.Printf("history retention cleanup failed after settings update: %v", err)
+			}
+			if err := cleanupOrphanedMedia(h.db, h.mediaDir); err != nil {
+				log.Printf("media cleanup failed after settings update: %v", err)
+			}
 		}
 		writeJSON(w, http.StatusOK, settings)
 	default:
@@ -69,7 +90,7 @@ func isAdministrator(db *sql.DB, userID string) bool {
 func readInstanceSettings(db *sql.DB) (instanceSettings, error) {
 	var current instanceSettings
 	var public int
-	if err := db.QueryRow(`SELECT public_instance,registration_policy FROM instance_settings WHERE id=1`).Scan(&public, &current.RegistrationPolicy); err != nil {
+	if err := db.QueryRow(`SELECT public_instance,registration_policy,revision_retention_days,audit_retention_days FROM instance_settings WHERE id=1`).Scan(&public, &current.RegistrationPolicy, &current.RevisionRetention, &current.AuditRetention); err != nil {
 		return current, err
 	}
 	current.PublicInstance = public == 1
@@ -84,7 +105,7 @@ func readInstanceSettings(db *sql.DB) (instanceSettings, error) {
 
 var errPublicationConfirmationRequired = errors.New("public content requires administrator confirmation")
 
-func updateInstanceSettings(db *sql.DB, publicInstance *bool, registrationPolicy *string, confirmPublication bool) (instanceSettings, error) {
+func updateInstanceSettings(db *sql.DB, publicInstance *bool, registrationPolicy *string, revisionRetention, auditRetention *int, confirmPublication bool) (instanceSettings, error) {
 	tx, err := db.Begin()
 	if err != nil {
 		return instanceSettings{}, err
@@ -93,7 +114,8 @@ func updateInstanceSettings(db *sql.DB, publicInstance *bool, registrationPolicy
 
 	var wasPublic int
 	var currentPolicy string
-	if err := tx.QueryRow(`SELECT public_instance,registration_policy FROM instance_settings WHERE id=1`).Scan(&wasPublic, &currentPolicy); err != nil {
+	var currentRevisionRetention, currentAuditRetention int
+	if err := tx.QueryRow(`SELECT public_instance,registration_policy,revision_retention_days,audit_retention_days FROM instance_settings WHERE id=1`).Scan(&wasPublic, &currentPolicy, &currentRevisionRetention, &currentAuditRetention); err != nil {
 		return instanceSettings{}, err
 	}
 	public := wasPublic == 1
@@ -112,15 +134,30 @@ func updateInstanceSettings(db *sql.DB, publicInstance *bool, registrationPolicy
 	if registrationPolicy != nil {
 		currentPolicy = *registrationPolicy
 	}
+	if revisionRetention != nil {
+		currentRevisionRetention = *revisionRetention
+	}
+	if auditRetention != nil {
+		currentAuditRetention = *auditRetention
+	}
 	publicValue := 0
 	if public {
 		publicValue = 1
 	}
-	if _, err := tx.Exec(`UPDATE instance_settings SET public_instance=?,registration_policy=?,registration_policy_configured=1 WHERE id=1`, publicValue, currentPolicy); err != nil {
+	if _, err := tx.Exec(`UPDATE instance_settings SET public_instance=?,registration_policy=?,registration_policy_configured=1,revision_retention_days=?,audit_retention_days=? WHERE id=1`, publicValue, currentPolicy, currentRevisionRetention, currentAuditRetention); err != nil {
 		return instanceSettings{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return instanceSettings{}, err
 	}
 	return readInstanceSettings(db)
+}
+
+func validRetentionDays(days int) bool {
+	switch days {
+	case 0, 7, 30, 90, 365:
+		return true
+	default:
+		return false
+	}
 }

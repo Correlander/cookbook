@@ -153,6 +153,7 @@ func (h passkeyHandler) finishLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
+	recordAuditBestEffort(h.db, string(user.WebAuthnID()), "POST /auth/passkey/login/finish", "auth", "", http.StatusOK)
 	setSessionCookie(w, token, expires, h.secureCookies)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "signed_in"})
 }

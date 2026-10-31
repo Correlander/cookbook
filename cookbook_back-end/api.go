@@ -208,6 +208,8 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.recipes(w, r)
 	case len(parts) == 2 && parts[0] == "admin" && parts[1] == "invitations":
 		h.invitations(w, r)
+	case len(parts) == 2 && parts[0] == "admin" && parts[1] == "audit":
+		h.auditEvents(w, r)
 	case len(parts) == 2 && parts[0] == "recipes":
 		h.recipeByID(w, r, parts[1])
 	case len(parts) == 3 && parts[0] == "recipes" && parts[2] == "revisions":

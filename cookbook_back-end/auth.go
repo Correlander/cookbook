@@ -261,6 +261,11 @@ func (h authHandler) consumeEmail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := insertAuditEvent(tx, uid, "POST /auth/consume", "auth", "", http.StatusOK); err != nil {
+		tx.Rollback()
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, 500, "storage_error")
 		return
@@ -288,10 +293,14 @@ func (h authHandler) me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, u)
 }
 func (h authHandler) logout(w http.ResponseWriter, r *http.Request) {
+	uid, ok := sessionUser(h.db, r)
 	cookie, err := r.Cookie(sessionCookie)
 	if err == nil {
 		sum := sha256.Sum256([]byte(cookie.Value))
 		_, _ = h.db.Exec(`DELETE FROM sessions WHERE token_hash=?`, hex.EncodeToString(sum[:]))
+	}
+	if ok {
+		recordAuditBestEffort(h.db, uid, "POST /auth/logout", "auth", "", http.StatusOK)
 	}
 	clearSessionCookie(w, h.secureCookies)
 	writeJSON(w, 200, map[string]string{"status": "signed_out"})

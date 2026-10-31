@@ -31,10 +31,10 @@ func handlerWithAuthConfig(db *sql.DB, auth authHandler, cfg config) http.Handle
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
-	mux.Handle("/api/auth/passkey/register/", csrfProtection(auth.origin, requireSession(db, passkeys)))
+	mux.Handle("/api/auth/passkey/register/", csrfProtection(auth.origin, requireSession(db, auditChanges(db, passkeys))))
 	mux.Handle("/api/auth/passkey/login/", csrfProtection(auth.origin, passkeys))
-	mux.Handle("/api/auth/passkeys", csrfProtection(auth.origin, requireSession(db, passkeys)))
-	mux.Handle("/api/auth/passkeys/", csrfProtection(auth.origin, requireSession(db, passkeys)))
+	mux.Handle("/api/auth/passkeys", csrfProtection(auth.origin, requireSession(db, auditChanges(db, passkeys))))
+	mux.Handle("/api/auth/passkeys/", csrfProtection(auth.origin, requireSession(db, auditChanges(db, passkeys))))
 	mux.Handle("/api/auth/", auth)
 	mux.Handle("GET /api/public/recipes", publicRecipeHandler{db: db})
 	api := apiHandler{db: db, mediaDir: cfg.mediaDir}
@@ -47,10 +47,10 @@ func handlerWithAuthConfig(db *sql.DB, auth authHandler, cfg config) http.Handle
 	})
 	mux.Handle("GET /api/recipes/{id}/image", serveMedia)
 	mux.Handle("HEAD /api/recipes/{id}/image", serveMedia)
-	mux.Handle("POST /api/recipes/{id}/image", csrfProtection(auth.origin, requireSession(db, serveMedia)))
-	mux.Handle("PUT /api/recipes/{id}/image", csrfProtection(auth.origin, requireSession(db, serveMedia)))
-	mux.Handle("DELETE /api/recipes/{id}/image", csrfProtection(auth.origin, requireSession(db, serveMedia)))
-	mux.Handle("/api/", csrfProtection(auth.origin, requireSession(db, api)))
+	mux.Handle("POST /api/recipes/{id}/image", csrfProtection(auth.origin, requireSession(db, auditChanges(db, serveMedia))))
+	mux.Handle("PUT /api/recipes/{id}/image", csrfProtection(auth.origin, requireSession(db, auditChanges(db, serveMedia))))
+	mux.Handle("DELETE /api/recipes/{id}/image", csrfProtection(auth.origin, requireSession(db, auditChanges(db, serveMedia))))
+	mux.Handle("/api/", csrfProtection(auth.origin, requireSession(db, auditChanges(db, api))))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			http.NotFound(w, r)

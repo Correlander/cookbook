@@ -122,7 +122,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 
 ### M9 — Separate marketing site (partial)
 - A dependency-free static marketing site in `marketing-site/` describes the product, privacy model, features, and self-hosting path. It has responsive styling, accessible landmarks/skip link, reduced-motion support, and title/description/Open Graph metadata.
-- Acceptance: confirm links and content against available product capabilities; deployment target and managed-hosting offering are not established. The site has not been published.
+- Copy was checked against implemented features, and all internal section links resolve. The hero is CSS illustration rather than an application screenshot; deployment target and managed-hosting offering are not established, and the site has not been published.
 
 ## Baseline verification
 

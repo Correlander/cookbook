@@ -72,6 +72,13 @@ func TestRegistrationPolicyConfiguration(t *testing.T) {
 	if err := db.QueryRow(`SELECT registration_policy FROM instance_settings WHERE id=1`).Scan(&policy); err != nil || policy != "open" {
 		t.Fatalf("registration policy = %q, %v", policy, err)
 	}
+	t.Setenv("COOKBOOK_REGISTRATION", "disabled")
+	if err := configureRegistrationPolicy(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT registration_policy FROM instance_settings WHERE id=1`).Scan(&policy); err != nil || policy != "open" {
+		t.Fatalf("configured registration policy changed on restart: %q, %v", policy, err)
+	}
 	t.Setenv("COOKBOOK_REGISTRATION", "unknown")
 	if err := configureRegistrationPolicy(db); err == nil {
 		t.Fatal("invalid registration policy should be rejected")

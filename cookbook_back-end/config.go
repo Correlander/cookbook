@@ -55,13 +55,17 @@ func provisionAdministrator(db *sql.DB) error {
 
 func configureRegistrationPolicy(db *sql.DB) error {
 	policy := strings.TrimSpace(os.Getenv("COOKBOOK_REGISTRATION"))
-	if policy == "" {
-		return nil
-	}
-	if policy != "open" && policy != "invite_only" && policy != "disabled" {
+	if policy != "" && policy != "open" && policy != "invite_only" && policy != "disabled" {
 		return errors.New("COOKBOOK_REGISTRATION must be open, invite_only, or disabled")
 	}
-	if _, err := db.Exec(`UPDATE instance_settings SET registration_policy=? WHERE id=1`, policy); err != nil {
+	var configured int
+	if err := db.QueryRow(`SELECT registration_policy_configured FROM instance_settings WHERE id=1`).Scan(&configured); err != nil {
+		return errors.New("could not read COOKBOOK_REGISTRATION state")
+	}
+	if configured == 1 {
+		return nil
+	}
+	if _, err := db.Exec(`UPDATE instance_settings SET registration_policy=CASE WHEN ?='' THEN registration_policy ELSE ? END,registration_policy_configured=1 WHERE id=1`, policy, policy); err != nil {
 		return errors.New("could not apply COOKBOOK_REGISTRATION")
 	}
 	return nil

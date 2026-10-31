@@ -43,7 +43,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 4. **Recipe API:** structured ingredients and ordered steps; stable local IDs that can later become globally unique resource IDs. Optimistic version checks; recipe revision write plus canonical update in one transaction. Separate revision history from security/admin audit.
 5. **Media:** local filesystem behind a storage interface, strict size/type limits, private media authorized by API. Add object storage adapter only when hosting requires it.
 6. **Courses:** optional instance flag, disabled by default; separate entities/routes/module and consistent API enforcement. Defer implementation until core recipes work.
-7. **Federation:** disabled by default and isolated behind asynchronous adapters/queues. Research at least two protocols before implementing. Evaluate a narrow signed Cookbook protocol against ActivityPub; avoid Matrix dependencies absent a demonstrated fit. Public browsing/export are not federation. Do not implement federation before local IDs, visibility, attribution, auth and authorization are sound.
+7. **Federation:** disabled by default and isolated behind asynchronous adapters/queues. The first protocol comparison and threat model are in [FEDERATION_RESEARCH.md](FEDERATION_RESEARCH.md). Its provisional choice is a manually peered signed Cookbook exchange for public recipe snapshots, with ActivityPub reserved for a later explicit social-interoperability goal. Research is complete; implementation remains gated on the listed identity, privacy, key lifecycle, SSRF, queue, and two-instance test requirements. Public browsing/export are not federation. Do not implement federation before local IDs, visibility, attribution, auth and authorization are sound.
 8. **Marketing:** separate static site/deployment, later than core app. Public app pages initially remain client rendered; document SEO/social preview tradeoffs.
 
 ## Milestones
@@ -70,11 +70,11 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 - Acceptance: anonymous/private/public, member/nonmember, cross-cookbook, ownership and visibility tests; frontend build/lint.
 - Cookbook listing now uses the shared bounded `limit`/`offset` contract, stable ordering, and a dashboard load-more control. Backend tests cover page boundaries, ordering, and invalid limits.
 - Recipe images are stored as generated local files (JPEG, PNG, or WebP; 5 MiB maximum), verified by decoding image headers, served through recipe visibility checks, and preserved in revision snapshots. Compose persists them under `/data/media`; backups must include this directory.
-- The security audit log stores the acting account, HTTP route/action, resource type/ID, response status, and timestamp for successful session-authenticated mutations and authenticated 403 denials. It deliberately omits request bodies and query strings; audit reads are administrator-only and paged.
 
 ### M4 — History and recovery (partial)
 - Atomic revision snapshots, concurrency/version checks, diff/restore-as-new-version, distinct audit records, soft delete/trash, configurable retention and cleanup.
 - Acceptance: rollback, conflict, access, retention, restore and migration tests.
+- The security audit log stores the acting account, HTTP route/action, resource type/ID, response status, and timestamp for successful session-authenticated mutations and authenticated 403 denials. It deliberately omits request bodies and query strings; audit reads are administrator-only and paged.
 
 ### M5 — Self-hosting and portability
 - Dockerfile/Compose, `.env.example`, health checks, persistent SQLite/media volumes, admin bootstrap, upgrade and backup/restore runbook, import/export format with attribution.
@@ -92,6 +92,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 - Write protocol comparison and threat model (at least two feasible approaches), then choose based on maintenance, security, event semantics, interoperability and deployment weight.
 - Only after local privacy/identity work: signed/authenticated opt-in public exchange between two independent test instances; later consider controlled sharing/collaborative editing.
 - Acceptance: disabled default; privacy leakage, malicious input, replay/duplicate, offline peer, attribution/revision, SSRF, revocation and deletion-limit tests/docs.
+- Protocol comparison and threat model are documented. Implementation remains unstarted pending the explicit pre-implementation gates in `FEDERATION_RESEARCH.md`.
 
 ## Baseline verification
 

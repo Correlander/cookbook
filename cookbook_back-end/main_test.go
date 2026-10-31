@@ -7,7 +7,27 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestApplicationServerUsesBoundedTimeouts(t *testing.T) {
+	server := newApplicationServer("127.0.0.1:0", http.NotFoundHandler())
+	if server.ReadHeaderTimeout != 5*time.Second {
+		t.Errorf("read header timeout = %s, want 5s", server.ReadHeaderTimeout)
+	}
+	if server.ReadTimeout != 3*time.Minute {
+		t.Errorf("read timeout = %s, want 3m", server.ReadTimeout)
+	}
+	if server.WriteTimeout != 3*time.Minute {
+		t.Errorf("write timeout = %s, want 3m", server.WriteTimeout)
+	}
+	if server.IdleTimeout != 60*time.Second {
+		t.Errorf("idle timeout = %s, want 60s", server.IdleTimeout)
+	}
+	if server.MaxHeaderBytes != 1<<20 {
+		t.Errorf("maximum header bytes = %d, want 1 MiB", server.MaxHeaderBytes)
+	}
+}
 
 func TestHealthEndpoint(t *testing.T) {
 	db := testDatabase(t)

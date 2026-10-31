@@ -20,6 +20,26 @@ import (
 //go:embed web/dist
 var frontendFiles embed.FS
 
+const (
+	serverReadHeaderTimeout = 5 * time.Second
+	serverReadTimeout       = 3 * time.Minute
+	serverWriteTimeout      = 3 * time.Minute
+	serverIdleTimeout       = 60 * time.Second
+	serverMaxHeaderBytes    = 1 << 20
+)
+
+func newApplicationServer(address string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              address,
+		Handler:           handler,
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		ReadTimeout:       serverReadTimeout,
+		WriteTimeout:      serverWriteTimeout,
+		IdleTimeout:       serverIdleTimeout,
+		MaxHeaderBytes:    serverMaxHeaderBytes,
+	}
+}
+
 func handlerWithAuth(db *sql.DB, auth authHandler) http.Handler {
 	cfg, _ := loadConfig()
 	return handlerWithAuthConfig(db, auth, cfg)
@@ -165,11 +185,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	server := &http.Server{
-		Addr:              cfg.address,
-		Handler:           handlerWithAuthConfig(db, auth, cfg),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	server := newApplicationServer(cfg.address, handlerWithAuthConfig(db, auth, cfg))
 	log.Printf("Cookbook API listening on %s", cfg.address)
 	log.Fatal(server.ListenAndServe())
 }

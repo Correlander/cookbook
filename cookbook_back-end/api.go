@@ -43,6 +43,32 @@ func listPage(r *http.Request) (int, int, error) {
 	return limit, offset, nil
 }
 
+func recipeListOptions(r *http.Request) (string, string, error) {
+	order := "r.updated_at DESC,r.id"
+	switch r.URL.Query().Get("sort") {
+	case "", "recent":
+	case "oldest":
+		order = "r.updated_at ASC,r.id"
+	case "title":
+		order = "lower(r.title) ASC,r.id"
+	default:
+		return "", "", errors.New("invalid sort")
+	}
+	tag := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("tag")))
+	if len(tag) > 40 {
+		return "", "", errors.New("invalid tag")
+	}
+	tagJSON := ""
+	if tag != "" {
+		encoded, err := json.Marshal(tag)
+		if err != nil {
+			return "", "", errors.New("invalid tag")
+		}
+		tagJSON = string(encoded)
+	}
+	return order, tagJSON, nil
+}
+
 type recipeRevision struct {
 	ID          string       `json:"id"`
 	RecipeID    string       `json:"recipe_id"`
@@ -755,11 +781,12 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	limit, offset, err := listPage(r)
-	if err != nil || len(q) > 200 {
+	order, tagJSON, filterErr := recipeListOptions(r)
+	if err != nil || len(q) > 200 || filterErr != nil {
 		writeError(w, http.StatusBadRequest, "invalid_pagination_or_query")
 		return
 	}
-	rows, err := h.db.Query(`SELECT r.id,r.owner_id,r.creator_name,r.source_recipe_id,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,s.public_instance,r.image_path FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.deleted_at IS NULL AND ((r.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_recipes cr JOIN cookbook_memberships m ON m.cookbook_id=cr.cookbook_id WHERE cr.recipe_id=r.id AND m.user_id=?)) OR (s.public_instance=1 AND r.visibility='public')) AND (?='' OR instr(lower(r.title||' '||r.description||' '||r.tags_json),lower(?))>0) AND (?='' OR EXISTS(SELECT 1 FROM cookbook_recipes scope WHERE scope.recipe_id=r.id AND scope.cookbook_id=?)) ORDER BY r.updated_at DESC,r.id LIMIT ? OFFSET ?`, uid, uid, q, q, cookbookID, cookbookID, limit, offset)
+	rows, err := h.db.Query(`SELECT r.id,r.owner_id,r.creator_name,r.source_recipe_id,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,s.public_instance,r.image_path FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.deleted_at IS NULL AND ((r.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_recipes cr JOIN cookbook_memberships m ON m.cookbook_id=cr.cookbook_id WHERE cr.recipe_id=r.id AND m.user_id=?)) OR (s.public_instance=1 AND r.visibility='public')) AND (?='' OR instr(lower(r.title||' '||r.description||' '||r.tags_json),lower(?))>0) AND (?='' OR EXISTS(SELECT 1 FROM cookbook_recipes scope WHERE scope.recipe_id=r.id AND scope.cookbook_id=?)) AND (?='' OR instr(lower(r.tags_json),lower(?))>0) ORDER BY `+order+` LIMIT ? OFFSET ?`, uid, uid, q, q, cookbookID, cookbookID, tagJSON, tagJSON, limit, offset)
 	if err != nil {
 		writeError(w, 500, "storage_error")
 		return

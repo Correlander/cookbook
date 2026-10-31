@@ -101,6 +101,36 @@ func TestPublicCookbookEndpointsValidateMethodsPaginationAndSearch(t *testing.T)
 	}
 }
 
+func TestPublicCookbookRecipeTagFilterAndSortPreserveVisibility(t *testing.T) {
+	db := testDatabase(t)
+	_, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1;
+		INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now');
+		INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at) VALUES('book','owner','Desserts','public','now','now');
+		INSERT INTO recipes(id,owner_id,creator_name,title,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at) VALUES
+		('z-pie','owner','Owner','Zesty pie','[]','[]','["dessert"]','public','owner_only','now','now'),
+		('a-tart','owner','Owner','Apple tart','[]','[]','["dessert"]','public','owner_only','now','now'),
+		('hidden','owner','Owner','Hidden dessert','[]','[]','["dessert"]','private','owner_only','now','now'),
+		('almost','owner','Owner','Dinner pie','[]','[]','["desserts"]','public','owner_only','now','now');
+		INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) SELECT 'book',id,'owner','now' FROM recipes`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := handlerWithAuth(db, testAuth(db))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/public/cookbooks/book/recipes?tag=dessert&sort=title", nil))
+	var items []recipe
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &items) != nil || len(items) != 2 || items[0].ID != "a-tart" || items[1].ID != "z-pie" {
+		t.Fatalf("filtered recipes status=%d body=%s", response.Code, response.Body)
+	}
+	for _, query := range []string{"sort=unknown", "tag=" + strings.Repeat("x", 41)} {
+		invalid := httptest.NewRecorder()
+		handler.ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/api/public/cookbooks/book/recipes?"+query, nil))
+		if invalid.Code != http.StatusBadRequest {
+			t.Fatalf("invalid recipe filter %q status=%d", query, invalid.Code)
+		}
+	}
+}
+
 func containsJSONField(body, field string) bool {
 	var value any
 	if json.Unmarshal([]byte(body), &value) != nil {

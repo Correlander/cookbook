@@ -102,6 +102,8 @@ function PublicCookbookDialog({ book, onClose }) {
   const dialogRef = useRef(null);
   useModalFocus(dialogRef, onClose);
   const [query, setQuery] = useState('');
+  const [sort, setSort] = useState('recent');
+  const [tag, setTag] = useState('');
   const [recipes, setRecipes] = useState([]);
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(false);
@@ -109,15 +111,17 @@ function PublicCookbookDialog({ book, onClose }) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
   const [selectedRecipe, setSelectedRecipe] = useState(null);
-  const queryRef = useRef('');
-  queryRef.current = query.trim();
+  const filterKeyRef = useRef('');
+  const filterKey = query.trim() + ':' + sort + ':' + tag.trim();
+  filterKeyRef.current = filterKey;
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     setError('');
-    const params = new URLSearchParams({ limit: '24', offset: '0' });
+    const params = new URLSearchParams({ limit: '24', offset: '0', sort });
     if (query.trim()) params.set('q', query.trim());
+    if (tag.trim()) params.set('tag', tag.trim());
     fetch(`/api/public/cookbooks/${encodeURIComponent(book.id)}/recipes?${params}`)
       .then(async (response) => {
         if (!response.ok) throw new Error('Could not load this cookbook.');
@@ -138,20 +142,21 @@ function PublicCookbookDialog({ book, onClose }) {
       })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [book.id, query]);
+  }, [book.id, query, sort, tag]);
 
   async function loadMore() {
     if (loadingMore) return;
-    const requestedQuery = queryRef.current;
+    const requestedFilterKey = filterKey;
     setLoadingMore(true);
     setError('');
     try {
-      const params = new URLSearchParams({ limit: '24', offset: String(offset) });
+      const params = new URLSearchParams({ limit: '24', offset: String(offset), sort });
       if (query.trim()) params.set('q', query.trim());
+      if (tag.trim()) params.set('tag', tag.trim());
       const response = await fetch(`/api/public/cookbooks/${encodeURIComponent(book.id)}/recipes?${params}`);
       if (!response.ok) throw new Error('Could not load more recipes.');
       const data = await response.json();
-      if (queryRef.current !== requestedQuery) return;
+      if (filterKeyRef.current !== requestedFilterKey) return;
       setRecipes((current) => [...current, ...data]);
       setOffset((current) => current + data.length);
       setHasMore(data.length === 24);
@@ -183,8 +188,11 @@ function PublicCookbookDialog({ book, onClose }) {
           <span className="eyebrow">Public cookbook</span>
           <h2 id="public-cookbook-dialog-title">{book.title}</h2>
           {book.description && <p>{book.description}</p>}
-          <label htmlFor="public-recipe-search">Search recipes in this cookbook</label>
-          <input id="public-recipe-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search recipes…" />
+          <div className="cookbook-filters">
+            <label htmlFor="public-recipe-search"><span>Search recipes</span><input id="public-recipe-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search recipes…" /></label>
+            <label htmlFor="public-recipe-tag"><span>Filter by tag</span><input id="public-recipe-tag" value={tag} onChange={(event) => setTag(event.target.value)} placeholder="e.g. vegetarian" maxLength="40" /></label>
+            <label htmlFor="public-recipe-sort"><span>Sort by</span><select id="public-recipe-sort" value={sort} onChange={(event) => setSort(event.target.value)}><option value="recent">Recently updated</option><option value="oldest">Oldest updated</option><option value="title">Title</option></select></label>
+          </div>
           {loading ? <p>Loading recipes…</p> : error && recipes.length === 0 ? <p className="form-message" role="alert">{error}</p>
             : recipes.length === 0 ? <p>No public recipes are available in this cookbook.</p>
               : <div className="passkey-list">

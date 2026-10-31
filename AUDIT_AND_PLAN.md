@@ -76,6 +76,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 - Recipe owners alone can change resource visibility; cookbook editors can edit content only when the recipe's edit policy permits it.
 - Signed-in users now land on a compact kitchen dashboard header; the large editorial hero and signup banner remain anonymous-only.
 - Signed-in users can open a cookbook detail view with search and pagination. The API first checks cookbook access and then returns only recipes the user can independently read.
+- Private and public cookbook detail views support stable recent/oldest/title ordering and exact recipe-tag filtering with server-side pagination; invalid sort/tag inputs are rejected.
 - A signed-in reader may save an accessible recipe as a private owner-controlled copy. Original creator attribution and source recipe ID are preserved; the new account owns the copy and its new revision history.
 - Recipe owners can transfer ownership to an existing account. The database update is owner-checked, retains creator attribution and revisions, and passes through authenticated mutation auditing.
 - Recipe detail can scale leading numeric ingredient amounts to a chosen serving count, including decimals and simple fractions, without modifying the saved recipe. Free-text quantities and ranges remain unchanged.

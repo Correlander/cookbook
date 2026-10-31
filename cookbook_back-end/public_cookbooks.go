@@ -87,6 +87,11 @@ func (h publicCookbookRecipesHandler) ServeHTTP(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, "invalid_pagination")
 		return
 	}
+	order, tagJSON, err := recipeListOptions(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_recipe_filter")
+		return
+	}
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	if len(query) > 200 {
 		writeError(w, http.StatusBadRequest, "invalid_query")
@@ -96,7 +101,8 @@ func (h publicCookbookRecipesHandler) ServeHTTP(w http.ResponseWriter, r *http.R
 		FROM cookbook_recipes cr JOIN recipes r ON r.id=cr.recipe_id
 		WHERE cr.cookbook_id=? AND r.deleted_at IS NULL AND r.visibility='public'
 		AND (?='' OR instr(lower(r.title||' '||r.description||' '||r.tags_json),lower(?))>0)
-		ORDER BY r.updated_at DESC,r.id LIMIT ? OFFSET ?`, cookbookID, query, query, limit, offset)
+		AND (?='' OR instr(lower(r.tags_json),lower(?))>0)
+		ORDER BY `+order+` LIMIT ? OFFSET ?`, cookbookID, query, query, tagJSON, tagJSON, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return

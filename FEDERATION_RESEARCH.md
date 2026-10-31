@@ -1,6 +1,6 @@
 # Federation protocol comparison and threat model
 
-Status: research only. No federation endpoints, peer calls, or background delivery are enabled or implemented. Federation remains off by default.
+Status: research and design only. No federation endpoints, peer calls, or background delivery are enabled or implemented. Federation remains off by default. The proposed version 1 wire and delivery profile is in [FEDERATION_PROTOCOL.md](FEDERATION_PROTOCOL.md); its design does not authorize enabling federation before the remaining gates pass.
 
 Research checked 2026-10-31 against the linked primary specifications.
 
@@ -62,6 +62,6 @@ Do not implement federation until all of these are true:
 1. Public origin and stable globally addressable IDs are configured and migration-tested.
 2. The local public/private/unlisted and deletion policies have explicit tests covering serialized output.
 3. A durable queue, bounded worker model, peer key lifecycle, and SSRF/egress policy are designed.
-4. The exact event schema, ordering, replay window, duplicate behavior, and tombstone retention are versioned in a protocol document.
+4. The exact event schema, ordering, replay window, duplicate behavior, and tombstone retention are versioned in [FEDERATION_PROTOCOL.md](FEDERATION_PROTOCOL.md).
 5. Two local test instances can exercise publish, update, duplicate, replay, offline retry, unpublish, revocation, and deletion without enabling federation in normal installations.
 6. Federation remains disabled by default, and operators must explicitly enable it and configure each peer.

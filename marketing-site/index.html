@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f4f0e6">
+    <meta name="description" content="Keep the recipes you love, organize them into cookbooks, and share them on your own terms with Cookbook, a private-first, self-hostable recipe library.">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="Cookbook — Good food, gathered">
+    <meta property="og:description" content="A calm, private-first home for the recipes worth coming back to.">
+    <title>Cookbook — Good food, gathered</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <a class="wordmark" href="#top" aria-label="Cookbook home"><span class="mark" aria-hidden="true">✳</span> Cookbook</a>
+      <nav aria-label="Main navigation">
+        <a href="#why-cookbook">Why Cookbook</a>
+        <a href="#your-kitchen">Your kitchen</a>
+        <a href="#self-hosting">Self-hosting</a>
+      </nav>
+      <a class="header-link" href="https://github.com/Correlander/cookbook">View the project <span aria-hidden="true">↗</span></a>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow"><span aria-hidden="true">✳</span> A home for the recipes you love</p>
+          <h1 id="hero-title">Good food,<br><em>gathered.</em></h1>
+          <p class="hero-intro">Keep family favorites close, collect the dishes you want to try, and bring every recipe into one thoughtful kitchen notebook.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="https://github.com/Correlander/cookbook">Explore the project <span aria-hidden="true">→</span></a>
+            <a class="text-link" href="#your-kitchen">See how it works <span aria-hidden="true">↓</span></a>
+          </div>
+          <p class="hero-note">Private by default. Yours to host.</p>
+        </div>
+        <div class="hero-art" role="img" aria-label="An illustrated open cookbook with a handwritten recipe and herbs">
+          <div class="art-sun" aria-hidden="true"></div>
+          <div class="art-leaf art-leaf-one" aria-hidden="true">❧</div>
+          <div class="art-leaf art-leaf-two" aria-hidden="true">❧</div>
+          <div class="book-shadow" aria-hidden="true"></div>
+          <div class="book-spread" aria-hidden="true">
+            <div class="book-page book-page-left"><span class="page-kicker">From the family table</span><span class="page-title">Sunday<br>tomato sauce</span><span class="page-line"></span><span class="page-copy">Slow simmered, best shared, always saved for one more plate.</span><span class="page-number">24</span></div>
+            <div class="book-page book-page-right"><span class="tomato-art"><i></i><i></i><i></i></span><span class="page-caption">A little taste of home</span><span class="page-number">25</span></div>
+          </div>
+          <span class="art-label">A kitchen notebook, made yours</span>
+        </div>
+      </section>
+
+      <section class="intro section-wrap" id="why-cookbook" aria-labelledby="why-title">
+        <p class="eyebrow">The good ones deserve a home</p>
+        <h2 id="why-title">Less searching.<br><em>More savoring.</em></h2>
+        <p>Recipes arrive on scraps of paper, in messages, and from people we love. Cookbook brings them together, with the details and stories that make each one worth keeping.</p>
+      </section>
+
+      <section class="features section-wrap" id="your-kitchen" aria-labelledby="features-title">
+        <div class="section-heading"><div><p class="eyebrow">Made for everyday cooking</p><h2 id="features-title">Your kitchen,<br><em>in good order.</em></h2></div><p>Simple tools for collecting, cooking, and sharing recipes on your terms.</p></div>
+        <div class="feature-grid">
+          <article class="feature-card"><span class="feature-icon" aria-hidden="true">▤</span><h3>Gather into cookbooks</h3><p>Make a cookbook for weeknights, holidays, a favorite baker, or the people around your table.</p></article>
+          <article class="feature-card"><span class="feature-icon" aria-hidden="true">✎</span><h3>Keep every detail</h3><p>Save ingredients, ordered steps, servings, timing, tags, photos, and the story behind a recipe.</p></article>
+          <article class="feature-card"><span class="feature-icon" aria-hidden="true">♡</span><h3>Share with care</h3><p>Invite collaborators to a cookbook or publish selected recipes. Private collections stay private.</p></article>
+          <article class="feature-card"><span class="feature-icon" aria-hidden="true">↺</span><h3>Cook with confidence</h3><p>See recipe history, restore an earlier version, or keep the screen focused on the next step.</p></article>
+        </div>
+      </section>
+
+      <section class="privacy-band" aria-labelledby="privacy-title">
+        <div class="privacy-mark" aria-hidden="true">✳</div>
+        <div><p class="eyebrow">Your recipes. Your rules.</p><h2 id="privacy-title">Private by default.<br><em>Shared by choice.</em></h2></div>
+        <p>Each Cookbook installation stands on its own. Choose who can read, edit, and share your recipes, and keep control of your data with self-hosting and export tools.</p>
+      </section>
+
+      <section class="hosting section-wrap" id="self-hosting" aria-labelledby="hosting-title">
+        <div><p class="eyebrow">Open source and self-hostable</p><h2 id="hosting-title">Make room<br>at <em>your</em> table.</h2><p>Run Cookbook on your own server with Go, SQLite, and Docker Compose. Keep your database and recipe photos together, back them up, and move your personal recipes with an owner-scoped export.</p><a class="button button-primary" href="https://github.com/Correlander/cookbook">Read the repository <span aria-hidden="true">↗</span></a></div>
+        <aside class="hosting-card" aria-label="Cookbook project details"><span class="hosting-stamp" aria-hidden="true">✳</span><p class="eyebrow">A little more home in every meal</p><ul><li><span>Open source</span><strong>Go · React · SQLite</strong></li><li><span>Deployment</span><strong>Self-host with Compose</strong></li><li><span>Sign in</span><strong>Email links · passkeys</strong></li><li><span>Privacy</span><strong>Private-first by design</strong></li></ul></aside>
+      </section>
+
+      <section class="closing"><p class="eyebrow">For the meals that bring us together</p><h2>Start with a<br><em>favorite.</em></h2><a class="button button-light" href="https://github.com/Correlander/cookbook">Discover Cookbook <span aria-hidden="true">↗</span></a></section>
+    </main>
+
+    <footer class="site-footer"><a class="wordmark" href="#top"><span class="mark" aria-hidden="true">✳</span> Cookbook</a><p>A self-hostable home for good recipes.</p><a href="https://github.com/Correlander/cookbook">Open source project ↗</a><span>© <span id="year">2026</span> Cookbook</span></footer>
+  </body>
+</html>

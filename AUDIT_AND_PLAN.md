@@ -44,7 +44,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 5. **Media:** local filesystem behind a storage interface, strict size/type limits, private media authorized by API. Add object storage adapter only when hosting requires it.
 6. **Courses:** optional instance flag, disabled by default; separate entities/routes/module and consistent API enforcement. Defer implementation until core recipes work.
 7. **Federation:** disabled by default and isolated behind asynchronous adapters/queues. The first protocol comparison and threat model are in [FEDERATION_RESEARCH.md](FEDERATION_RESEARCH.md). Its provisional choice is a manually peered signed Cookbook exchange for public recipe snapshots, with ActivityPub reserved for a later explicit social-interoperability goal. Research is complete; implementation remains gated on the listed identity, privacy, key lifecycle, SSRF, queue, and two-instance test requirements. Public browsing/export are not federation. Do not implement federation before local IDs, visibility, attribution, auth and authorization are sound.
-8. **Marketing:** separate static site/deployment, later than core app. Public app pages initially remain client rendered; document SEO/social preview tradeoffs.
+8. **Marketing:** a separate static site is now present in `marketing-site/`, with SEO/social metadata, responsive product copy, and a self-hosting overview. It is not coupled to the app build and has not yet been deployed; public app pages initially remain client rendered.
 
 ## Milestones
 
@@ -104,6 +104,10 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 - Only after local privacy/identity work: signed/authenticated opt-in public exchange between two independent test instances; later consider controlled sharing/collaborative editing.
 - Acceptance: disabled default; privacy leakage, malicious input, replay/duplicate, offline peer, attribution/revision, SSRF, revocation and deletion-limit tests/docs.
 - Protocol comparison and threat model are documented. Implementation remains unstarted pending the explicit pre-implementation gates in `FEDERATION_RESEARCH.md`.
+
+### M9 — Separate marketing site (partial)
+- A dependency-free static marketing site in `marketing-site/` describes the product, privacy model, features, and self-hosting path. It has responsive styling, accessible landmarks/skip link, reduced-motion support, and title/description/Open Graph metadata.
+- Acceptance: confirm links and content against available product capabilities; deployment target and managed-hosting offering are not established. The site has not been published.
 
 ## Baseline verification
 

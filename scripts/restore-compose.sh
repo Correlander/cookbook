@@ -31,8 +31,8 @@ for protected_path in "$archive_dir" "$archive_path"; do
 	case "$mode" in
 		''|*[!0-7]*) echo "could not read backup permissions" >&2; exit 1 ;;
 	esac
-	if [ $((0$mode & 022)) -ne 0 ]; then
-		echo "backup directory and archive must not be group- or world-writable" >&2
+	if [ $((0$mode & 077)) -ne 0 ]; then
+		echo "backup directory and archive must not be accessible by group or others" >&2
 		exit 1
 	fi
 done

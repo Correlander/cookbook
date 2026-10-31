@@ -19,6 +19,7 @@ def create_valid_archive(path):
         media = tarfile.TarInfo("media/")
         media.type = tarfile.DIRTYPE
         archive.addfile(media)
+    path.chmod(0o600)
 
 
 class ComposeBackupScriptTests(unittest.TestCase):
@@ -100,7 +101,15 @@ class ComposeBackupScriptTests(unittest.TestCase):
         self.backup_dir.chmod(0o770)
         result = self._run("backup-compose.sh", self.backup_dir)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("must not be group- or world-writable", result.stderr)
+        self.assertIn("must not be accessible by group or others", result.stderr)
+        self.assertEqual(self._events(), [])
+
+    def test_backup_refuses_a_shared_readable_directory(self):
+        self.backup_dir.mkdir(mode=0o755)
+        self.backup_dir.chmod(0o755)
+        result = self._run("backup-compose.sh", self.backup_dir)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must not be accessible by group or others", result.stderr)
         self.assertEqual(self._events(), [])
 
     def test_restore_leaves_service_stopped_after_restore_failure(self):
@@ -118,7 +127,14 @@ class ComposeBackupScriptTests(unittest.TestCase):
         self.archive.chmod(0o666)
         result = self._run("restore-compose.sh", self.archive)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("must not be group- or world-writable", result.stderr)
+        self.assertIn("must not be accessible by group or others", result.stderr)
+        self.assertEqual(self._events(), [])
+
+    def test_restore_rejects_a_readable_archive_before_touching_the_service(self):
+        self.archive.chmod(0o644)
+        result = self._run("restore-compose.sh", self.archive)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must not be accessible by group or others", result.stderr)
         self.assertEqual(self._events(), [])
 
 

@@ -21,6 +21,7 @@ At audit time the repository was an early prototype. Implementation has since ad
 - M3 local core: private-first users/cookbooks/recipes/membership schema, API authorization, structured recipes and metadata, public recipe listing, private recipe creation, and basic cookbook listing/creation/editing/assignment UI are implemented. Cookbook owners can invite members as viewers/editors, change roles, revoke pending invitations, and remove members. Recipe discovery and cookbook listing have server-side search/paging. Recipe images use local private storage, access-checked routes, and revision snapshots. Owners can edit recipes through the version-checked API; metadata is captured in revision history and restored with prior versions. The dashboard also manages instance account invitations.
 - M4 history: recipe snapshots are written atomically at create/update, including servings, preparation/cook time, tags, and images. Updates use optimistic versions, authorized users can read history and compare two versions, and restore-as-new-version uses an optimistic version check. Owner-only trash/restore and configurable retention cleanup are implemented. Successful authenticated API mutations and authenticated 403 denials are recorded separately in an administrator-only, paged security audit log.
 - Frontend dependencies were updated within existing semver ranges; the ESLint 10 migration and a minimatch override clear the current audit findings. Go tests/vet and frontend lint/build have been run successfully at recent checkpoints.
+- GitHub Actions now runs backend tests/vet, frontend unit tests/lint/build, Compose validation, and a Docker image build on pushes to `main` and pull requests.
 - WebAuthn uses `github.com/go-webauthn/webauthn` v0.14.0 and raises the backend minimum to Go 1.24. Automated tests cover RP configuration, option creation, origin checks, and one-time ceremony use; a real browser/authenticator enrollment and assertion has not been exercised.
 
 These notes describe repository state, not a claim that any milestone is complete. Recheck implementation and verification evidence before release.
@@ -57,6 +58,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 - Remove embedded OAuth secret and legacy OAuth routes/code. Require environment configuration; fail safely if required values are absent.
 - Add SQLite schema/migrations and startup integration with foreign keys, WAL/busy timeout where appropriate.
 - Acceptance: clean startup/config failures, health check, migration tests, `go test`, `go vet`.
+- CI runs those backend checks and validates Compose plus the self-hosting image build; hosted workflow results have not yet been observed from this local-only worktree.
 
 ### M2 — Passwordless authentication (partial)
 - Implement email challenges and sessions with storage interfaces, expiry, one-time consumption, rate limiting, enumeration-resistant responses, secure cookies/CSRF strategy, and email delivery configuration.

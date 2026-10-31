@@ -10,6 +10,8 @@ Requirements: Go 1.24+, Node.js 20+, and npm.
 2. Run the API from `cookbook_back-end` with `go run .` (defaults to `127.0.0.1:8000`). It initializes the SQLite schema. Its embedded frontend is a placeholder during local development; the Vite server is the development UI.
 3. In a second terminal, run `npm ci && npm run dev` from `coobook_front-end`. Vite serves the development UI at `http://localhost:5173` and proxies API requests to the Go service.
 
+Run backend checks with `go test ./...` and `go vet ./...` from `cookbook_back-end`. Run frontend checks with `npm test`, `npm run lint`, and `npm run build` from `coobook_front-end`.
+
 ## Self-host with Docker Compose
 
 1. Copy `.env.example` to `.env`, then set `COOKBOOK_PUBLIC_URL`, `COOKBOOK_RP_ID`, `COOKBOOK_RP_ORIGIN`, and the SMTP host/from values. SMTP delivery requires STARTTLS; credentials are optional for relays that do not require authentication. Alternatively, configure `COOKBOOK_EMAIL_COMMAND` with an executable in the container that accepts the documented JSON payload on stdin.

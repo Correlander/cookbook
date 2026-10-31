@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests and vet
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cookbook_back-end
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cookbook_back-end/go.mod
+          cache-dependency-path: cookbook_back-end/go.sum
+      - run: go test -p=2 -timeout 120s ./...
+      - run: go vet ./...
+
+  frontend:
+    name: Frontend tests, lint, and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: coobook_front-end
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: coobook_front-end/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run lint
+      - run: npm run build
+
+  container:
+    name: Container build and Compose validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config --quiet
+      - run: docker build --tag cookbook:ci .

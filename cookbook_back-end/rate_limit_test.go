@@ -3,6 +3,7 @@ package main
 import (
 	"net"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -20,6 +21,47 @@ func TestAuthRequestLimiterBlocksAfterLimit(t *testing.T) {
 	allowed, err := allowAuthRequest(db, req, "email", 2, time.Hour, nil)
 	if err != nil || allowed {
 		t.Fatalf("over-limit request allowed=%v err=%v", allowed, err)
+	}
+}
+
+func TestEmailSubjectLimiterAppliesConcurrentLimit(t *testing.T) {
+	db := testDatabase(t)
+	const requests = 20
+	start := make(chan struct{})
+	results := make(chan bool, requests)
+	errors := make(chan error, requests)
+	var workers sync.WaitGroup
+	for i := 0; i < requests; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			allowed, err := allowAuthSubject(db, "email-link-address", "cook@example.test", 5, time.Hour)
+			results <- allowed
+			if err != nil {
+				errors <- err
+			}
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	close(errors)
+	for err := range errors {
+		t.Fatal(err)
+	}
+	allowedCount := 0
+	for allowed := range results {
+		if allowed {
+			allowedCount++
+		}
+	}
+	if allowedCount != 5 {
+		t.Fatalf("concurrent allowed requests=%d, want 5", allowedCount)
+	}
+	allowed, err := allowAuthSubject(db, "email-link-address", "other@example.test", 5, time.Hour)
+	if err != nil || !allowed {
+		t.Fatalf("separate email subject allowed=%v err=%v", allowed, err)
 	}
 }
 

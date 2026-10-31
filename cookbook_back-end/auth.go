@@ -154,6 +154,15 @@ func (h authHandler) requestEmail(w http.ResponseWriter, r *http.Request) {
 	if invitationValid {
 		registrationInvitation = invitationID
 	}
+	allowed, err = allowAuthSubject(h.db, "email-link-address", email, 5, time.Hour)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	if !allowed {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "if_account_can_sign_in_link_sent"})
+		return
+	}
 	var count int
 	err = h.db.QueryRow(`SELECT COUNT(*) FROM email_challenges WHERE email=? AND created_at>?`, email, time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)).Scan(&count)
 	if err != nil {

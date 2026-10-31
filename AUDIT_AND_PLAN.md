@@ -73,6 +73,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 - Administrators can manage the instance's public-browsing and registration settings in the app. Enabling public browsing while resources are already marked public requires an explicit confirmation; private resources remain private.
 - Anonymous visitors can search and page through public cookbooks and their public recipes. Cookbook-scoped reads omit private and unlisted recipes even when those recipes are referenced by a public cookbook.
 - Recipe owners alone can change resource visibility; cookbook editors can edit content only when the recipe's edit policy permits it.
+- Signed-in users now land on a compact kitchen dashboard header; the large editorial hero and signup banner remain anonymous-only.
 
 ### M4 — History and recovery (partial)
 - Atomic revision snapshots, concurrency/version checks, diff/restore-as-new-version, distinct audit records, soft delete/trash, configurable retention and cleanup.

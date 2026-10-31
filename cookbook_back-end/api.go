@@ -948,7 +948,8 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 	var owner string
 	var version int
 	var edit string
-	if err := h.db.QueryRow(`SELECT owner_id,version,edit_policy FROM recipes WHERE id=? AND deleted_at IS NULL`, id).Scan(&owner, &version, &edit); err != nil {
+	var currentVisibility visibility
+	if err := h.db.QueryRow(`SELECT owner_id,version,edit_policy,visibility FROM recipes WHERE id=? AND deleted_at IS NULL`, id).Scan(&owner, &version, &edit, &currentVisibility); err != nil {
 		writeError(w, 404, "not_found")
 		return
 	}
@@ -956,6 +957,10 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 	_ = h.db.QueryRow(`SELECT m.role FROM cookbook_memberships m JOIN cookbook_recipes cr ON cr.cookbook_id=m.cookbook_id WHERE cr.recipe_id=? AND m.user_id=? ORDER BY CASE m.role WHEN 'editor' THEN 0 ELSE 1 END LIMIT 1`, id, in.UserID).Scan(&memberRole)
 	if !canEditResource(in.UserID, access{ownerID: owner, memberRole: memberRole}) || (in.UserID != owner && (edit != "cookbook_editors" || memberRole != roleEditor)) {
 		writeError(w, 403, "forbidden")
+		return
+	}
+	if in.UserID != owner && in.Visibility != currentVisibility {
+		writeError(w, 403, "visibility_owner_only")
 		return
 	}
 	if version != in.Version {

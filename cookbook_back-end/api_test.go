@@ -232,6 +232,59 @@ func TestRecipeRevisionsAndOptimisticUpdates(t *testing.T) {
 	}
 }
 
+func TestCookbookEditorCannotChangeRecipeVisibility(t *testing.T) {
+	db := testDatabase(t)
+	_, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1;
+		INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('editor','editor@example.test','Editor','now');
+		INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at) VALUES('book','owner','Shared','private','now','now');
+		INSERT INTO cookbook_memberships(cookbook_id,user_id,role,created_at) VALUES('book','editor','editor','now');
+		INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,created_at,updated_at) VALUES('recipe','owner','Owner','Soup','','[]','[]','private','cookbook_editors','now','now');
+		INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES('book','recipe','owner','now')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerToken, _, err := issueSession(db, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	editorToken, _, err := issueSession(db, "editor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := handlerWithAuth(db, testAuth(db))
+	editorCookie := &http.Cookie{Name: sessionCookie, Value: editorToken}
+	update := map[string]any{
+		"title": "Soup", "ingredients": []map[string]string{{"name": "beans"}},
+		"steps": []map[string]string{{"text": "Cook"}}, "version": 1,
+		"visibility": "public", "cookbook_ids": []string{"book"},
+	}
+	denied := callAPI(handler, http.MethodPut, "/api/recipes/recipe", update, editorCookie)
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("editor visibility change status=%d, want 403: %s", denied.Code, denied.Body)
+	}
+	var visibilityValue visibility
+	if err := db.QueryRow(`SELECT visibility FROM recipes WHERE id='recipe'`).Scan(&visibilityValue); err != nil || visibilityValue != visibilityPrivate {
+		t.Fatalf("denied visibility change persisted: %q, %v", visibilityValue, err)
+	}
+	publicList := callAPI(handler, http.MethodGet, "/api/public/recipes", nil, nil)
+	if publicList.Code != http.StatusOK || publicList.Body.String() != "[]\n" {
+		t.Fatalf("editor's denied update leaked the recipe: status=%d body=%s", publicList.Code, publicList.Body)
+	}
+
+	update["visibility"] = "private"
+	allowed := callAPI(handler, http.MethodPut, "/api/recipes/recipe", update, editorCookie)
+	if allowed.Code != http.StatusOK {
+		t.Fatalf("editor content update status=%d: %s", allowed.Code, allowed.Body)
+	}
+	ownerCookie := &http.Cookie{Name: sessionCookie, Value: ownerToken}
+	update["visibility"] = "public"
+	update["version"] = 2
+	ownerUpdate := callAPI(handler, http.MethodPut, "/api/recipes/recipe", update, ownerCookie)
+	if ownerUpdate.Code != http.StatusOK {
+		t.Fatalf("owner visibility update status=%d: %s", ownerUpdate.Code, ownerUpdate.Body)
+	}
+}
+
 func TestCookbookPagination(t *testing.T) {
 	db := testDatabase(t)
 	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'); INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at) VALUES('book-a','owner','A','private','now','2026-01-01'),('book-b','owner','B','private','now','2026-01-02'),('book-c','owner','C','private','now','2026-01-03')`); err != nil {

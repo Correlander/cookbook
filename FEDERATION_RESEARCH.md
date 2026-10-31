@@ -65,3 +65,5 @@ Do not implement federation until all of these are true:
 4. The exact event schema, ordering, replay window, duplicate behavior, and tombstone retention are versioned in [FEDERATION_PROTOCOL.md](FEDERATION_PROTOCOL.md).
 5. Two local test instances can exercise publish, update, duplicate, replay, offline retry, unpublish, revocation, and deletion without enabling federation in normal installations.
 6. Federation remains disabled by default, and operators must explicitly enable it and configure each peer.
+
+The code now validates and persists an optional canonical HTTPS federation origin, locks it when the federation flag is enabled, migrates older settings rows, and derives recipe object IDs from the existing stable recipe IDs. Those paths have migration/restart tests. No public origin is configured for this checkout, so the deployment-specific portion of gate 1 remains open. Gate 3's queue, key lifecycle, and SSRF controls have a proposed design, but none are implemented; serialized-visibility tests (gate 2) and two-instance verification (gate 5) remain open.

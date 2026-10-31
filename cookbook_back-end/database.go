@@ -18,7 +18,9 @@ CREATE TABLE IF NOT EXISTS instance_settings (
   revision_retention_days INTEGER NOT NULL DEFAULT 365 CHECK (revision_retention_days IN (0, 7, 30, 90, 365)),
   audit_retention_days INTEGER NOT NULL DEFAULT 365 CHECK (audit_retention_days IN (0, 7, 30, 90, 365)),
   courses_enabled INTEGER NOT NULL DEFAULT 0 CHECK (courses_enabled IN (0, 1)),
-  federation_enabled INTEGER NOT NULL DEFAULT 0 CHECK (federation_enabled IN (0, 1))
+  federation_enabled INTEGER NOT NULL DEFAULT 0 CHECK (federation_enabled IN (0, 1)),
+  federation_origin TEXT NOT NULL DEFAULT '',
+  federation_origin_locked INTEGER NOT NULL DEFAULT 0 CHECK (federation_origin_locked IN (0, 1))
 );
 INSERT OR IGNORE INTO instance_settings (id) VALUES (1);
 CREATE TABLE IF NOT EXISTS users (
@@ -211,6 +213,9 @@ func openDatabase(path string) (*sql.DB, error) {
 		{"instance_settings", "registration_policy_configured", `INTEGER NOT NULL DEFAULT 0 CHECK (registration_policy_configured IN (0, 1))`},
 		{"instance_settings", "revision_retention_days", `INTEGER NOT NULL DEFAULT 365 CHECK (revision_retention_days IN (0, 7, 30, 90, 365))`},
 		{"instance_settings", "audit_retention_days", `INTEGER NOT NULL DEFAULT 365 CHECK (audit_retention_days IN (0, 7, 30, 90, 365))`},
+		{"instance_settings", "federation_enabled", `INTEGER NOT NULL DEFAULT 0 CHECK (federation_enabled IN (0, 1))`},
+		{"instance_settings", "federation_origin", `TEXT NOT NULL DEFAULT ''`},
+		{"instance_settings", "federation_origin_locked", `INTEGER NOT NULL DEFAULT 0 CHECK (federation_origin_locked IN (0, 1))`},
 		{"webauthn_credentials", "name", `TEXT NOT NULL DEFAULT 'Passkey'`},
 		{"sessions", "id", `TEXT NOT NULL DEFAULT ''`},
 		{"sessions", "user_agent", `TEXT NOT NULL DEFAULT ''`},

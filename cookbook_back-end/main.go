@@ -186,6 +186,9 @@ func run() error {
 		return err
 	}
 	defer db.Close()
+	if err := configureFederationOrigin(db, cfg.federationOrigin); err != nil {
+		return fmt.Errorf("configure federation origin: %w", err)
+	}
 	startTrashCleanup(db, cfg.trashRetentionDays, cfg.mediaDir)
 	if err := configureRegistrationPolicy(db); err != nil {
 		return fmt.Errorf("configure registration policy: %w", err)

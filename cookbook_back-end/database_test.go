@@ -31,6 +31,110 @@ func TestDatabaseCreatesPrivateInstanceAndConstraints(t *testing.T) {
 	}
 }
 
+func TestFederationOriginCanonicalization(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+		valid bool
+	}{
+		{input: "https://Cookbook.Example.org:443/", want: "https://cookbook.example.org", valid: true},
+		{input: "https://cookbook.example/path", valid: false},
+		{input: "https://cookbook.example.org?", valid: false},
+		{input: "https://cookbook.example.org#", valid: false},
+		{input: "https://user@cookbook.example", valid: false},
+		{input: "http://cookbook.example", valid: false},
+		{input: "https://localhost", valid: false},
+		{input: "https://host.local", valid: false},
+		{input: "https://127.0.0.1", valid: false},
+		{input: "https://cookbook.example:8443", valid: false},
+		{input: "https://-invalid.example", valid: false},
+	}
+	for _, test := range tests {
+		got, err := canonicalFederationOrigin(test.input)
+		if (err == nil) != test.valid || got != test.want {
+			t.Errorf("canonicalFederationOrigin(%q) = %q, %v; want %q valid=%v", test.input, got, err, test.want, test.valid)
+		}
+	}
+	objectID, err := federationRecipeObjectID("https://cookbook.example.org", "0123456789abcdef0123456789abcdef")
+	if err != nil || objectID != "https://cookbook.example.org/federation/recipes/0123456789abcdef0123456789abcdef" {
+		t.Fatalf("federation object ID = %q, %v", objectID, err)
+	}
+	if _, err := federationRecipeObjectID("https://cookbook.example.org", "../other"); err == nil {
+		t.Fatal("accepted invalid recipe ID in federation object ID")
+	}
+}
+
+func TestFederationOriginIsStableAfterEnable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "federation-origin.db")
+	db, err := openDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := configureFederationOrigin(db, "https://Cookbook.Example.org:443/"); err != nil {
+		t.Fatal(err)
+	}
+	if err := configureFederationOrigin(db, "https://new.example.org"); err != nil {
+		t.Fatalf("origin should be changeable before enabling: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE instance_settings SET federation_enabled=1 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := configureFederationOrigin(db, ""); err != nil {
+		t.Fatalf("stored origin should survive omitted environment setting: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE instance_settings SET federation_origin_locked=0 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := configureFederationOrigin(db, "https://other.example.org"); err == nil {
+		t.Fatal("allowed changing origin while federation was enabled")
+	}
+	if err := configureFederationOrigin(db, ""); err != nil {
+		t.Fatalf("could not restore origin lock: %v", err)
+	}
+	var firstOrigin string
+	var locked int
+	if err := db.QueryRow(`SELECT federation_origin,federation_origin_locked FROM instance_settings WHERE id=1`).Scan(&firstOrigin, &locked); err != nil {
+		t.Fatal(err)
+	}
+	if firstOrigin != "https://new.example.org" || locked != 1 {
+		t.Fatalf("origin=%q locked=%d after enabling", firstOrigin, locked)
+	}
+	recipeID := "0123456789abcdef0123456789abcdef"
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO recipes(id,owner_id,creator_name,title,created_at,updated_at) VALUES(?, 'owner','Owner','Dish','now','now')`, recipeID); err != nil {
+		t.Fatal(err)
+	}
+	firstObjectID, err := federationRecipeObjectID(firstOrigin, recipeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = openDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := configureFederationOrigin(db, "https://new.example.org"); err != nil {
+		t.Fatalf("origin changed across restart: %v", err)
+	}
+	var persistedRecipeID string
+	if err := db.QueryRow(`SELECT id FROM recipes WHERE title='Dish'`).Scan(&persistedRecipeID); err != nil {
+		t.Fatal(err)
+	}
+	reopenedObjectID, err := federationRecipeObjectID("https://new.example.org", persistedRecipeID)
+	if err != nil || reopenedObjectID != firstObjectID {
+		t.Fatalf("federation object ID changed across reopen: first=%q reopened=%q err=%v", firstObjectID, reopenedObjectID, err)
+	}
+	if err := configureFederationOrigin(db, "https://other.example.org"); err == nil {
+		t.Fatal("allowed changing federation origin after enabling")
+	}
+}
+
 func TestExistingInstanceSettingsReceiveRetentionDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings-upgrade.db")
 	legacy, err := sql.Open("sqlite", path)
@@ -51,12 +155,13 @@ func TestExistingInstanceSettingsReceiveRetentionDefaults(t *testing.T) {
 	defer db.Close()
 	var public int
 	var registration string
-	var revisionRetention, auditRetention int
-	if err := db.QueryRow(`SELECT public_instance,registration_policy,revision_retention_days,audit_retention_days FROM instance_settings WHERE id=1`).Scan(&public, &registration, &revisionRetention, &auditRetention); err != nil {
+	var revisionRetention, auditRetention, federation, originLocked int
+	var origin string
+	if err := db.QueryRow(`SELECT public_instance,registration_policy,revision_retention_days,audit_retention_days,federation_enabled,federation_origin,federation_origin_locked FROM instance_settings WHERE id=1`).Scan(&public, &registration, &revisionRetention, &auditRetention, &federation, &origin, &originLocked); err != nil {
 		t.Fatal(err)
 	}
-	if public != 1 || registration != "open" || revisionRetention != 365 || auditRetention != 365 {
-		t.Fatalf("upgraded settings = public %d, registration %q, revisions %d, audit %d", public, registration, revisionRetention, auditRetention)
+	if public != 1 || registration != "open" || revisionRetention != 365 || auditRetention != 365 || federation != 0 || origin != "" || originLocked != 0 {
+		t.Fatalf("upgraded settings = public %d, registration %q, revisions %d, audit %d, federation %d, origin %q, locked %d", public, registration, revisionRetention, auditRetention, federation, origin, originLocked)
 	}
 }
 

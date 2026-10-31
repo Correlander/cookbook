@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/mail"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -17,6 +18,118 @@ type config struct {
 	mediaDir           string
 	trashRetentionDays int
 	trustedProxies     []*net.IPNet
+	federationOrigin   string
+}
+
+func canonicalFederationOrigin(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Opaque != "" || (parsed.Path != "" && parsed.Path != "/") || parsed.ForceQuery || parsed.RawQuery != "" || strings.Contains(raw, "#") {
+		return "", errors.New("federation origin must be an HTTPS origin")
+	}
+	if port := parsed.Port(); port != "" && port != "443" {
+		return "", errors.New("federation origin must use the default HTTPS port")
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host == "" || strings.HasSuffix(host, ".") || net.ParseIP(host) != nil || !strings.Contains(host, ".") {
+		return "", errors.New("federation origin must use a public DNS name")
+	}
+	for _, reserved := range []string{".localhost", ".local", ".test", ".invalid", ".example", ".internal"} {
+		if host == strings.TrimPrefix(reserved, ".") || strings.HasSuffix(host, reserved) {
+			return "", errors.New("federation origin must use a public DNS name")
+		}
+	}
+	labels := strings.Split(host, ".")
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return "", errors.New("federation origin has an invalid DNS name")
+		}
+		for _, char := range label {
+			if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '-' {
+				return "", errors.New("federation origin has an invalid DNS name")
+			}
+		}
+	}
+	lastLabel := labels[len(labels)-1]
+	if allDigits(lastLabel) {
+		return "", errors.New("federation origin has an invalid DNS name")
+	}
+	return "https://" + host, nil
+}
+
+func allDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func configureFederationOrigin(db *sql.DB, configured string) error {
+	normalized := ""
+	var err error
+	if strings.TrimSpace(configured) != "" {
+		normalized, err = canonicalFederationOrigin(configured)
+		if err != nil {
+			return err
+		}
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var stored string
+	var enabled, locked int
+	if err := tx.QueryRow(`SELECT federation_origin,federation_enabled,federation_origin_locked FROM instance_settings WHERE id=1`).Scan(&stored, &enabled, &locked); err != nil {
+		return err
+	}
+	if stored != "" {
+		canonicalStored, err := canonicalFederationOrigin(stored)
+		if err != nil || canonicalStored != stored {
+			return errors.New("stored federation origin is invalid")
+		}
+	}
+	if normalized == "" {
+		normalized = stored
+	}
+	if enabled == 1 && normalized == "" {
+		return errors.New("federation is enabled but no federation origin is configured")
+	}
+	if enabled == 1 && stored != "" && normalized != stored {
+		return errors.New("federation origin cannot change while federation is enabled")
+	}
+	if locked == 1 && normalized != stored {
+		return errors.New("federation origin cannot change after federation is enabled")
+	}
+	if normalized != stored {
+		if _, err := tx.Exec(`UPDATE instance_settings SET federation_origin=? WHERE id=1`, normalized); err != nil {
+			return err
+		}
+	}
+	if enabled == 1 && locked == 0 {
+		if _, err := tx.Exec(`UPDATE instance_settings SET federation_origin_locked=1 WHERE id=1`); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func federationRecipeObjectID(origin, recipeID string) (string, error) {
+	canonical, err := canonicalFederationOrigin(origin)
+	if err != nil || canonical != origin || len(recipeID) != 32 {
+		return "", errors.New("invalid federation object identity")
+	}
+	for _, char := range recipeID {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return "", errors.New("invalid federation object identity")
+		}
+	}
+	return origin + "/federation/recipes/" + recipeID, nil
 }
 
 func provisionAdministrator(db *sql.DB) error {
@@ -107,5 +220,16 @@ func loadConfig() (config, error) {
 			trustedProxies = append(trustedProxies, network)
 		}
 	}
-	return config{address: address, database: database, mediaDir: mediaDir, trashRetentionDays: retentionDays, trustedProxies: trustedProxies}, nil
+	federationOrigin, err := canonicalFederationOriginIfConfigured(os.Getenv("COOKBOOK_FEDERATION_ORIGIN"))
+	if err != nil {
+		return config{}, err
+	}
+	return config{address: address, database: database, mediaDir: mediaDir, trashRetentionDays: retentionDays, trustedProxies: trustedProxies, federationOrigin: federationOrigin}, nil
+}
+
+func canonicalFederationOriginIfConfigured(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", nil
+	}
+	return canonicalFederationOrigin(raw)
 }

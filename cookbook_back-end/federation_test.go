@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -114,4 +115,82 @@ func TestFederationTombstoneContainsNoRecipeOrAttribution(t *testing.T) {
 func withVisibility(source federationRecipeSource, visibility visibility) federationRecipeSource {
 	source.Visibility = visibility
 	return source
+}
+
+func TestFederationReceiverDeduplicatesAndAppliesSequenceAtomically(t *testing.T) {
+	db := testDatabase(t)
+	if err := registerFederationPeer(db, testFederationOrigin, true); err != nil {
+		t.Fatal(err)
+	}
+	base := federationRecipeSource{ID: testFederationID, CreatorName: "Creator", Title: "Dish", Visibility: visibilityPublic}
+	makeEvent := func(eventID, eventType string, sequence int64, source federationRecipeSource) []byte {
+		t.Helper()
+		payload, err := serializeFederationEvent(testFederationOrigin, eventID, eventType, sequence, time.Now(), true, true, source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return payload
+	}
+	first := makeEvent("11111111111111111111111111111111", federationEventSnapshot, 1, base)
+	status, response, err := acceptFederationEvent(t.Context(), db, testFederationOrigin, first)
+	if err != nil || status != 202 || !strings.Contains(string(response), "accepted") {
+		t.Fatalf("snapshot status=%d response=%s err=%v", status, response, err)
+	}
+	status, _, err = acceptFederationEvent(t.Context(), db, testFederationOrigin, first)
+	if err != nil || status != 202 {
+		t.Fatalf("duplicate event status=%d err=%v", status, err)
+	}
+	conflictingID := strings.Replace(string(first), "\"title\":\"Dish\"", "\"title\":\"Other dish\"", 1)
+	if _, _, err := acceptFederationEvent(t.Context(), db, testFederationOrigin, []byte(conflictingID)); !errors.Is(err, errFederationConflict) {
+		t.Fatalf("conflicting event ID error=%v", err)
+	}
+	update := base
+	update.Title = "Updated dish"
+	second := makeEvent("22222222222222222222222222222222", federationEventUpdate, 2, update)
+	if _, _, err := acceptFederationEvent(t.Context(), db, testFederationOrigin, second); err != nil {
+		t.Fatalf("update failed: %v", err)
+	}
+	stale := makeEvent("33333333333333333333333333333333", federationEventUpdate, 2, base)
+	if _, _, err := acceptFederationEvent(t.Context(), db, testFederationOrigin, stale); !errors.Is(err, errFederationConflict) {
+		t.Fatalf("stale update error=%v", err)
+	}
+	var sequence, deleted int
+	var recipeJSON string
+	if err := db.QueryRow(`SELECT sequence,deleted,recipe_json FROM federation_remote_recipes WHERE object_id=?`, testFederationOrigin+"/federation/recipes/"+testFederationID).Scan(&sequence, &deleted, &recipeJSON); err != nil {
+		t.Fatal(err)
+	}
+	if sequence != 2 || deleted != 0 || !strings.Contains(recipeJSON, "Updated dish") {
+		t.Fatalf("remote recipe was not updated atomically: seq=%d deleted=%d payload=%s", sequence, deleted, recipeJSON)
+	}
+	tombstone, err := serializeFederationEvent(testFederationOrigin, "44444444444444444444444444444444", federationEventTombstone, 3, time.Now(), true, true, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := acceptFederationEvent(t.Context(), db, testFederationOrigin, tombstone); err != nil {
+		t.Fatalf("tombstone failed: %v", err)
+	}
+	if err := db.QueryRow(`SELECT sequence,deleted,recipe_json FROM federation_remote_recipes WHERE object_id=?`, testFederationOrigin+"/federation/recipes/"+testFederationID).Scan(&sequence, &deleted, &recipeJSON); err != nil {
+		t.Fatal(err)
+	}
+	if sequence != 3 || deleted != 1 || recipeJSON != "" {
+		t.Fatalf("tombstone retained content: seq=%d deleted=%d payload=%q", sequence, deleted, recipeJSON)
+	}
+}
+
+func TestDecodeFederationEventRejectsDuplicateUnknownAndMismatchedData(t *testing.T) {
+	valid, err := serializeFederationEvent(testFederationOrigin, testFederationID, federationEventSnapshot, 1, time.Now(), true, true, federationRecipeSource{ID: testFederationID, CreatorName: "Creator", Title: "Dish", Visibility: visibilityPublic})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string][]byte{
+		"duplicate key":       []byte(strings.Replace(string(valid), `"event_id":`, `"event_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","event_id":`, 1)),
+		"unknown field":       []byte(strings.TrimSuffix(string(valid), "}") + `,"secret":"value"}`),
+		"wrong object origin": []byte(strings.Replace(string(valid), testFederationOrigin+"/federation/recipes/", "https://other.example.org/federation/recipes/", 1)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := decodeFederationEvent(body); err == nil {
+				t.Fatal("accepted invalid event")
+			}
+		})
+	}
 }

@@ -101,6 +101,29 @@ CREATE TABLE IF NOT EXISTS federation_nonces (
   expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_federation_nonces_expiry ON federation_nonces(expires_at,nonce_hash);
+CREATE TABLE IF NOT EXISTS federation_remote_recipes (
+  object_id TEXT PRIMARY KEY,
+  source_origin TEXT NOT NULL REFERENCES federation_peers(origin),
+  source_recipe_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL CHECK (sequence > 0),
+  creator_name TEXT NOT NULL DEFAULT '',
+  recipe_json TEXT NOT NULL DEFAULT '',
+  deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
+  updated_at TEXT NOT NULL,
+  UNIQUE(source_origin,source_recipe_id)
+);
+CREATE INDEX IF NOT EXISTS idx_federation_remote_recipes_origin ON federation_remote_recipes(source_origin,deleted,updated_at DESC);
+CREATE TABLE IF NOT EXISTS federation_received_events (
+  source_origin TEXT NOT NULL REFERENCES federation_peers(origin),
+  event_id TEXT NOT NULL,
+  body_digest BLOB NOT NULL CHECK (length(body_digest) = 32),
+  object_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL CHECK (sequence > 0),
+  received_at TEXT NOT NULL,
+  response_status INTEGER NOT NULL,
+  response_body TEXT NOT NULL,
+  PRIMARY KEY(source_origin,event_id)
+);
 CREATE TABLE IF NOT EXISTS webauthn_ceremonies (
   id TEXT PRIMARY KEY,
   user_id TEXT REFERENCES users(id) ON DELETE CASCADE,

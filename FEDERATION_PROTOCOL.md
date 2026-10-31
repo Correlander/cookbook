@@ -1,6 +1,6 @@
 # Cookbook exchange protocol v1
 
-Status: proposed wire profile; no endpoints, peer calls, or worker are implemented. This document closes the schema-design gate only. See [FEDERATION_RESEARCH.md](FEDERATION_RESEARCH.md) for the threat model and implementation gates.
+Status: wire profile with authenticated inbox, strict event validation, deduplicated receipts, and remote recipe state implemented. Peer administration, outbound signing/delivery, durable queue and worker, public remote recipe views, and end-to-end two-instance exchange remain unimplemented. See [FEDERATION_RESEARCH.md](FEDERATION_RESEARCH.md) for the threat model and remaining implementation gates.
 
 ## Scope and identities
 

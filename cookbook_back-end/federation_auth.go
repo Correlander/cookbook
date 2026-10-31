@@ -28,11 +28,16 @@ const (
 
 type federationKeyDirectory struct{ db *sql.DB }
 
-type federationEd25519 struct{ publicKey []byte }
+type federationEd25519 struct {
+	publicKey []byte
+	origin    string
+}
 
 func (a federationEd25519) Type() string { return alg_ed25519.Ed25519Alg }
 
 func (a federationEd25519) ContentDigest() contentdigest.Digester { return contentdigest.SHA256 }
+
+func (a federationEd25519) Attributes() any { return a.origin }
 
 func (a federationEd25519) Verify(ctx context.Context, base string, signature []byte) error {
 	if len(a.publicKey) != ed25519.PublicKeySize || !ed25519.Verify(ed25519.PublicKey(a.publicKey), []byte(base), signature) {
@@ -46,14 +51,15 @@ func (d federationKeyDirectory) GetKey(ctx context.Context, keyID, clientAlgorit
 		return nil, errors.New("invalid federation signature key")
 	}
 	var publicKey []byte
-	err := d.db.QueryRowContext(ctx, `SELECT k.public_key FROM federation_peer_keys k JOIN federation_peers p ON p.origin=k.origin WHERE k.key_id=? AND k.status='active' AND p.enabled=1`, keyID).Scan(&publicKey)
+	var origin string
+	err := d.db.QueryRowContext(ctx, `SELECT k.public_key,k.origin FROM federation_peer_keys k JOIN federation_peers p ON p.origin=k.origin WHERE k.key_id=? AND k.status='active' AND p.enabled=1`, keyID).Scan(&publicKey, &origin)
 	if err != nil {
 		return nil, errors.New("unknown federation key")
 	}
 	if len(publicKey) != 32 {
 		return nil, errors.New("invalid federation public key")
 	}
-	return federationEd25519{publicKey: publicKey}, nil
+	return federationEd25519{publicKey: publicKey, origin: origin}, nil
 }
 
 type federationNonceStorage struct{ db *sql.DB }

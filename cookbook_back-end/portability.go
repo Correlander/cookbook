@@ -463,6 +463,7 @@ func validatePortableBundle(bundle portableBundle) error {
 		recipes[r.ID] = true
 	}
 	relationshipCount := 0
+	recipeIDsByBook := make(map[string]map[string]struct{}, len(bundle.Cookbooks))
 	for _, b := range bundle.Cookbooks {
 		if len(b.RecipeIDs) > maxPortableRelationships-relationshipCount {
 			return errors.New("too many cookbook recipe relationships")
@@ -477,6 +478,19 @@ func validatePortableBundle(bundle portableBundle) error {
 			}
 			seenRecipes[id] = struct{}{}
 			relationshipCount++
+		}
+		recipeIDsByBook[b.ID] = seenRecipes
+	}
+	if bundle.Format == portableFormat {
+		if relationshipCount != recipeRelationshipCount {
+			return errors.New("inconsistent cookbook relationships")
+		}
+		for _, recipe := range bundle.Recipes {
+			for _, bookID := range recipe.CookbookIDs {
+				if _, exists := recipeIDsByBook[bookID][recipe.ID]; !exists {
+					return errors.New("inconsistent cookbook relationships")
+				}
+			}
 		}
 	}
 	return nil

@@ -147,6 +147,14 @@ func TestPortableImportRejectsInvalidAndOversizedBundles(t *testing.T) {
 	if err := validatePortableBundle(duplicateRelation); err == nil {
 		t.Fatal("accepted a duplicate cookbook recipe relationship")
 	}
+	inconsistentRelation := portableBundle{
+		Format:    portableFormat,
+		Cookbooks: []portableCookbook{{ID: "book", Title: "Book", Visibility: "private", RecipeIDs: []string{"recipe"}}},
+		Recipes:   []portableRecipe{{ID: "recipe", Title: "Dish", Visibility: "private", CookbookIDs: []string{}}},
+	}
+	if err := validatePortableBundle(inconsistentRelation); err == nil {
+		t.Fatal("accepted inconsistent cookbook relationship lists")
+	}
 	db := testDatabase(t)
 	h := apiHandler{db: db}
 	request := httptest.NewRequest(http.MethodPost, "/api/import", strings.NewReader(strings.Repeat("x", maxImportBytes+1)))

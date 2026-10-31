@@ -27,7 +27,7 @@ Restore with `./scripts/restore-compose.sh /path/to/cookbook-....tar.gz` from a 
 
 ## Personal data export and import
 
-Signed-in users can download their owned, non-deleted recipes and owned cookbooks from `/api/export` as a `cookbook-export-v2` ZIP bundle, then import it through `POST /api/import` (100 MiB maximum compressed size). Import creates new private, owner-controlled copies and starts fresh revision history. It preserves recipe photos, creator attribution, source IDs, and cookbook membership links, but does not transfer account identities, collaborators, revisions, or audit events. Older `cookbook-export-v1` JSON bundles remain importable. An export is a portability aid, not a full instance backup; use the stopped-service database and media backup procedure above for complete recovery.
+Signed-in users can download their owned, non-deleted recipes and owned cookbooks from `/api/export` as a `cookbook-export-v2` ZIP bundle, then import it through `POST /api/import` (100 MiB maximum compressed size). Import creates new private, owner-controlled copies and starts fresh revision history. It preserves recipe photos, creator attribution, source IDs, and cookbook membership links, but does not transfer account identities, collaborators, revisions, or audit events. Bundles are limited to 100,000 cookbook-recipe links, and recipe content is checked against current creation limits. Older `cookbook-export-v1` JSON bundles remain importable. An export is a portability aid, not a full instance backup; use the stopped-service database and media backup procedure above for complete recovery.
 
 ## Authentication and registration
 

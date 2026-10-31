@@ -18,6 +18,7 @@ const maxImportBytes = 100 << 20
 const maxImportManifestBytes = 40 << 20
 const maxPortableMediaCount = 50
 const maxPortableMediaBytes = 50 << 20
+const maxPortableRelationships = 100_000
 const portableFormat = "cookbook-export-v2"
 const legacyPortableFormat = "cookbook-export-v1"
 
@@ -63,12 +64,14 @@ func (h apiHandler) exportData(w http.ResponseWriter, r *http.Request) {
 	}
 	uid := authenticatedUser(r)
 	bundle := portableBundle{Format: portableFormat, Exported: time.Now().UTC().Format(time.RFC3339Nano), Cookbooks: []portableCookbook{}, Recipes: []portableRecipe{}}
+	manifestSize := 128
 	books, err := h.db.Query(`SELECT id,title,description,visibility FROM cookbooks WHERE owner_id=? ORDER BY id`, uid)
 	if err != nil {
 		writeError(w, 500, "storage_error")
 		return
 	}
 	bookSet := map[string]bool{}
+	bookIndex := map[string]int{}
 	for books.Next() {
 		var book portableCookbook
 		if err := books.Scan(&book.ID, &book.Title, &book.Description, &book.Visibility); err != nil {
@@ -77,8 +80,21 @@ func (h apiHandler) exportData(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		book.RecipeIDs = []string{}
+		if len(bundle.Cookbooks) == 1000 {
+			books.Close()
+			writeError(w, http.StatusRequestEntityTooLarge, "export_too_large")
+			return
+		}
+		encodedBook, err := json.Marshal(book)
+		if err != nil || manifestSize+len(encodedBook)+1 > maxImportManifestBytes {
+			books.Close()
+			writeError(w, http.StatusRequestEntityTooLarge, "export_too_large")
+			return
+		}
+		manifestSize += len(encodedBook) + 1
 		bundle.Cookbooks = append(bundle.Cookbooks, book)
 		bookSet[book.ID] = true
+		bookIndex[book.ID] = len(bundle.Cookbooks) - 1
 	}
 	if err := books.Err(); err != nil {
 		books.Close()
@@ -92,6 +108,7 @@ func (h apiHandler) exportData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	recipeSet := map[string]bool{}
+	recipeIndex := map[string]int{}
 	for rows.Next() {
 		var recipe portableRecipe
 		var ingredients, steps, tags, imagePath string
@@ -123,8 +140,21 @@ func (h apiHandler) exportData(w http.ResponseWriter, r *http.Request) {
 			}
 			recipe.ImageFile = imagePath
 		}
+		if len(bundle.Recipes) == 10000 {
+			rows.Close()
+			writeError(w, http.StatusRequestEntityTooLarge, "export_too_large")
+			return
+		}
+		encodedRecipe, err := json.Marshal(recipe)
+		if err != nil || manifestSize+len(encodedRecipe)+1 > maxImportManifestBytes {
+			rows.Close()
+			writeError(w, http.StatusRequestEntityTooLarge, "export_too_large")
+			return
+		}
+		manifestSize += len(encodedRecipe) + 1
 		bundle.Recipes = append(bundle.Recipes, recipe)
 		recipeSet[recipe.ID] = true
+		recipeIndex[recipe.ID] = len(bundle.Recipes) - 1
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -132,15 +162,12 @@ func (h apiHandler) exportData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows.Close()
-	if len(bundle.Cookbooks) > 1000 || len(bundle.Recipes) > 10000 {
-		writeError(w, 413, "export_too_large")
-		return
-	}
-	links, err := h.db.Query(`SELECT cr.cookbook_id,cr.recipe_id FROM cookbook_recipes cr JOIN cookbooks c ON c.id=cr.cookbook_id JOIN recipes r ON r.id=cr.recipe_id WHERE c.owner_id=? AND r.owner_id=? AND c.visibility!='unlisted' ORDER BY cr.cookbook_id,cr.recipe_id`, uid, uid)
+	links, err := h.db.Query(`SELECT cr.cookbook_id,cr.recipe_id FROM cookbook_recipes cr JOIN cookbooks c ON c.id=cr.cookbook_id JOIN recipes r ON r.id=cr.recipe_id WHERE c.owner_id=? AND r.owner_id=? ORDER BY cr.cookbook_id,cr.recipe_id`, uid, uid)
 	if err != nil {
 		writeError(w, 500, "storage_error")
 		return
 	}
+	linkCount := 0
 	for links.Next() {
 		var bookID, recipeID string
 		if err := links.Scan(&bookID, &recipeID); err != nil {
@@ -151,18 +178,41 @@ func (h apiHandler) exportData(w http.ResponseWriter, r *http.Request) {
 		if !bookSet[bookID] || !recipeSet[recipeID] {
 			continue
 		}
-		for i := range bundle.Cookbooks {
-			if bundle.Cookbooks[i].ID == bookID {
-				bundle.Cookbooks[i].RecipeIDs = append(bundle.Cookbooks[i].RecipeIDs, recipeID)
-				break
-			}
+		linkCount++
+		if linkCount > maxPortableRelationships {
+			links.Close()
+			writeError(w, http.StatusRequestEntityTooLarge, "export_too_large")
+			return
 		}
-		for i := range bundle.Recipes {
-			if bundle.Recipes[i].ID == recipeID {
-				bundle.Recipes[i].CookbookIDs = append(bundle.Recipes[i].CookbookIDs, bookID)
-				break
-			}
+		bookPosition := bookIndex[bookID]
+		recipePosition := recipeIndex[recipeID]
+		encodedBookID, err := json.Marshal(bookID)
+		if err != nil {
+			links.Close()
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
 		}
+		encodedRecipeID, err := json.Marshal(recipeID)
+		if err != nil {
+			links.Close()
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		relationshipSize := len(encodedRecipeID) + len(encodedBookID)
+		if len(bundle.Cookbooks[bookPosition].RecipeIDs) > 0 {
+			relationshipSize++
+		}
+		if len(bundle.Recipes[recipePosition].CookbookIDs) > 0 {
+			relationshipSize++
+		}
+		if manifestSize+relationshipSize > maxImportManifestBytes {
+			links.Close()
+			writeError(w, http.StatusRequestEntityTooLarge, "export_too_large")
+			return
+		}
+		manifestSize += relationshipSize
+		bundle.Cookbooks[bookPosition].RecipeIDs = append(bundle.Cookbooks[bookPosition].RecipeIDs, recipeID)
+		bundle.Recipes[recipePosition].CookbookIDs = append(bundle.Recipes[recipePosition].CookbookIDs, bookID)
 	}
 	if err := links.Err(); err != nil {
 		links.Close()
@@ -355,35 +405,78 @@ func validatePortableBundle(bundle portableBundle) error {
 		return errors.New("unsupported or oversized import")
 	}
 	books, recipes := map[string]bool{}, map[string]bool{}
-	for _, b := range bundle.Cookbooks {
-		if b.ID == "" || books[b.ID] || strings.TrimSpace(b.Title) == "" || len(b.Title) > 200 || len(b.Description) > 5000 || !validVisibility(visibility(b.Visibility)) {
+	for i := range bundle.Cookbooks {
+		book := &bundle.Cookbooks[i]
+		book.Title = strings.TrimSpace(book.Title)
+		book.Description = strings.TrimSpace(book.Description)
+		if book.ID == "" || len(book.ID) > 80 || books[book.ID] || book.Title == "" || len(book.Title) > 200 || len(book.Description) > 5000 || !validVisibility(visibility(book.Visibility)) {
 			return errors.New("invalid cookbook")
 		}
-		books[b.ID] = true
+		books[book.ID] = true
 	}
 	imageRefs := map[string]bool{}
-	for _, r := range bundle.Recipes {
+	recipeRelationshipCount := 0
+	for i := range bundle.Recipes {
+		r := &bundle.Recipes[i]
 		if r.ImageFile != "" {
 			if !validStoredImageName(r.ImageFile) || imageRefs[r.ImageFile] {
 				return errors.New("invalid image reference")
 			}
 			imageRefs[r.ImageFile] = true
 		}
-		if r.ID == "" || recipes[r.ID] || strings.TrimSpace(r.Title) == "" || len(r.Title) > 200 || len(r.Description) > 5000 || len(r.CreatorName) > 200 || !validVisibility(visibility(r.Visibility)) || r.Servings < 0 || r.Servings > 1000 || r.PrepTime < 0 || r.PrepTime > 1440 || r.CookTime < 0 || r.CookTime > 1440 || len(r.Ingredients) > 500 || len(r.Steps) > 500 || len(r.Tags) > 100 {
+		if r.ID == "" || len(r.ID) > 80 || recipes[r.ID] || len(r.CreatorName) > 200 || len(r.SourceRecipeID) > 80 {
 			return errors.New("invalid recipe")
 		}
+		input := recipeInput{
+			Title: r.Title, Description: r.Description, Ingredients: r.Ingredients,
+			Steps: r.Steps, Servings: r.Servings, PrepTime: r.PrepTime,
+			CookTime: r.CookTime, Tags: r.Tags, Visibility: visibility(r.Visibility),
+			EditPolicy: r.EditPolicy,
+		}
+		if err := input.validate(); err != nil {
+			return errors.New("invalid recipe")
+		}
+		r.Title = input.Title
+		r.Description = input.Description
+		r.Ingredients = input.Ingredients
+		r.Steps = input.Steps
+		r.Servings = input.Servings
+		r.PrepTime = input.PrepTime
+		r.CookTime = input.CookTime
+		r.Tags = input.Tags
+		r.Visibility = string(input.Visibility)
+		r.EditPolicy = input.EditPolicy
+		if len(r.CookbookIDs) > maxPortableRelationships-recipeRelationshipCount {
+			return errors.New("too many recipe cookbook references")
+		}
+		recipeRelationshipCount += len(r.CookbookIDs)
+		seenBooks := make(map[string]struct{}, len(r.CookbookIDs))
 		for _, id := range r.CookbookIDs {
-			if !books[id] {
+			if len(id) > 80 || !books[id] {
 				return errors.New("unknown cookbook reference")
 			}
+			if _, exists := seenBooks[id]; exists {
+				return errors.New("duplicate cookbook reference")
+			}
+			seenBooks[id] = struct{}{}
 		}
 		recipes[r.ID] = true
 	}
+	relationshipCount := 0
 	for _, b := range bundle.Cookbooks {
+		if len(b.RecipeIDs) > maxPortableRelationships-relationshipCount {
+			return errors.New("too many cookbook recipe relationships")
+		}
+		seenRecipes := make(map[string]struct{}, len(b.RecipeIDs))
 		for _, id := range b.RecipeIDs {
-			if !recipes[id] {
+			if len(id) > 80 || !recipes[id] {
 				return errors.New("unknown recipe reference")
 			}
+			if _, exists := seenRecipes[id]; exists {
+				return errors.New("duplicate recipe reference")
+			}
+			seenRecipes[id] = struct{}{}
+			relationshipCount++
 		}
 	}
 	return nil

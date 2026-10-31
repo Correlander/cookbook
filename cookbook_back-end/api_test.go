@@ -43,7 +43,7 @@ func callAPI(h http.Handler, method, path string, body any, cookie *http.Cookie)
 
 func TestPortableExportAndImportKeepOwnershipAndPrivacySafe(t *testing.T) {
 	db := testDatabase(t)
-	_, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('other','other@example.test','Other','now'); INSERT INTO cookbooks(id,owner_id,title,description,visibility,created_at,updated_at) VALUES('book','owner','Family recipes','Notes','public','now','now'),('other-book','other','Other book','','private','now','now'); INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,edit_policy,version,created_at,updated_at) VALUES('recipe','owner','Grandma','Soup','Warm soup','[{"name":"water"}]','[{"text":"Boil"}]',4,10,20,'["family"]','public','owner_only',1,'now','now'),('other-recipe','other','Other','Secret','','[]','[]',0,0,0,'[]','private','owner_only',1,'now','now'); INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES('book','recipe','owner','now')`)
+	_, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('other','other@example.test','Other','now'); INSERT INTO cookbooks(id,owner_id,title,description,visibility,created_at,updated_at) VALUES('book','owner','Family recipes','Notes','unlisted','now','now'),('other-book','other','Other book','','private','now','now'); INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,edit_policy,version,created_at,updated_at) VALUES('recipe','owner','Grandma','Soup','Warm soup','[{"name":"water"}]','[{"text":"Boil"}]',4,10,20,'["family"]','public','owner_only',1,'now','now'),('other-recipe','other','Other','Secret','','[]','[]',0,0,0,'[]','private','owner_only',1,'now','now'); INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES('book','recipe','owner','now')`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,12 +107,45 @@ func TestPortableExportAndImportKeepOwnershipAndPrivacySafe(t *testing.T) {
 	}
 }
 
+func TestPortableExportRejectsExcessiveCookbookRelationships(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now');
+		WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<1000)
+		INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at)
+		SELECT printf('book-%04d',value),'owner','Book','private','now','now' FROM n;
+		WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<101)
+		INSERT INTO recipes(id,owner_id,creator_name,title,visibility,edit_policy,created_at,updated_at)
+		SELECT printf('recipe-%04d',value),'owner','Owner','Recipe','private','owner_only','now','now' FROM n;
+		INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at)
+		SELECT c.id,r.id,'owner','now' FROM cookbooks c CROSS JOIN recipes r WHERE c.owner_id='owner' AND r.owner_id='owner'`); err != nil {
+		t.Fatal(err)
+	}
+	handler := apiHandler{db: db}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, requestForUser(http.MethodGet, "/api/export", "owner"))
+	if response.Code != http.StatusRequestEntityTooLarge || !strings.Contains(response.Body.String(), "export_too_large") {
+		t.Fatalf("oversized export status=%d body=%s", response.Code, response.Body)
+	}
+}
+
 func TestPortableImportRejectsInvalidAndOversizedBundles(t *testing.T) {
 	if err := validatePortableBundle(portableBundle{Format: portableFormat, Recipes: []portableRecipe{{ID: "r", Title: "Dish", Visibility: "public", CookbookIDs: []string{"missing"}}}}); err == nil {
 		t.Fatal("accepted unknown cookbook reference")
 	}
 	if err := validatePortableBundle(portableBundle{Format: "unknown"}); err == nil {
 		t.Fatal("accepted unsupported format")
+	}
+	invalidIngredient := portableBundle{Format: portableFormat, Recipes: []portableRecipe{{ID: "recipe", Title: "Dish", Ingredients: []ingredient{{Name: " "}}, Visibility: "private"}}}
+	if err := validatePortableBundle(invalidIngredient); err == nil {
+		t.Fatal("accepted an invalid recipe ingredient")
+	}
+	duplicateRelation := portableBundle{
+		Format:    portableFormat,
+		Cookbooks: []portableCookbook{{ID: "book", Title: "Book", Visibility: "private", RecipeIDs: []string{"recipe", "recipe"}}},
+		Recipes:   []portableRecipe{{ID: "recipe", Title: "Dish", Visibility: "private"}},
+	}
+	if err := validatePortableBundle(duplicateRelation); err == nil {
+		t.Fatal("accepted a duplicate cookbook recipe relationship")
 	}
 	db := testDatabase(t)
 	h := apiHandler{db: db}

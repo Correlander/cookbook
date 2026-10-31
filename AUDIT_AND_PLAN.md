@@ -101,7 +101,8 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 
 ### M7 — Courses (optional)
 - Only after core recipe milestone. Add disabled-by-default instance flag and separately modeled lessons/sections that may reference recipes.
-- Acceptance: disabled routes/navigation/API rejection and enabled authoring/viewing tests.
+- Administrators can enable/disable the feature. Separate course and ordered lesson records support authoring, public/private reading, optional recipe links, and owner editing/reordering; routes and navigation remain unavailable when disabled.
+- Acceptance evidence covers disabled routes, admin-only feature controls, publication confirmation for pre-existing public courses, role/visibility checks, lesson ordering, and preventing public courses from exposing private recipe links. Course UX has build/lint coverage but no browser-based end-to-end rehearsal yet.
 
 ### M8 — Federation research and staged delivery
 - Write protocol comparison and threat model (at least two feasible approaches), then choose based on maintenance, security, event semantics, interoperability and deployment weight.

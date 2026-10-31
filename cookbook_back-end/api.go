@@ -244,6 +244,10 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.auditEvents(w, r)
 	case len(parts) == 2 && parts[0] == "admin" && parts[1] == "settings":
 		h.instanceSettings(w, r)
+	case len(parts) >= 1 && parts[0] == "courses":
+		h.courseRoutes(w, r, parts)
+	case len(parts) >= 2 && parts[0] == "public" && parts[1] == "courses":
+		h.publicCourseRoutes(w, r, parts[2:])
 	case len(parts) == 3 && parts[0] == "recipes" && parts[2] == "fork":
 		h.forkRecipe(w, r, parts[1])
 	case len(parts) == 3 && parts[0] == "recipes" && parts[2] == "transfer":

@@ -158,6 +158,27 @@ CREATE TABLE IF NOT EXISTS cookbook_recipes (
   created_at TEXT NOT NULL,
   PRIMARY KEY (cookbook_id, recipe_id)
 );
+CREATE TABLE IF NOT EXISTS courses (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'public')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS course_lessons (
+  id TEXT PRIMARY KEY,
+  course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL DEFAULT '',
+  recipe_id TEXT REFERENCES recipes(id) ON DELETE SET NULL,
+  position INTEGER NOT NULL DEFAULT 0 CHECK (position BETWEEN 0 AND 10000),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_courses_owner_updated ON courses(owner_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_course_lessons_course_position ON course_lessons(course_id, position, id);
 CREATE INDEX IF NOT EXISTS idx_cookbooks_owner_updated ON cookbooks(owner_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_recipes_owner_updated ON recipes(owner_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_recipes_visibility_updated ON recipes(visibility, updated_at DESC);

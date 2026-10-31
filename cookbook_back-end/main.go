@@ -41,6 +41,8 @@ func handlerWithAuthConfig(db *sql.DB, auth authHandler, cfg config) http.Handle
 	mux.Handle("/api/public/cookbooks", publicCookbooksHandler{db: db})
 	mux.Handle("/api/public/cookbooks/{id}/recipes", publicCookbookRecipesHandler{db: db})
 	api := apiHandler{db: db, mediaDir: cfg.mediaDir}
+	mux.Handle("/api/public/courses", api)
+	mux.Handle("/api/public/courses/", api)
 	media := mediaHandler{db: db, rootDir: cfg.mediaDir}
 	serveMedia := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if uid, ok := sessionUser(db, r); ok {

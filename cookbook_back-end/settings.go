@@ -9,11 +9,13 @@ import (
 
 type instanceSettings struct {
 	PublicInstance     bool   `json:"public_instance"`
+	CoursesEnabled     bool   `json:"courses_enabled"`
 	RegistrationPolicy string `json:"registration_policy"`
 	RevisionRetention  int    `json:"revision_retention_days"`
 	AuditRetention     int    `json:"audit_retention_days"`
 	PublicCookbooks    int    `json:"public_cookbooks"`
 	PublicRecipes      int    `json:"public_recipes"`
+	PublicCourses      int    `json:"public_courses"`
 }
 
 func (h apiHandler) instanceSettings(w http.ResponseWriter, r *http.Request) {
@@ -32,6 +34,7 @@ func (h apiHandler) instanceSettings(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPatch:
 		var input struct {
 			PublicInstance     *bool   `json:"public_instance"`
+			CoursesEnabled     *bool   `json:"courses_enabled"`
 			RegistrationPolicy *string `json:"registration_policy"`
 			RevisionRetention  *int    `json:"revision_retention_days"`
 			AuditRetention     *int    `json:"audit_retention_days"`
@@ -40,7 +43,7 @@ func (h apiHandler) instanceSettings(w http.ResponseWriter, r *http.Request) {
 		if !decodeJSON(w, r, &input) {
 			return
 		}
-		if input.PublicInstance == nil && input.RegistrationPolicy == nil && input.RevisionRetention == nil && input.AuditRetention == nil {
+		if input.PublicInstance == nil && input.CoursesEnabled == nil && input.RegistrationPolicy == nil && input.RevisionRetention == nil && input.AuditRetention == nil {
 			writeError(w, http.StatusBadRequest, "empty_settings_update")
 			return
 		}
@@ -56,7 +59,7 @@ func (h apiHandler) instanceSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_audit_retention")
 			return
 		}
-		settings, err := updateInstanceSettings(h.db, input.PublicInstance, input.RegistrationPolicy, input.RevisionRetention, input.AuditRetention, input.ConfirmPublication)
+		settings, err := updateInstanceSettings(h.db, input.PublicInstance, input.CoursesEnabled, input.RegistrationPolicy, input.RevisionRetention, input.AuditRetention, input.ConfirmPublication)
 		if errors.Is(err, errPublicationConfirmationRequired) {
 			writeError(w, http.StatusConflict, "publication_confirmation_required")
 			return
@@ -90,14 +93,19 @@ func isAdministrator(db *sql.DB, userID string) bool {
 func readInstanceSettings(db *sql.DB) (instanceSettings, error) {
 	var current instanceSettings
 	var public int
-	if err := db.QueryRow(`SELECT public_instance,registration_policy,revision_retention_days,audit_retention_days FROM instance_settings WHERE id=1`).Scan(&public, &current.RegistrationPolicy, &current.RevisionRetention, &current.AuditRetention); err != nil {
+	var courses int
+	if err := db.QueryRow(`SELECT public_instance,courses_enabled,registration_policy,revision_retention_days,audit_retention_days FROM instance_settings WHERE id=1`).Scan(&public, &courses, &current.RegistrationPolicy, &current.RevisionRetention, &current.AuditRetention); err != nil {
 		return current, err
 	}
 	current.PublicInstance = public == 1
+	current.CoursesEnabled = courses == 1
 	if err := db.QueryRow(`SELECT COUNT(*) FROM cookbooks WHERE visibility='public'`).Scan(&current.PublicCookbooks); err != nil {
 		return current, err
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM recipes WHERE visibility='public' AND deleted_at IS NULL`).Scan(&current.PublicRecipes); err != nil {
+		return current, err
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM courses WHERE visibility='public'`).Scan(&current.PublicCourses); err != nil {
 		return current, err
 	}
 	return current, nil
@@ -105,7 +113,7 @@ func readInstanceSettings(db *sql.DB) (instanceSettings, error) {
 
 var errPublicationConfirmationRequired = errors.New("public content requires administrator confirmation")
 
-func updateInstanceSettings(db *sql.DB, publicInstance *bool, registrationPolicy *string, revisionRetention, auditRetention *int, confirmPublication bool) (instanceSettings, error) {
+func updateInstanceSettings(db *sql.DB, publicInstance, coursesEnabled *bool, registrationPolicy *string, revisionRetention, auditRetention *int, confirmPublication bool) (instanceSettings, error) {
 	tx, err := db.Begin()
 	if err != nil {
 		return instanceSettings{}, err
@@ -113,21 +121,39 @@ func updateInstanceSettings(db *sql.DB, publicInstance *bool, registrationPolicy
 	defer tx.Rollback()
 
 	var wasPublic int
+	var courses int
 	var currentPolicy string
 	var currentRevisionRetention, currentAuditRetention int
-	if err := tx.QueryRow(`SELECT public_instance,registration_policy,revision_retention_days,audit_retention_days FROM instance_settings WHERE id=1`).Scan(&wasPublic, &currentPolicy, &currentRevisionRetention, &currentAuditRetention); err != nil {
+	if err := tx.QueryRow(`SELECT public_instance,courses_enabled,registration_policy,revision_retention_days,audit_retention_days FROM instance_settings WHERE id=1`).Scan(&wasPublic, &courses, &currentPolicy, &currentRevisionRetention, &currentAuditRetention); err != nil {
 		return instanceSettings{}, err
 	}
+	wasCoursesEnabled := courses == 1
 	public := wasPublic == 1
+	if coursesEnabled != nil {
+		if *coursesEnabled {
+			courses = 1
+		} else {
+			courses = 0
+		}
+	}
 	if publicInstance != nil {
 		public = *publicInstance
 	}
 	if wasPublic == 0 && public {
 		var publicResources int
-		if err := tx.QueryRow(`SELECT (SELECT COUNT(*) FROM cookbooks WHERE visibility='public') + (SELECT COUNT(*) FROM recipes WHERE visibility='public' AND deleted_at IS NULL)`).Scan(&publicResources); err != nil {
+		if err := tx.QueryRow(`SELECT (SELECT COUNT(*) FROM cookbooks WHERE visibility='public') + (SELECT COUNT(*) FROM recipes WHERE visibility='public' AND deleted_at IS NULL) + (SELECT COUNT(*) FROM courses WHERE visibility='public')`).Scan(&publicResources); err != nil {
 			return instanceSettings{}, err
 		}
 		if publicResources > 0 && !confirmPublication {
+			return instanceSettings{}, errPublicationConfirmationRequired
+		}
+	}
+	if !wasCoursesEnabled && courses == 1 {
+		var publicCourses int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM courses WHERE visibility='public'`).Scan(&publicCourses); err != nil {
+			return instanceSettings{}, err
+		}
+		if publicCourses > 0 && public && !confirmPublication {
 			return instanceSettings{}, errPublicationConfirmationRequired
 		}
 	}
@@ -144,7 +170,7 @@ func updateInstanceSettings(db *sql.DB, publicInstance *bool, registrationPolicy
 	if public {
 		publicValue = 1
 	}
-	if _, err := tx.Exec(`UPDATE instance_settings SET public_instance=?,registration_policy=?,registration_policy_configured=1,revision_retention_days=?,audit_retention_days=? WHERE id=1`, publicValue, currentPolicy, currentRevisionRetention, currentAuditRetention); err != nil {
+	if _, err := tx.Exec(`UPDATE instance_settings SET public_instance=?,courses_enabled=?,registration_policy=?,registration_policy_configured=1,revision_retention_days=?,audit_retention_days=? WHERE id=1`, publicValue, courses, currentPolicy, currentRevisionRetention, currentAuditRetention); err != nil {
 		return instanceSettings{}, err
 	}
 	if err := tx.Commit(); err != nil {

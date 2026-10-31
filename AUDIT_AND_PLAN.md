@@ -84,6 +84,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 ### M5 — Self-hosting and portability
 - Dockerfile/Compose, `.env.example`, health checks, persistent SQLite/media volumes, admin bootstrap, upgrade and backup/restore runbook, import/export format with attribution.
 - Owner-scoped `cookbook-export-v1` JSON export/import is implemented with a strict size limit, validation, fresh private ownership on import, and attribution preservation. It excludes media and revision history.
+- Owner-scoped `cookbook-export-v1` JSON export/import is implemented with a strict size limit, validation, fresh private ownership on import, and attribution preservation. It excludes media and revision history.
 - Acceptance: reproducible local deployment and backup/restore rehearsal remain outstanding; Dockerfile and Compose configuration are prepared, and upgrade paths have migration tests.
 
 ### M6 — Visual and accessibility polish
@@ -104,4 +105,4 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 
 - At audit time, `go test ./...` could not use the host's read-only default Go build cache and frontend dependencies were not installed. Subsequent implementation checkpoints passed Go tests/vet with caches under `/tmp` and frontend lint/build using the lockfile-installed dependencies.
 - Docker Compose configuration validates; the image build and deployment rehearsal remain unverified because the host has no running Docker daemon.
-- Email-link sign-in now offers an optional first-passkey setup prompt; passkeys can be named, listed, and revoked in account security rather than recipe editing. Existing credentials migrate with the display name “Passkey”.
+- Email-link sign-in offers an optional first-passkey setup prompt; passkeys can be named, listed, and revoked in account security rather than recipe editing. Existing credentials migrate with the display name “Passkey”.

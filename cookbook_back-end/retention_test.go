@@ -130,11 +130,21 @@ func TestExpiredAuthenticationStateIsPurgedInBoundedBatches(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES('expired','owner',?,?),('valid','owner',?,?)`, old, old, future, recent); err != nil {
 		t.Fatal(err)
 	}
+	oldWindow := now.Add(-48 * time.Hour).Unix()
+	currentWindow := now.Truncate(time.Hour).Unix()
+	for index := 0; index < authCleanupBatchSize+1; index++ {
+		if _, err := db.Exec(`INSERT INTO auth_rate_limits(bucket_key,window_start,request_count) VALUES(?,?,1)`, fmt.Sprintf("old-bucket-%03d", index), oldWindow); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO auth_rate_limits(bucket_key,window_start,request_count) VALUES('current-bucket',?,1)`, currentWindow); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := purgeExpiredAuthState(db, now); err != nil {
 		t.Fatal(err)
 	}
-	var challengeCount, ceremonyCount, sessionCount int
+	var challengeCount, ceremonyCount, sessionCount, rateLimitCount int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM email_challenges`).Scan(&challengeCount); err != nil || challengeCount != 3 {
 		t.Fatalf("first batch challenge count=%d err=%v; want one old and two recent rows", challengeCount, err)
 	}
@@ -144,11 +154,17 @@ func TestExpiredAuthenticationStateIsPurgedInBoundedBatches(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&sessionCount); err != nil || sessionCount != 1 {
 		t.Fatalf("session count=%d err=%v; want one unexpired row", sessionCount, err)
 	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM auth_rate_limits`).Scan(&rateLimitCount); err != nil || rateLimitCount != 2 {
+		t.Fatalf("first batch rate-limit count=%d err=%v; want one stale and one current bucket", rateLimitCount, err)
+	}
 	if err := purgeExpiredAuthState(db, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM email_challenges`).Scan(&challengeCount); err != nil || challengeCount != 2 {
 		t.Fatalf("second batch challenge count=%d err=%v; recent-hour rows must remain for quota checks", challengeCount, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM auth_rate_limits`).Scan(&rateLimitCount); err != nil || rateLimitCount != 1 {
+		t.Fatalf("second batch rate-limit count=%d err=%v; current bucket must remain", rateLimitCount, err)
 	}
 }
 

@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS auth_rate_limits (
   window_start INTEGER NOT NULL,
   request_count INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_auth_rate_limits_window ON auth_rate_limits(window_start, bucket_key);
 CREATE TABLE IF NOT EXISTS webauthn_ceremonies (
   id TEXT PRIMARY KEY,
   user_id TEXT REFERENCES users(id) ON DELETE CASCADE,

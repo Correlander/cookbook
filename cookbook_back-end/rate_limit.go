@@ -27,9 +27,6 @@ func allowAuthBucket(db *sql.DB, action, subject string, limit int, window time.
 	if err := db.QueryRow(`INSERT INTO auth_rate_limits(bucket_key,window_start,request_count) VALUES(?,?,1) ON CONFLICT(bucket_key) DO UPDATE SET window_start=excluded.window_start,request_count=CASE WHEN auth_rate_limits.window_start=excluded.window_start THEN auth_rate_limits.request_count+1 ELSE 1 END RETURNING request_count`, hex.EncodeToString(key[:]), windowStart).Scan(&count); err != nil {
 		return false, err
 	}
-	if now%97 == 0 {
-		_, _ = db.Exec(`DELETE FROM auth_rate_limits WHERE window_start<?`, windowStart-int64((24*time.Hour)/time.Second))
-	}
 	return count <= limit, nil
 }
 

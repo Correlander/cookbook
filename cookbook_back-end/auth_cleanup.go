@@ -26,6 +26,10 @@ func purgeExpiredAuthState(db *sql.DB, now time.Time) error {
 			sql:  `DELETE FROM sessions WHERE token_hash IN (SELECT token_hash FROM sessions WHERE expires_at<? ORDER BY expires_at,token_hash LIMIT ?)`,
 			args: []any{nowText, authCleanupBatchSize},
 		},
+		{
+			sql:  `DELETE FROM auth_rate_limits WHERE bucket_key IN (SELECT bucket_key FROM auth_rate_limits WHERE window_start<? ORDER BY window_start,bucket_key LIMIT ?)`,
+			args: []any{now.Add(-24 * time.Hour).Unix(), authCleanupBatchSize},
+		},
 	}
 	for _, query := range queries {
 		if _, err := db.Exec(query.sql, query.args...); err != nil {

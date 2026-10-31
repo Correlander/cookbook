@@ -69,6 +69,11 @@ CREATE TABLE IF NOT EXISTS webauthn_credentials (
   last_used_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_webauthn_credentials_user ON webauthn_credentials(user_id);
+CREATE TABLE IF NOT EXISTS auth_rate_limits (
+  bucket_key TEXT PRIMARY KEY,
+  window_start INTEGER NOT NULL,
+  request_count INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS webauthn_ceremonies (
   id TEXT PRIMARY KEY,
   user_id TEXT REFERENCES users(id) ON DELETE CASCADE,

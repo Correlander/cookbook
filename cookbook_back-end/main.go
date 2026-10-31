@@ -27,7 +27,8 @@ func handlerWithAuth(db *sql.DB, auth authHandler) http.Handler {
 
 func handlerWithAuthConfig(db *sql.DB, auth authHandler, cfg config) http.Handler {
 	mux := http.NewServeMux()
-	passkeys := passkeyHandler{db: db, webauthn: auth.webauthn, secureCookies: auth.secureCookies}
+	auth.trustedProxies = cfg.trustedProxies
+	passkeys := passkeyHandler{db: db, webauthn: auth.webauthn, secureCookies: auth.secureCookies, trustedProxies: cfg.trustedProxies}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})

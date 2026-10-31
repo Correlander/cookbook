@@ -25,7 +25,9 @@ Signed-in users can download their owned, non-deleted recipes and owned cookbook
 
 ## Authentication and registration
 
-Sign-in uses one-time email links and WebAuthn passkeys. `COOKBOOK_PUBLIC_URL` must be the browser-facing app origin; passkeys require HTTPS outside localhost. `COOKBOOK_RP_ID` defaults to its hostname and `COOKBOOK_RP_ORIGIN` must match the public origin.
+Sign-in uses one-time email links and WebAuthn passkeys. Email sign-in requests are limited to five per email address per hour and 30 per client IP per hour; passkey registration and sign-in ceremonies are limited to 30 starts per client IP per hour. `COOKBOOK_TRUSTED_PROXIES` accepts comma-separated proxy CIDRs; only when the connecting peer matches one of those ranges does the service use the trusted proxy chain in `X-Forwarded-For`. Leave it unset unless the network boundary is controlled.
+
+`COOKBOOK_PUBLIC_URL` must be the browser-facing app origin; passkeys require HTTPS outside localhost. `COOKBOOK_RP_ID` defaults to its hostname and `COOKBOOK_RP_ORIGIN` must match the public origin.
 
 `COOKBOOK_REGISTRATION` sets the initial mode on first startup: `invite_only` (default), `open`, or `disabled`. Administrators can change registration and public browsing settings in the dashboard after setup. Public browsing is off by default; an administrator must explicitly enable it, and existing public cookbooks or recipes require an additional confirmation before they become visible to anonymous visitors. Resources marked private remain private. Administrators can also create and revoke account invitations. Cookbook owners can invite collaborators as viewers or editors, change roles, and remove members. Invitation links are bound to the specified email address and expire after seven days. A cookbook invitation adds the recipient as a member only after they verify their email; the cookbook owner controls the member role. The recipient must verify that mailbox by consuming the one-time email link before an account is created.
 

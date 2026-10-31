@@ -31,12 +31,13 @@ type loginEmail struct {
 	SignInURL string `json:"sign_in_url"`
 }
 type authHandler struct {
-	db            *sql.DB
-	sender        emailSender
-	baseURL       string
-	origin        string
-	secureCookies bool
-	webauthn      *webauthn.WebAuthn
+	db             *sql.DB
+	sender         emailSender
+	baseURL        string
+	origin         string
+	secureCookies  bool
+	webauthn       *webauthn.WebAuthn
+	trustedProxies []*net.IPNet
 }
 
 func (h authHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -86,6 +87,16 @@ func normalizeOrigin(raw string) (string, error) {
 }
 
 func (h authHandler) requestEmail(w http.ResponseWriter, r *http.Request) {
+	allowed, err := allowAuthRequest(h.db, r, "email-link", 30, time.Hour, h.trustedProxies)
+	if err != nil {
+		writeError(w, 500, "storage_error")
+		return
+	}
+	if !allowed {
+		w.Header().Set("Retry-After", "3600")
+		writeError(w, http.StatusTooManyRequests, "rate_limited")
+		return
+	}
 	var body struct {
 		Email       string `json:"email"`
 		DisplayName string `json:"display_name"`

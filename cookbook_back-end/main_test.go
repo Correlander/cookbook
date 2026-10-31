@@ -40,6 +40,7 @@ func TestConfigDefaultsAndOverride(t *testing.T) {
 	t.Setenv("COOKBOOK_DATABASE", "./data/cookbook.db")
 	t.Setenv("COOKBOOK_MEDIA_DIR", "")
 	t.Setenv("COOKBOOK_TRASH_RETENTION_DAYS", "")
+	t.Setenv("COOKBOOK_TRUSTED_PROXIES", "")
 	cfg, err := loadConfig()
 	if err != nil || cfg.address != "127.0.0.1:8000" || cfg.mediaDir != filepath.Join("data", "media") || cfg.trashRetentionDays != 30 {
 		t.Fatalf("default config = %#v, %v", cfg, err)
@@ -59,6 +60,16 @@ func TestConfigDefaultsAndOverride(t *testing.T) {
 	t.Setenv("COOKBOOK_TRASH_RETENTION_DAYS", "3651")
 	if _, err := loadConfig(); err == nil {
 		t.Fatal("retention longer than 3650 days was accepted")
+	}
+	t.Setenv("COOKBOOK_TRASH_RETENTION_DAYS", "30")
+	t.Setenv("COOKBOOK_TRUSTED_PROXIES", "not-a-cidr")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("invalid trusted proxy range was accepted")
+	}
+	t.Setenv("COOKBOOK_TRUSTED_PROXIES", "10.0.0.0/8,192.168.1.0/24")
+	cfg, err = loadConfig()
+	if err != nil || len(cfg.trustedProxies) != 2 {
+		t.Fatalf("trusted proxies=%v err=%v", cfg.trustedProxies, err)
 	}
 }
 

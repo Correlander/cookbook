@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"errors"
+	"net"
 	"net/mail"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ type config struct {
 	database           string
 	mediaDir           string
 	trashRetentionDays int
+	trustedProxies     []*net.IPNet
 }
 
 func provisionAdministrator(db *sql.DB) error {
@@ -95,5 +97,15 @@ func loadConfig() (config, error) {
 		}
 		retentionDays = parsed
 	}
-	return config{address: address, database: database, mediaDir: mediaDir, trashRetentionDays: retentionDays}, nil
+	var trustedProxies []*net.IPNet
+	if raw := strings.TrimSpace(os.Getenv("COOKBOOK_TRUSTED_PROXIES")); raw != "" {
+		for _, entry := range strings.Split(raw, ",") {
+			_, network, err := net.ParseCIDR(strings.TrimSpace(entry))
+			if err != nil {
+				return config{}, errors.New("COOKBOOK_TRUSTED_PROXIES must be comma-separated IP CIDRs")
+			}
+			trustedProxies = append(trustedProxies, network)
+		}
+	}
+	return config{address: address, database: database, mediaDir: mediaDir, trashRetentionDays: retentionDays, trustedProxies: trustedProxies}, nil
 }

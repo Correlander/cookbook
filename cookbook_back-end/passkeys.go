@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -16,9 +17,10 @@ import (
 )
 
 type passkeyHandler struct {
-	db            *sql.DB
-	webauthn      *webauthn.WebAuthn
-	secureCookies bool
+	db             *sql.DB
+	webauthn       *webauthn.WebAuthn
+	secureCookies  bool
+	trustedProxies []*net.IPNet
 }
 
 type webAuthnUser struct {
@@ -67,6 +69,16 @@ func (h passkeyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h passkeyHandler) beginRegistration(w http.ResponseWriter, r *http.Request) {
+	allowed, err := allowAuthRequest(h.db, r, "passkey-registration", 30, time.Hour, h.trustedProxies)
+	if err != nil {
+		writeError(w, 500, "storage_error")
+		return
+	}
+	if !allowed {
+		w.Header().Set("Retry-After", "3600")
+		writeError(w, http.StatusTooManyRequests, "rate_limited")
+		return
+	}
 	user, ok := h.loadUser(authenticatedUser(r))
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -125,6 +137,16 @@ func (h passkeyHandler) finishRegistration(w http.ResponseWriter, r *http.Reques
 }
 
 func (h passkeyHandler) beginLogin(w http.ResponseWriter, r *http.Request) {
+	allowed, err := allowAuthRequest(h.db, r, "passkey-login", 30, time.Hour, h.trustedProxies)
+	if err != nil {
+		writeError(w, 500, "storage_error")
+		return
+	}
+	if !allowed {
+		w.Header().Set("Retry-After", "3600")
+		writeError(w, http.StatusTooManyRequests, "rate_limited")
+		return
+	}
 	options, session, err := h.webauthn.BeginDiscoverableLogin(
 		webauthn.WithUserVerification(protocol.VerificationRequired),
 	)

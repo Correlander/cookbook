@@ -41,7 +41,7 @@ These notes describe repository state, not a claim that any milestone is complet
 
 Keep Go + React/Vite as the established base. The OAuth/JWT implementation is not suitable to preserve as the account/session foundation: it conflicts with the explicit allowed sign-in methods and carries credential, state, cookie, process-restart, and error-disclosure issues. Replace it in a migration rather than extending OAuth. Build authorization into backend domain/service boundaries from the first persistent resource; frontend visibility is not security enforcement.
 
-The repository contains a Google OAuth client secret in tracked source. Treat it as exposed: revoke/rotate it in Google Cloud before any public deployment. Do not reproduce it in docs or logs.
+The initial audit found a Google OAuth client secret in tracked source; no current backend source references OAuth. Treat the credential as exposed and revoke/rotate it in Google Cloud before any public deployment. Do not reproduce it in docs or logs.
 
 ## Visual reference inspection
 

@@ -1,11 +1,47 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"net"
+	"net/http"
 	"strings"
 	"time"
 )
+
+type federationInboxHandler struct {
+	db             *sql.DB
+	origin         string
+	enabled        bool
+	trustedProxies []*net.IPNet
+}
+
+func (h federationInboxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !h.enabled || h.origin == "" {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if r.Header.Get("Content-Type") != "application/json" {
+		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type")
+		return
+	}
+	if r.ContentLength < 0 {
+		writeError(w, http.StatusLengthRequired, "content_length_required")
+		return
+	}
+	federationSignatureMiddleware(h.db, h.origin, h.trustedProxies, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotImplemented, "federation_exchange_unavailable")
+	})).ServeHTTP(w, r)
+}
+
+func federationEnabled(db *sql.DB) bool {
+	var enabled int
+	if err := db.QueryRow(`SELECT federation_enabled FROM instance_settings WHERE id=1`).Scan(&enabled); err != nil {
+		return false
+	}
+	return enabled == 1
+}
 
 const (
 	federationEventSnapshot  = "recipe.snapshot"

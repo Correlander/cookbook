@@ -81,6 +81,26 @@ CREATE TABLE IF NOT EXISTS auth_rate_limits (
   request_count INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_auth_rate_limits_window ON auth_rate_limits(window_start, bucket_key);
+CREATE TABLE IF NOT EXISTS federation_peers (
+  origin TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS federation_peer_keys (
+  key_id TEXT PRIMARY KEY,
+  origin TEXT NOT NULL REFERENCES federation_peers(origin) ON DELETE CASCADE,
+  public_key BLOB NOT NULL CHECK (length(public_key) = 32),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'revoked')),
+  created_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_federation_peer_keys_origin_status ON federation_peer_keys(origin,status,key_id);
+CREATE TABLE IF NOT EXISTS federation_nonces (
+  nonce_hash TEXT PRIMARY KEY,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_federation_nonces_expiry ON federation_nonces(expires_at,nonce_hash);
 CREATE TABLE IF NOT EXISTS webauthn_ceremonies (
   id TEXT PRIMARY KEY,
   user_id TEXT REFERENCES users(id) ON DELETE CASCADE,

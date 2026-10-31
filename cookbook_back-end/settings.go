@@ -13,6 +13,8 @@ type instanceSettings struct {
 	RegistrationPolicy string `json:"registration_policy"`
 	RevisionRetention  int    `json:"revision_retention_days"`
 	AuditRetention     int    `json:"audit_retention_days"`
+	FederationEnabled  bool   `json:"federation_enabled"`
+	FederationOrigin   string `json:"federation_origin"`
 	PublicCookbooks    int    `json:"public_cookbooks"`
 	PublicRecipes      int    `json:"public_recipes"`
 	PublicCourses      int    `json:"public_courses"`
@@ -38,12 +40,13 @@ func (h apiHandler) instanceSettings(w http.ResponseWriter, r *http.Request) {
 			RegistrationPolicy *string `json:"registration_policy"`
 			RevisionRetention  *int    `json:"revision_retention_days"`
 			AuditRetention     *int    `json:"audit_retention_days"`
+			FederationEnabled  *bool   `json:"federation_enabled"`
 			ConfirmPublication bool    `json:"confirm_publication"`
 		}
 		if !decodeJSON(w, r, &input) {
 			return
 		}
-		if input.PublicInstance == nil && input.CoursesEnabled == nil && input.RegistrationPolicy == nil && input.RevisionRetention == nil && input.AuditRetention == nil {
+		if input.PublicInstance == nil && input.CoursesEnabled == nil && input.RegistrationPolicy == nil && input.RevisionRetention == nil && input.AuditRetention == nil && input.FederationEnabled == nil {
 			writeError(w, http.StatusBadRequest, "empty_settings_update")
 			return
 		}
@@ -59,7 +62,23 @@ func (h apiHandler) instanceSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_audit_retention")
 			return
 		}
-		settings, err := updateInstanceSettings(h.db, input.PublicInstance, input.CoursesEnabled, input.RegistrationPolicy, input.RevisionRetention, input.AuditRetention, input.ConfirmPublication)
+		if input.FederationEnabled != nil && *input.FederationEnabled {
+			if _, err := loadOrCreateFederationSigningKey(h.federationKeyDir); err != nil {
+				writeError(w, http.StatusConflict, "federation_identity_unavailable")
+				return
+			}
+			var origin string
+			if err := h.db.QueryRow(`SELECT federation_origin FROM instance_settings WHERE id=1`).Scan(&origin); err != nil || origin == "" {
+				writeError(w, http.StatusConflict, "federation_origin_required")
+				return
+			}
+			var enabledPeers int
+			if err := h.db.QueryRow(`SELECT COUNT(*) FROM federation_peers WHERE enabled=1 AND EXISTS(SELECT 1 FROM federation_peer_keys k WHERE k.origin=federation_peers.origin AND k.status='active')`).Scan(&enabledPeers); err != nil || enabledPeers == 0 {
+				writeError(w, http.StatusConflict, "enabled_peer_required")
+				return
+			}
+		}
+		settings, err := updateInstanceSettings(h.db, input.PublicInstance, input.CoursesEnabled, input.RegistrationPolicy, input.RevisionRetention, input.AuditRetention, input.ConfirmPublication, input.FederationEnabled)
 		if errors.Is(err, errPublicationConfirmationRequired) {
 			writeError(w, http.StatusConflict, "publication_confirmation_required")
 			return
@@ -94,11 +113,13 @@ func readInstanceSettings(db *sql.DB) (instanceSettings, error) {
 	var current instanceSettings
 	var public int
 	var courses int
-	if err := db.QueryRow(`SELECT public_instance,courses_enabled,registration_policy,revision_retention_days,audit_retention_days FROM instance_settings WHERE id=1`).Scan(&public, &courses, &current.RegistrationPolicy, &current.RevisionRetention, &current.AuditRetention); err != nil {
+	var federation int
+	if err := db.QueryRow(`SELECT public_instance,courses_enabled,registration_policy,revision_retention_days,audit_retention_days,federation_enabled,federation_origin FROM instance_settings WHERE id=1`).Scan(&public, &courses, &current.RegistrationPolicy, &current.RevisionRetention, &current.AuditRetention, &federation, &current.FederationOrigin); err != nil {
 		return current, err
 	}
 	current.PublicInstance = public == 1
 	current.CoursesEnabled = courses == 1
+	current.FederationEnabled = federation == 1
 	if err := db.QueryRow(`SELECT COUNT(*) FROM cookbooks WHERE visibility='public'`).Scan(&current.PublicCookbooks); err != nil {
 		return current, err
 	}
@@ -113,7 +134,7 @@ func readInstanceSettings(db *sql.DB) (instanceSettings, error) {
 
 var errPublicationConfirmationRequired = errors.New("public content requires administrator confirmation")
 
-func updateInstanceSettings(db *sql.DB, publicInstance, coursesEnabled *bool, registrationPolicy *string, revisionRetention, auditRetention *int, confirmPublication bool) (instanceSettings, error) {
+func updateInstanceSettings(db *sql.DB, publicInstance, coursesEnabled *bool, registrationPolicy *string, revisionRetention, auditRetention *int, confirmPublication bool, federationSwitch ...*bool) (instanceSettings, error) {
 	tx, err := db.Begin()
 	if err != nil {
 		return instanceSettings{}, err
@@ -124,7 +145,9 @@ func updateInstanceSettings(db *sql.DB, publicInstance, coursesEnabled *bool, re
 	var courses int
 	var currentPolicy string
 	var currentRevisionRetention, currentAuditRetention int
-	if err := tx.QueryRow(`SELECT public_instance,courses_enabled,registration_policy,revision_retention_days,audit_retention_days FROM instance_settings WHERE id=1`).Scan(&wasPublic, &courses, &currentPolicy, &currentRevisionRetention, &currentAuditRetention); err != nil {
+	var federation int
+	var origin string
+	if err := tx.QueryRow(`SELECT public_instance,courses_enabled,registration_policy,revision_retention_days,audit_retention_days,federation_enabled,federation_origin FROM instance_settings WHERE id=1`).Scan(&wasPublic, &courses, &currentPolicy, &currentRevisionRetention, &currentAuditRetention, &federation, &origin); err != nil {
 		return instanceSettings{}, err
 	}
 	wasCoursesEnabled := courses == 1
@@ -138,6 +161,23 @@ func updateInstanceSettings(db *sql.DB, publicInstance, coursesEnabled *bool, re
 	}
 	if publicInstance != nil {
 		public = *publicInstance
+	}
+	oldFederation := federation
+	if len(federationSwitch) > 0 && federationSwitch[0] != nil {
+		if *federationSwitch[0] {
+			if origin == "" {
+				return instanceSettings{}, errors.New("federation origin is required")
+			}
+			var enabledPeers int
+			if err := tx.QueryRow(`SELECT COUNT(*) FROM federation_peers WHERE enabled=1 AND EXISTS(SELECT 1 FROM federation_peer_keys k WHERE k.origin=federation_peers.origin AND k.status='active')`).Scan(&enabledPeers); err != nil {
+				return instanceSettings{}, err
+			} else if enabledPeers == 0 {
+				return instanceSettings{}, errors.New("at least one enabled federation peer is required")
+			}
+			federation = 1
+		} else {
+			federation = 0
+		}
 	}
 	if wasPublic == 0 && public {
 		var publicResources int
@@ -170,8 +210,35 @@ func updateInstanceSettings(db *sql.DB, publicInstance, coursesEnabled *bool, re
 	if public {
 		publicValue = 1
 	}
-	if _, err := tx.Exec(`UPDATE instance_settings SET public_instance=?,courses_enabled=?,registration_policy=?,registration_policy_configured=1,revision_retention_days=?,audit_retention_days=? WHERE id=1`, publicValue, courses, currentPolicy, currentRevisionRetention, currentAuditRetention); err != nil {
+	if _, err := tx.Exec(`UPDATE instance_settings SET public_instance=?,courses_enabled=?,registration_policy=?,registration_policy_configured=1,revision_retention_days=?,audit_retention_days=?,federation_enabled=?,federation_origin_locked=CASE WHEN ?=1 THEN 1 ELSE federation_origin_locked END WHERE id=1`, publicValue, courses, currentPolicy, currentRevisionRetention, currentAuditRetention, federation, federation); err != nil {
 		return instanceSettings{}, err
+	}
+	if oldFederation != federation || (publicInstance != nil && (wasPublic == 1) != public) {
+		rows, err := tx.Query(`SELECT id FROM recipes WHERE visibility='public' OR EXISTS(SELECT 1 FROM federation_local_objects WHERE recipe_id=recipes.id AND published=1) ORDER BY id`)
+		if err != nil {
+			return instanceSettings{}, err
+		}
+		var recipeIDs []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return instanceSettings{}, err
+			}
+			recipeIDs = append(recipeIDs, id)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return instanceSettings{}, err
+		}
+		if err := rows.Close(); err != nil {
+			return instanceSettings{}, err
+		}
+		for _, id := range recipeIDs {
+			if err := enqueueFederationChange(tx, id); err != nil {
+				return instanceSettings{}, err
+			}
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return instanceSettings{}, err

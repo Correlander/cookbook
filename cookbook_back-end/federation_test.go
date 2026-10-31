@@ -1,8 +1,18 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -185,6 +195,7 @@ func TestDecodeFederationEventRejectsDuplicateUnknownAndMismatchedData(t *testin
 	for name, body := range map[string][]byte{
 		"duplicate key":       []byte(strings.Replace(string(valid), `"event_id":`, `"event_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","event_id":`, 1)),
 		"unknown field":       []byte(strings.TrimSuffix(string(valid), "}") + `,"secret":"value"}`),
+		"incorrect casing":    []byte(strings.Replace(string(valid), `"protocol":`, `"Protocol":`, 1)),
 		"wrong object origin": []byte(strings.Replace(string(valid), testFederationOrigin+"/federation/recipes/", "https://other.example.org/federation/recipes/", 1)),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -193,4 +204,355 @@ func TestDecodeFederationEventRejectsDuplicateUnknownAndMismatchedData(t *testin
 			}
 		})
 	}
+}
+
+func TestFederationOutboxSharesRecipeTransactions(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.org','Owner','now')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO recipes(id,owner_id,creator_name,title,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at) VALUES(?, 'owner','Owner','Dish','[]','[]','[]','private','owner_only','now','now')`, testFederationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1,federation_enabled=1,federation_origin=? WHERE id=1`, testFederationOrigin); err != nil {
+		t.Fatal(err)
+	}
+	if err := registerFederationPeer(db, "https://peer.example.org", true); err != nil {
+		t.Fatal(err)
+	}
+	assertQueue := func(want int) {
+		t.Helper()
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM federation_outbox`).Scan(&count); err != nil || count != want {
+			t.Fatalf("outbox count=%d err=%v want=%d", count, err, want)
+		}
+	}
+	assertQueue(0)
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE recipes SET visibility='public' WHERE id=?`, testFederationID); err != nil {
+		t.Fatal(err)
+	}
+	if err := enqueueFederationChange(tx, testFederationID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	assertQueue(1)
+	var eventType string
+	if err := db.QueryRow(`SELECT json_extract(CAST(payload AS TEXT),'$.event_type') FROM federation_outbox`).Scan(&eventType); err != nil || eventType != federationEventSnapshot {
+		t.Fatalf("queued event=%q err=%v", eventType, err)
+	}
+	tx, err = db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE recipes SET visibility='private' WHERE id=?`, testFederationID); err != nil {
+		t.Fatal(err)
+	}
+	if err := enqueueFederationChange(tx, testFederationID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	assertQueue(2)
+	if err := db.QueryRow(`SELECT json_extract(CAST(payload AS TEXT),'$.event_type') FROM federation_outbox ORDER BY created_at DESC,id DESC LIMIT 1`).Scan(&eventType); err != nil || eventType != federationEventTombstone {
+		t.Fatalf("queued event=%q err=%v", eventType, err)
+	}
+}
+
+func TestFederationSettingQueuesSnapshotAndDisableTombstone(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.org','Owner','now')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO recipes(id,owner_id,creator_name,title,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at) VALUES(?, 'owner','Owner','Dish','[]','[]','[]','public','owner_only','now','now')`, testFederationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1,federation_origin=? WHERE id=1`, testFederationOrigin); err != nil {
+		t.Fatal(err)
+	}
+	if err := registerFederationPeer(db, "https://peer.example.org", true); err != nil {
+		t.Fatal(err)
+	}
+	peerPublicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registerFederationPeerKey(db, "https://peer.example.org", "peer-key", peerPublicKey); err != nil {
+		t.Fatal(err)
+	}
+	enabled := true
+	settings, err := updateInstanceSettings(db, nil, nil, nil, nil, nil, false, &enabled)
+	if err != nil || !settings.FederationEnabled {
+		t.Fatalf("enable federation settings=%+v err=%v", settings, err)
+	}
+	var eventType string
+	if err := db.QueryRow(`SELECT json_extract(CAST(payload AS TEXT),'$.event_type') FROM federation_outbox`).Scan(&eventType); err != nil || eventType != federationEventSnapshot {
+		t.Fatalf("enable snapshot event=%q err=%v", eventType, err)
+	}
+	disabled := false
+	settings, err = updateInstanceSettings(db, nil, nil, nil, nil, nil, false, &disabled)
+	if err != nil || settings.FederationEnabled {
+		t.Fatalf("disable federation settings=%+v err=%v", settings, err)
+	}
+	if err := db.QueryRow(`SELECT json_extract(CAST(payload AS TEXT),'$.event_type') FROM federation_outbox ORDER BY created_at DESC,id DESC LIMIT 1`).Scan(&eventType); err != nil || eventType != federationEventTombstone {
+		t.Fatalf("disable tombstone event=%q err=%v", eventType, err)
+	}
+}
+
+func TestFederationOutboxAdministrationCanInspectRetryAndDiscard(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,is_admin,created_at) VALUES('admin','admin@example.org','Admin',1,'now')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := registerFederationPeer(db, "https://peer.example.org", true); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := serializeFederationEvent(testFederationOrigin, testFederationID, federationEventSnapshot, 1, time.Now(), true, true, federationRecipeSource{ID: testFederationID, CreatorName: "Creator", Title: "Dish", Visibility: visibilityPublic})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event federationEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		t.Fatal(err)
+	}
+	queueID := newID()
+	if _, err := db.Exec(`INSERT INTO federation_outbox(id,peer_origin,event_id,object_id,sequence,payload,attempts,next_attempt,created_at) VALUES(?,?,?,?,?,?,12,?,?)`, queueID, "https://peer.example.org", event.EventID, event.ObjectID, event.Sequence, payload, time.Now().Add(time.Hour).Unix(), timestamp()); err != nil {
+		t.Fatal(err)
+	}
+	api := apiHandler{db: db}
+	request := requestForUser(http.MethodGet, "/api/admin/federation/outbox?id="+queueID, "admin")
+	recorder := httptest.NewRecorder()
+	api.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "Dish") {
+		t.Fatalf("outbox detail status=%d body=%s", recorder.Code, recorder.Body)
+	}
+	request = requestForUser(http.MethodPost, "/api/admin/federation/outbox", "admin")
+	request.Body = io.NopCloser(strings.NewReader(`{"id":"` + queueID + `"}`))
+	recorder = httptest.NewRecorder()
+	api.ServeHTTP(recorder, request)
+	var attempts int
+	if recorder.Code != http.StatusOK || db.QueryRow(`SELECT attempts FROM federation_outbox WHERE id=?`, queueID).Scan(&attempts) != nil || attempts != 0 {
+		t.Fatalf("outbox retry status=%d body=%s attempts=%d", recorder.Code, recorder.Body, attempts)
+	}
+	request = requestForUser(http.MethodDelete, "/api/admin/federation/outbox", "admin")
+	request.Body = io.NopCloser(strings.NewReader(`{"id":"` + queueID + `"}`))
+	recorder = httptest.NewRecorder()
+	api.ServeHTTP(recorder, request)
+	var remaining int
+	if recorder.Code != http.StatusOK || db.QueryRow(`SELECT COUNT(*) FROM federation_outbox WHERE id=?`, queueID).Scan(&remaining) != nil || remaining != 0 {
+		t.Fatalf("outbox discard status=%d body=%s remaining=%d", recorder.Code, recorder.Body, remaining)
+	}
+}
+
+func TestFederationPeerAdministrationAndKeyRotation(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,is_admin,created_at) VALUES('admin','admin@example.org','Admin',1,'now')`); err != nil {
+		t.Fatal(err)
+	}
+	api := apiHandler{db: db}
+	postJSON := func(path, payload string) *httptest.ResponseRecorder {
+		req := requestForUser(http.MethodPost, path, "admin")
+		req.Body = io.NopCloser(strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		api.ServeHTTP(rec, req)
+		return rec
+	}
+	if response := postJSON("/api/admin/federation/peers", `{"origin":"https://peer.example.org","enabled":false}`); response.Code != http.StatusOK {
+		t.Fatalf("peer create status=%d body=%s", response.Code, response.Body)
+	}
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyInput, _ := json.Marshal(map[string]string{"origin": "https://peer.example.org", "key_id": "peer-key", "public_key": base64.StdEncoding.EncodeToString(publicKey)})
+	if response := postJSON("/api/admin/federation/keys", string(keyInput)); response.Code != http.StatusOK {
+		t.Fatalf("key add status=%d body=%s", response.Code, response.Body)
+	}
+	if response := postJSON("/api/admin/federation/peers", `{"origin":"https://peer.example.org","enabled":true}`); response.Code != http.StatusOK {
+		t.Fatalf("peer enable status=%d body=%s", response.Code, response.Body)
+	}
+	get := requestForUser(http.MethodGet, "/api/admin/federation/peers", "admin")
+	response := httptest.NewRecorder()
+	api.ServeHTTP(response, get)
+	var peers []federationPeerAdminItem
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &peers) != nil || len(peers) != 1 || len(peers[0].Keys) != 1 || peers[0].Keys[0].Status != "active" {
+		t.Fatalf("peer list status=%d body=%s peers=%+v", response.Code, response.Body, peers)
+	}
+	if response := postJSON("/api/admin/federation/keys", `{"origin":"https://peer.example.org","key_id":"peer-key","public_key":"bad"}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid key status=%d body=%s", response.Code, response.Body)
+	}
+	revoke := requestForUser(http.MethodDelete, "/api/admin/federation/keys", "admin")
+	revoke.Body = io.NopCloser(bytes.NewBufferString(`{"origin":"https://peer.example.org","key_id":"peer-key"}`))
+	revoke.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	api.ServeHTTP(response, revoke)
+	if response.Code != http.StatusOK || federationPeerEnabled(db, "https://peer.example.org") {
+		t.Fatalf("last peer key revocation status=%d body=%s", response.Code, response.Body)
+	}
+}
+
+func TestDisabledPeerDropsQueueAndResynchronizesTombstonesAndSnapshots(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,is_admin,created_at) VALUES('admin','admin@example.org','Admin',1,'now'),('owner','owner@example.org','Owner',0,'now')`); err != nil {
+		t.Fatal(err)
+	}
+	peerOrigin := "https://peer.example.org"
+	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1,federation_enabled=1,federation_origin=? WHERE id=1`, testFederationOrigin); err != nil {
+		t.Fatal(err)
+	}
+	privateID := "11111111111111111111111111111111"
+	publicID := "22222222222222222222222222222222"
+	for _, id := range []string{privateID, publicID} {
+		if _, err := db.Exec(`INSERT INTO recipes(id,owner_id,creator_name,title,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at) VALUES(?,'owner','Owner','Dish','[]','[]','[]','public','owner_only','now','now')`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := registerFederationPeer(db, peerOrigin, false); err != nil {
+		t.Fatal(err)
+	}
+	peerKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registerFederationPeerKey(db, peerOrigin, "peer-key", peerKey); err != nil {
+		t.Fatal(err)
+	}
+	api := apiHandler{db: db}
+	call := func(method, body string) *httptest.ResponseRecorder {
+		request := requestForUser(method, "/api/admin/federation/peers", "admin")
+		request.Body = io.NopCloser(strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		api.ServeHTTP(recorder, request)
+		return recorder
+	}
+	if response := call(http.MethodPost, `{"origin":"`+peerOrigin+`","enabled":true}`); response.Code != http.StatusOK {
+		t.Fatalf("enable peer status=%d body=%s", response.Code, response.Body)
+	}
+	var queued int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_outbox WHERE peer_origin=?`, peerOrigin).Scan(&queued); err != nil || queued != 2 {
+		t.Fatalf("initial snapshots=%d err=%v", queued, err)
+	}
+	if response := call(http.MethodDelete, `{"origin":"`+peerOrigin+`"}`); response.Code != http.StatusOK {
+		t.Fatalf("disable peer status=%d body=%s", response.Code, response.Body)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_outbox WHERE peer_origin=?`, peerOrigin).Scan(&queued); err != nil || queued != 0 {
+		t.Fatalf("disabled peer queue=%d err=%v", queued, err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE recipes SET visibility='private' WHERE id=?`, privateID); err != nil {
+		t.Fatal(err)
+	}
+	if err := enqueueFederationChange(tx, privateID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if response := call(http.MethodPost, `{"origin":"`+peerOrigin+`","enabled":true}`); response.Code != http.StatusOK {
+		t.Fatalf("re-enable peer status=%d body=%s", response.Code, response.Body)
+	}
+	rows, err := db.Query(`SELECT json_extract(CAST(payload AS TEXT),'$.object_id'),json_extract(CAST(payload AS TEXT),'$.event_type') FROM federation_outbox WHERE peer_origin=?`, peerOrigin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	events := map[string]string{}
+	for rows.Next() {
+		var objectID, eventType string
+		if err := rows.Scan(&objectID, &eventType); err != nil {
+			t.Fatal(err)
+		}
+		events[objectID] = eventType
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if events[testFederationOrigin+"/federation/recipes/"+privateID] != federationEventTombstone || events[testFederationOrigin+"/federation/recipes/"+publicID] != federationEventSnapshot {
+		t.Fatalf("re-enabled peer was not resynchronized: %+v", events)
+	}
+}
+
+func TestFederationSigningKeyPersistsAndRejectsBroadPermissions(t *testing.T) {
+	dir := t.TempDir()
+	key, err := loadOrCreateFederationSigningKey(dir)
+	if err != nil || len(key.PrivateKey) != ed25519.PrivateKeySize || len(key.PublicKey) != ed25519.PublicKeySize || key.ID == "" {
+		t.Fatalf("key=%+v err=%v", key, err)
+	}
+	reloaded, err := loadOrCreateFederationSigningKey(dir)
+	if err != nil || reloaded.ID != key.ID || !bytes.Equal(reloaded.PrivateKey, key.PrivateKey) {
+		t.Fatalf("reloaded key changed: first=%s second=%s err=%v", key.ID, reloaded.ID, err)
+	}
+	path := dir + string(os.PathSeparator) + federationPrivateKeyFile
+	if err := os.Chmod(path, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadOrCreateFederationSigningKey(dir); err == nil {
+		t.Fatal("accepted federation private key with broad permissions")
+	}
+}
+
+func TestFederationIdentityKeyRotationStagesBeforeActivation(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,is_admin,created_at) VALUES('admin','admin@example.org','Admin',1,'now')`); err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	active, err := loadOrCreateFederationSigningKey(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := apiHandler{db: db, federationKeyDir: directory}
+	post := func(action string) *httptest.ResponseRecorder {
+		request := requestForUser(http.MethodPost, "/api/admin/federation/identity/rotation", "admin")
+		request.Body = io.NopCloser(strings.NewReader(`{"action":"` + action + `"}`))
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		api.ServeHTTP(recorder, request)
+		return recorder
+	}
+	stage := post("stage")
+	if stage.Code != http.StatusOK {
+		t.Fatalf("stage status=%d body=%s", stage.Code, stage.Body)
+	}
+	var pending struct {
+		KeyID string `json:"key_id"`
+	}
+	if err := json.Unmarshal(stage.Body.Bytes(), &pending); err != nil || pending.KeyID == active.ID {
+		t.Fatalf("pending key=%+v err=%v", pending, err)
+	}
+	current, err := loadOrCreateFederationSigningKey(directory)
+	if err != nil || current.ID != active.ID {
+		t.Fatalf("staging changed active key: key=%s err=%v", current.ID, err)
+	}
+	duplicate := post("stage")
+	if duplicate.Code != http.StatusConflict {
+		t.Fatalf("second stage status=%d body=%s", duplicate.Code, duplicate.Body)
+	}
+	activate := post("activate")
+	if activate.Code != http.StatusOK {
+		t.Fatalf("activate status=%d body=%s", activate.Code, activate.Body)
+	}
+	current, err = loadOrCreateFederationSigningKey(directory)
+	if err != nil || current.ID != pending.KeyID {
+		t.Fatalf("activation key=%s want=%s err=%v", current.ID, pending.KeyID, err)
+	}
+	if _, err := os.Stat(federationPendingKeyPath(directory)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending key remains after activation: %v", err)
+	}
+}
+
+func federationPeerEnabled(db *sql.DB, origin string) bool {
+	var enabled int
+	return db.QueryRowContext(context.Background(), `SELECT enabled FROM federation_peers WHERE origin=?`, origin).Scan(&enabled) == nil && enabled == 1
 }

@@ -10,9 +10,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/common-fate/httpsig/alg_ed25519"
 	"github.com/common-fate/httpsig/contentdigest"
+	"github.com/common-fate/httpsig/sigbase"
 	"github.com/common-fate/httpsig/signature"
 	"github.com/common-fate/httpsig/signer"
 	"github.com/common-fate/httpsig/sigset"
@@ -46,7 +48,10 @@ func TestFederationSignatureMiddleware(t *testing.T) {
 	}{
 		{name: "valid", keyID: "peer-key-1", body: `{"event":"x"}`, wantStatus: http.StatusNoContent},
 		{name: "unknown key", keyID: "missing", body: `{"event":"x"}`, wantStatus: http.StatusUnauthorized},
-		{name: "tampered body", keyID: "peer-key-1", body: `{"event":"x"}`, mutate: func(r *http.Request) { r.Body = io.NopCloser(strings.NewReader(`{"event":"y"}`)) }, wantStatus: http.StatusUnauthorized},
+		{name: "tampered body", keyID: "peer-key-1", body: `{"event":"x"}`, mutate: func(r *http.Request) { r.Body = io.NopCloser(strings.NewReader(`{"event":"y"}`)) }, wantStatus: http.StatusBadRequest},
+		{name: "mismatched digest", keyID: "peer-key-1", body: `{"event":"x"}`, mutate: func(r *http.Request) {
+			r.Header.Set("Content-Digest", "sha-256=:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=:")
+		}, wantStatus: http.StatusBadRequest},
 		{name: "missing content length", keyID: "peer-key-1", body: `{"event":"x"}`, mutate: func(r *http.Request) { r.ContentLength = -1 }, wantStatus: http.StatusRequestEntityTooLarge},
 		{name: "oversized", keyID: "peer-key-1", body: strings.Repeat("x", maxFederationEventBytes+1), wantStatus: http.StatusRequestEntityTooLarge},
 	} {
@@ -63,7 +68,7 @@ func TestFederationSignatureMiddleware(t *testing.T) {
 				t.Fatal(err)
 			}
 			req.Header.Set("Content-Digest", digestValue)
-			roundTripper := signer.Transport{KeyID: tc.keyID, Tag: federationSignatureTag, Alg: federationTestSigner{alg_ed25519.Ed25519{PrivateKey: privateKey}}, CoveredComponents: []string{"@method", "@target-uri", "content-type", "content-length", "content-digest"}, GetNonce: func() (string, error) { return strings.Repeat("n", 40), nil }}
+			roundTripper := signer.Transport{KeyID: tc.keyID, Tag: federationSignatureTag, Alg: federationTestSigner{alg_ed25519.Ed25519{PrivateKey: privateKey}}, CoveredComponents: []string{"@method", "@target-uri", "content-type", "content-length", "content-digest"}, GetNonce: func() (string, error) { return strings.Repeat("n", 40) + tc.name, nil }}
 			message, err := roundTripper.Sign(req)
 			if err != nil {
 				t.Fatal(err)
@@ -100,11 +105,45 @@ func TestFederationSignatureMiddleware(t *testing.T) {
 	if err := revokeFederationPeerKey(db, "https://peer.example.org", "peer-key-1"); err != nil {
 		t.Fatal(err)
 	}
+	if err := registerFederationPeerKey(db, "https://peer.example.org", "peer-key-1", publicKey); err == nil {
+		t.Fatal("reactivated revoked federation key ID")
+	}
 	request = signedFederationRequest(t, privateKey, "peer-key-1", strings.Repeat("revoked", 6), `{"event":"after-revoke"}`)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("revoked key status=%d want=%d", recorder.Code, http.StatusUnauthorized)
+	}
+	if err := registerFederationPeerKey(db, "https://peer.example.org", "peer-key-2", publicKey); err != nil {
+		t.Fatal(err)
+	}
+	staleRequest := signedFederationRequest(t, privateKey, "peer-key-2", strings.Repeat("stale", 8), `{"event":"stale"}`)
+	signatureSet, err := sigset.Unmarshal(staleRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := signatureSet.Find(federationSignatureTag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message.Input.Created = time.Now().Add(-6 * time.Minute)
+	base, err := sigbase.Derive(message.Input, nil, staleRequest, contentdigest.SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signingString, err := base.CanonicalString(message.Input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message.Signature = ed25519.Sign(privateKey, []byte(signingString))
+	if err := signatureSet.Include(staleRequest); err != nil {
+		t.Fatal(err)
+	}
+	handler = federationSignatureMiddleware(db, "https://local.example", nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	staleResponse := httptest.NewRecorder()
+	handler.ServeHTTP(staleResponse, staleRequest)
+	if staleResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("stale signature status=%d body=%s", staleResponse.Code, staleResponse.Body)
 	}
 }
 

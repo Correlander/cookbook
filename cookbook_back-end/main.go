@@ -56,7 +56,7 @@ func handlerWithAuthConfig(db *sql.DB, auth authHandler, cfg config) http.Handle
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
-	mux.Handle("POST /api/federation/inbox", federationInboxHandler{db: db, origin: cfg.federationOrigin, enabled: federationEnabled(db), trustedProxies: cfg.trustedProxies})
+	mux.Handle("POST /api/federation/inbox", federationInboxHandler{db: db, origin: cfg.federationOrigin, trustedProxies: cfg.trustedProxies})
 	mux.Handle("/api/auth/passkey/register/", csrfProtection(auth.origin, requireSession(db, auditChanges(db, passkeys))))
 	recentPasskeyChange := func(next http.Handler) http.Handler {
 		return csrfProtection(auth.origin, requireSession(db, auditChanges(db, requireRecentAuthentication(db, next))))
@@ -72,9 +72,22 @@ func handlerWithAuthConfig(db *sql.DB, auth authHandler, cfg config) http.Handle
 	mux.Handle("DELETE /api/auth/sessions/{id}", csrfProtection(auth.origin, requireSession(db, auditChanges(db, sessions))))
 	mux.Handle("/api/auth/", auth)
 	mux.Handle("GET /api/public/recipes", publicRecipeHandler{db: db})
+	mux.Handle("GET /api/public/remote-recipes", publicFederationRecipesHandler{db: db})
 	mux.Handle("/api/public/cookbooks", publicCookbooksHandler{db: db})
 	mux.Handle("/api/public/cookbooks/{id}/recipes", publicCookbookRecipesHandler{db: db})
-	api := apiHandler{db: db, mediaDir: cfg.mediaDir}
+	api := apiHandler{db: db, mediaDir: cfg.mediaDir, federationKeyDir: cfg.federationKeyDir}
+	mux.Handle("GET /api/admin/federation/peers", requireSession(db, api))
+	mux.Handle("POST /api/admin/federation/peers", recentPasskeyChange(api))
+	mux.Handle("DELETE /api/admin/federation/peers", recentPasskeyChange(api))
+	mux.Handle("POST /api/admin/federation/keys", recentPasskeyChange(api))
+	mux.Handle("DELETE /api/admin/federation/keys", recentPasskeyChange(api))
+	mux.Handle("GET /api/admin/federation/identity", requireSession(db, api))
+	mux.Handle("POST /api/admin/federation/identity/rotation", recentPasskeyChange(api))
+	mux.Handle("GET /api/admin/federation/outbox", requireSession(db, api))
+	mux.Handle("POST /api/admin/federation/outbox", recentPasskeyChange(api))
+	mux.Handle("DELETE /api/admin/federation/outbox", recentPasskeyChange(api))
+	mux.Handle("GET /api/admin/settings", requireSession(db, api))
+	mux.Handle("PATCH /api/admin/settings", recentPasskeyChange(api))
 	mux.Handle("POST /api/recipes/{id}/transfer", csrfProtection(auth.origin, requireSession(db, auditChanges(db, requireRecentAuthentication(db, api)))))
 	mux.Handle("PATCH /api/admin/users/{id}", csrfProtection(auth.origin, requireSession(db, auditChanges(db, requireRecentAuthentication(db, api)))))
 	mux.Handle("/api/public/courses", api)
@@ -207,6 +220,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.address, err)
 	}
+	if _, err := loadOrCreateFederationSigningKey(cfg.federationKeyDir); err != nil {
+		return fmt.Errorf("load federation signing key: %w", err)
+	}
+	startFederationOutboxWorker(ctx, db, cfg.federationKeyDir)
 	log.Printf("Cookbook API listening on %s", cfg.address)
 	return runHTTPServer(ctx, server, listener, 20*time.Second)
 }

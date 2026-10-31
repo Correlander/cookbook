@@ -19,8 +19,9 @@ import (
 )
 
 type apiHandler struct {
-	db       *sql.DB
-	mediaDir string
+	db               *sql.DB
+	mediaDir         string
+	federationKeyDir string
 }
 type publicRecipeHandler struct{ db *sql.DB }
 
@@ -246,6 +247,16 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.instanceSettings(w, r)
 	case len(parts) == 2 && parts[0] == "admin" && parts[1] == "users":
 		h.adminUsers(w, r)
+	case len(parts) == 3 && parts[0] == "admin" && parts[1] == "federation" && parts[2] == "peers":
+		h.federationPeers(w, r)
+	case len(parts) == 3 && parts[0] == "admin" && parts[1] == "federation" && parts[2] == "keys":
+		h.federationPeerKeys(w, r)
+	case len(parts) == 3 && parts[0] == "admin" && parts[1] == "federation" && parts[2] == "identity":
+		h.federationIdentity(w, r)
+	case len(parts) == 4 && parts[0] == "admin" && parts[1] == "federation" && parts[2] == "identity" && parts[3] == "rotation":
+		h.federationIdentityRotation(w, r)
+	case len(parts) == 3 && parts[0] == "admin" && parts[1] == "federation" && parts[2] == "outbox":
+		h.federationOutbox(w, r)
 	case len(parts) == 3 && parts[0] == "admin" && parts[1] == "users":
 		h.adminUserByID(w, r, parts[2])
 	case len(parts) >= 1 && parts[0] == "courses":
@@ -756,6 +767,11 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 500, "storage_error")
 			return
 		}
+		if err = enqueueFederationChange(tx, id); err != nil {
+			_ = tx.Rollback()
+			writeError(w, 503, "federation_queue_unavailable")
+			return
+		}
 		if err = tx.Commit(); err != nil {
 			writeError(w, 500, "storage_error")
 			return
@@ -940,14 +956,30 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		result, err := h.db.Exec(`UPDATE recipes SET deleted_at=? WHERE id=? AND owner_id=? AND deleted_at IS NULL`, timestamp(), id, uid)
+		tx, err := h.db.Begin()
 		if err != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		result, err := tx.Exec(`UPDATE recipes SET deleted_at=? WHERE id=? AND owner_id=? AND deleted_at IS NULL`, timestamp(), id, uid)
+		if err != nil {
+			_ = tx.Rollback()
 			writeError(w, 500, "storage_error")
 			return
 		}
 		count, _ := result.RowsAffected()
 		if count != 1 {
+			_ = tx.Rollback()
 			writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		if err := enqueueFederationChange(tx, id); err != nil {
+			_ = tx.Rollback()
+			writeError(w, 503, "federation_queue_unavailable")
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			writeError(w, 500, "storage_error")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "recipe_trashed"})
@@ -1068,6 +1100,11 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 		writeError(w, 500, "storage_error")
 		return
 	}
+	if err := enqueueFederationChange(tx, id); err != nil {
+		_ = tx.Rollback()
+		writeError(w, 503, "federation_queue_unavailable")
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, 500, "storage_error")
 		return
@@ -1129,14 +1166,30 @@ func (h apiHandler) restoreTrashedRecipe(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	result, err := h.db.Exec(`UPDATE recipes SET deleted_at=NULL,updated_at=? WHERE id=? AND owner_id=? AND deleted_at IS NOT NULL`, timestamp(), id, uid)
+	tx, err := h.db.Begin()
 	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	result, err := tx.Exec(`UPDATE recipes SET deleted_at=NULL,updated_at=? WHERE id=? AND owner_id=? AND deleted_at IS NOT NULL`, timestamp(), id, uid)
+	if err != nil {
+		_ = tx.Rollback()
 		writeError(w, 500, "storage_error")
 		return
 	}
 	count, _ := result.RowsAffected()
 	if count != 1 {
+		_ = tx.Rollback()
 		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if err := enqueueFederationChange(tx, id); err != nil {
+		_ = tx.Rollback()
+		writeError(w, http.StatusServiceUnavailable, "federation_queue_unavailable")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
 	h.recipeByID(w, requestForUser(http.MethodGet, "/api/recipes/"+id, uid), id)
@@ -1333,6 +1386,11 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 	if err := insertRecipeRevision(tx, recipeID, currentVersion+1, userID, title, description, []byte(ingredients), []byte(steps), servings, prepTime, cookTime, []byte(tags), restoredVisibility, restoredImage); err != nil {
 		_ = tx.Rollback()
 		writeError(w, 500, "storage_error")
+		return
+	}
+	if err := enqueueFederationChange(tx, recipeID); err != nil {
+		_ = tx.Rollback()
+		writeError(w, 503, "federation_queue_unavailable")
 		return
 	}
 	if err := tx.Commit(); err != nil {

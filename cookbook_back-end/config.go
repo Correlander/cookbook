@@ -19,6 +19,7 @@ type config struct {
 	trashRetentionDays int
 	trustedProxies     []*net.IPNet
 	federationOrigin   string
+	federationKeyDir   string
 }
 
 func canonicalFederationOrigin(raw string) (string, error) {
@@ -219,7 +220,11 @@ func loadConfig() (config, error) {
 	if err != nil {
 		return config{}, err
 	}
-	return config{address: address, database: database, mediaDir: mediaDir, trashRetentionDays: retentionDays, trustedProxies: trustedProxies, federationOrigin: federationOrigin}, nil
+	federationKeyDir := strings.TrimSpace(os.Getenv("COOKBOOK_FEDERATION_KEY_DIR"))
+	if federationKeyDir == "" {
+		federationKeyDir = filepath.Join(filepath.Dir(database), "secrets")
+	}
+	return config{address: address, database: database, mediaDir: mediaDir, trashRetentionDays: retentionDays, trustedProxies: trustedProxies, federationOrigin: federationOrigin, federationKeyDir: federationKeyDir}, nil
 }
 
 func canonicalFederationOriginIfConfigured(raw string) (string, error) {

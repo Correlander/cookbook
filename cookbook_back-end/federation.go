@@ -20,12 +20,60 @@ import (
 type federationInboxHandler struct {
 	db             *sql.DB
 	origin         string
-	enabled        bool
 	trustedProxies []*net.IPNet
 }
 
+type publicFederationRecipesHandler struct{ db *sql.DB }
+
+func (h publicFederationRecipesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	var public int
+	if err := h.db.QueryRow(`SELECT public_instance FROM instance_settings WHERE id=1`).Scan(&public); err != nil || public != 1 {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	limit, offset, err := listPage(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_pagination")
+		return
+	}
+	rows, err := h.db.Query(`SELECT object_id,source_origin,creator_name,recipe_json,sequence,updated_at FROM federation_remote_recipes WHERE deleted=0 ORDER BY updated_at DESC,object_id LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	defer rows.Close()
+	type item struct {
+		ObjectID     string          `json:"object_id"`
+		SourceOrigin string          `json:"source_origin"`
+		CreatorName  string          `json:"creator_name"`
+		Recipe       json.RawMessage `json:"recipe"`
+		Sequence     int64           `json:"sequence"`
+		UpdatedAt    string          `json:"updated_at"`
+	}
+	items := []item{}
+	for rows.Next() {
+		var current item
+		var recipeJSON []byte
+		if err := rows.Scan(&current.ObjectID, &current.SourceOrigin, &current.CreatorName, &recipeJSON, &current.Sequence, &current.UpdatedAt); err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		current.Recipe = json.RawMessage(recipeJSON)
+		items = append(items, current)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
 func (h federationInboxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !h.enabled || h.origin == "" {
+	if !federationEnabled(h.db) || h.origin == "" {
 		writeError(w, http.StatusNotFound, "not_found")
 		return
 	}
@@ -168,7 +216,7 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 func rejectDuplicateJSONKeys(body []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
-	if err := consumeUniqueJSONValue(decoder); err != nil {
+	if err := consumeUniqueJSONValue(decoder, "event"); err != nil {
 		return err
 	}
 	var extra any
@@ -178,7 +226,7 @@ func rejectDuplicateJSONKeys(body []byte) error {
 	return nil
 }
 
-func consumeUniqueJSONValue(decoder *json.Decoder) error {
+func consumeUniqueJSONValue(decoder *json.Decoder, objectKind string) error {
 	token, err := decoder.Token()
 	if err != nil {
 		return err
@@ -190,6 +238,7 @@ func consumeUniqueJSONValue(decoder *json.Decoder) error {
 	switch delimiter {
 	case '{':
 		seen := make(map[string]struct{})
+		allowed := federationJSONAllowedKeys(objectKind)
 		for decoder.More() {
 			keyToken, err := decoder.Token()
 			if err != nil {
@@ -199,11 +248,14 @@ func consumeUniqueJSONValue(decoder *json.Decoder) error {
 			if !ok {
 				return errors.New("invalid JSON object key")
 			}
+			if !allowed[key] {
+				return errors.New("unknown or incorrectly cased JSON field")
+			}
 			if _, duplicate := seen[key]; duplicate {
 				return errors.New("duplicate JSON object key")
 			}
 			seen[key] = struct{}{}
-			if err := consumeUniqueJSONValue(decoder); err != nil {
+			if err := consumeUniqueJSONValue(decoder, federationJSONChildKind(objectKind, key)); err != nil {
 				return err
 			}
 		}
@@ -211,7 +263,7 @@ func consumeUniqueJSONValue(decoder *json.Decoder) error {
 		return err
 	case '[':
 		for decoder.More() {
-			if err := consumeUniqueJSONValue(decoder); err != nil {
+			if err := consumeUniqueJSONValue(decoder, objectKind); err != nil {
 				return err
 			}
 		}
@@ -220,6 +272,44 @@ func consumeUniqueJSONValue(decoder *json.Decoder) error {
 	default:
 		return errors.New("invalid JSON delimiter")
 	}
+}
+
+func federationJSONAllowedKeys(objectKind string) map[string]bool {
+	var keys []string
+	switch objectKind {
+	case "event":
+		keys = []string{"protocol", "schema_version", "event_id", "event_type", "source_origin", "object_id", "sequence", "occurred_at", "attribution", "recipe"}
+	case "attribution":
+		keys = []string{"creator_name"}
+	case "recipe":
+		keys = []string{"title", "description", "ingredients", "steps", "servings", "prep_time_minutes", "cook_time_minutes", "tags"}
+	case "ingredient":
+		keys = []string{"name", "quantity", "notes"}
+	case "step":
+		keys = []string{"text"}
+	}
+	allowed := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		allowed[key] = true
+	}
+	return allowed
+}
+
+func federationJSONChildKind(parent, key string) string {
+	switch parent {
+	case "event":
+		if key == "attribution" || key == "recipe" {
+			return key
+		}
+	case "recipe":
+		if key == "ingredients" {
+			return "ingredient"
+		}
+		if key == "steps" {
+			return "step"
+		}
+	}
+	return ""
 }
 
 func validateFederationEvent(event *federationEvent) error {
@@ -341,8 +431,174 @@ func acceptFederationEvent(ctx context.Context, db *sql.DB, keyOrigin string, bo
 	return http.StatusAccepted, response, nil
 }
 
+func enqueueFederationChange(tx *sql.Tx, recipeID string) error {
+	return enqueueFederationChangeForPeer(tx, recipeID, "", false)
+}
+
+func enqueueFederationChangeForPeer(tx *sql.Tx, recipeID, targetPeer string, forceSnapshot bool) error {
+	var federation, instancePublic int
+	var origin string
+	if err := tx.QueryRow(`SELECT federation_enabled,public_instance,federation_origin FROM instance_settings WHERE id=1`).Scan(&federation, &instancePublic, &origin); err != nil {
+		return err
+	}
+	var source federationRecipeSource
+	var ingredientsJSON, stepsJSON, tagsJSON, deletedAt string
+	if err := tx.QueryRow(`SELECT id,owner_id,creator_name,source_recipe_id,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,image_path,COALESCE(deleted_at,'') FROM recipes WHERE id=?`, recipeID).Scan(&source.ID, &source.OwnerID, &source.CreatorName, &source.SourceRecipeID, &source.Title, &source.Description, &ingredientsJSON, &stepsJSON, &source.Servings, &source.PrepTime, &source.CookTime, &tagsJSON, &source.Visibility, &source.ImagePath, &deletedAt); err != nil {
+		return err
+	}
+	if err := json.Unmarshal([]byte(ingredientsJSON), &source.Ingredients); err != nil {
+		return err
+	}
+	if err := json.Unmarshal([]byte(stepsJSON), &source.Steps); err != nil {
+		return err
+	}
+	if err := json.Unmarshal([]byte(tagsJSON), &source.Tags); err != nil {
+		return err
+	}
+	source.Deleted = deletedAt != ""
+	var sequence int64
+	err := tx.QueryRow(`SELECT sequence FROM federation_local_objects WHERE recipe_id=?`, recipeID).Scan(&sequence)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	eligible := federation == 1 && instancePublic == 1 && origin != "" && source.Visibility == visibilityPublic && !source.Deleted
+	peerQuery := `SELECT origin FROM federation_peers WHERE enabled=1 ORDER BY origin`
+	peerArgs := []any{}
+	if targetPeer != "" {
+		peerQuery = `SELECT origin FROM federation_peers WHERE enabled=1 AND origin=? ORDER BY origin`
+		peerArgs = append(peerArgs, targetPeer)
+	}
+	rows, err := tx.Query(peerQuery, peerArgs...)
+	if err != nil {
+		return err
+	}
+	var peers []string
+	for rows.Next() {
+		var peer string
+		if err := rows.Scan(&peer); err != nil {
+			rows.Close()
+			return err
+		}
+		peers = append(peers, peer)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	type eventTarget struct {
+		peer      string
+		eventType string
+	}
+	targets := make([]eventTarget, 0, len(peers))
+	for _, peer := range peers {
+		var peerPublished int
+		peerErr := tx.QueryRow(`SELECT published FROM federation_local_peer_objects WHERE peer_origin=? AND recipe_id=?`, peer, recipeID).Scan(&peerPublished)
+		if peerErr != nil && !errors.Is(peerErr, sql.ErrNoRows) {
+			return peerErr
+		}
+		eventType := ""
+		if eligible {
+			if (targetPeer == peer && forceSnapshot) || peerPublished == 0 {
+				eventType = federationEventSnapshot
+			} else {
+				eventType = federationEventUpdate
+			}
+		} else if peerPublished == 1 {
+			eventType = federationEventTombstone
+		}
+		if eventType != "" {
+			targets = append(targets, eventTarget{peer: peer, eventType: eventType})
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	sequence++
+	publishedNow := 0
+	if eligible {
+		publishedNow = 1
+	}
+	if _, err := tx.Exec(`INSERT INTO federation_local_objects(recipe_id,sequence,published) VALUES(?,?,?) ON CONFLICT(recipe_id) DO UPDATE SET sequence=excluded.sequence,published=excluded.published`, recipeID, sequence, publishedNow); err != nil {
+		return err
+	}
+	for _, target := range targets {
+		body, err := serializeFederationEvent(origin, newID(), target.eventType, sequence, time.Now(), federation == 1, instancePublic == 1, source)
+		if err != nil {
+			return err
+		}
+		var event federationEvent
+		if err := json.Unmarshal(body, &event); err != nil {
+			return err
+		}
+		peerPublished := 0
+		if eligible {
+			peerPublished = 1
+		}
+		if _, err := tx.Exec(`INSERT INTO federation_local_peer_objects(peer_origin,recipe_id,published,updated_at) VALUES(?,?,?,?) ON CONFLICT(peer_origin,recipe_id) DO UPDATE SET published=excluded.published,updated_at=excluded.updated_at`, target.peer, recipeID, peerPublished, timestamp()); err != nil {
+			return err
+		}
+		var peerCount, peerBytes, totalCount, totalBytes int
+		if err := tx.QueryRow(`SELECT COUNT(*),COALESCE(SUM(length(payload)),0) FROM federation_outbox WHERE peer_origin=?`, target.peer).Scan(&peerCount, &peerBytes); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(`SELECT COUNT(*),COALESCE(SUM(length(payload)),0) FROM federation_outbox`).Scan(&totalCount, &totalBytes); err != nil {
+			return err
+		}
+		if peerCount >= 1000 || int64(peerBytes)+int64(len(body)) > 16<<20 || totalCount >= 10000 || int64(totalBytes)+int64(len(body)) > 64<<20 {
+			return errors.New("federation outbox capacity reached")
+		}
+		if _, err := tx.Exec(`INSERT INTO federation_outbox(id,peer_origin,event_id,object_id,sequence,payload,next_attempt,created_at) VALUES(?,?,?,?,?,?,?,?)`, newID(), target.peer, event.EventID, event.ObjectID, event.Sequence, body, time.Now().Unix(), timestamp()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func queueFederationSnapshotsForAll(tx *sql.Tx, newlyEnabledPeer string) error {
+	var federation int
+	if err := tx.QueryRow(`SELECT federation_enabled FROM instance_settings WHERE id=1`).Scan(&federation); err != nil {
+		return err
+	}
+	if federation != 1 {
+		return nil
+	}
+	var enabled int
+	if err := tx.QueryRow(`SELECT enabled FROM federation_peers WHERE origin=?`, newlyEnabledPeer).Scan(&enabled); err != nil || enabled != 1 {
+		return errors.New("federation peer is not enabled")
+	}
+	rows, err := tx.Query(`SELECT id FROM recipes WHERE (visibility='public' AND deleted_at IS NULL) OR id IN (SELECT recipe_id FROM federation_local_peer_objects WHERE peer_origin=? AND published=1) ORDER BY id`, newlyEnabledPeer)
+	if err != nil {
+		return err
+	}
+	var recipeIDs []string
+	for rows.Next() {
+		var recipeID string
+		if err := rows.Scan(&recipeID); err != nil {
+			rows.Close()
+			return err
+		}
+		recipeIDs = append(recipeIDs, recipeID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, recipeID := range recipeIDs {
+		if err := enqueueFederationChangeForPeer(tx, recipeID, newlyEnabledPeer, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func serializeFederationEvent(origin, eventID, eventType string, sequence int64, occurredAt time.Time, federationEnabled, instancePublic bool, source federationRecipeSource) ([]byte, error) {
-	if !federationEnabled || sequence < 1 || occurredAt.IsZero() || !isFederationID(eventID) {
+	if (!federationEnabled && eventType != federationEventTombstone) || sequence < 1 || occurredAt.IsZero() || !isFederationID(eventID) {
 		return nil, errors.New("invalid federation event metadata")
 	}
 	objectID, err := federationRecipeObjectID(origin, source.ID)

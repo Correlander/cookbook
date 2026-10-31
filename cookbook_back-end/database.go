@@ -124,6 +124,34 @@ CREATE TABLE IF NOT EXISTS federation_received_events (
   response_body TEXT NOT NULL,
   PRIMARY KEY(source_origin,event_id)
 );
+CREATE TABLE IF NOT EXISTS federation_local_objects (
+  recipe_id TEXT PRIMARY KEY REFERENCES recipes(id) ON DELETE CASCADE,
+  sequence INTEGER NOT NULL DEFAULT 0 CHECK (sequence >= 0),
+  published INTEGER NOT NULL DEFAULT 0 CHECK (published IN (0, 1))
+);
+CREATE TABLE IF NOT EXISTS federation_local_peer_objects (
+  peer_origin TEXT NOT NULL REFERENCES federation_peers(origin) ON DELETE CASCADE,
+  recipe_id TEXT NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  published INTEGER NOT NULL CHECK (published IN (0, 1)),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(peer_origin,recipe_id)
+);
+CREATE INDEX IF NOT EXISTS idx_federation_local_peer_objects_recipe ON federation_local_peer_objects(recipe_id,published);
+CREATE TABLE IF NOT EXISTS federation_outbox (
+  id TEXT PRIMARY KEY,
+  peer_origin TEXT NOT NULL REFERENCES federation_peers(origin) ON DELETE CASCADE,
+  event_id TEXT NOT NULL,
+  object_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL,
+  payload BLOB NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt INTEGER NOT NULL,
+  lease_until INTEGER,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE(peer_origin,event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_federation_outbox_due ON federation_outbox(peer_origin,next_attempt,lease_until,created_at,id);
 CREATE TABLE IF NOT EXISTS webauthn_ceremonies (
   id TEXT PRIMARY KEY,
   user_id TEXT REFERENCES users(id) ON DELETE CASCADE,

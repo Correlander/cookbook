@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -16,6 +17,7 @@ import (
 	"github.com/common-fate/httpsig"
 	"github.com/common-fate/httpsig/alg_ed25519"
 	"github.com/common-fate/httpsig/contentdigest"
+	"github.com/common-fate/httpsig/sigset"
 	"github.com/common-fate/httpsig/verifier"
 )
 
@@ -111,8 +113,49 @@ func federationSignatureMiddleware(db *sql.DB, origin string, trustedProxies []*
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, maxFederationEventBytes)
+		digest, err := contentdigest.SHA256.HashRequest(w, r)
+		if err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				writeError(w, http.StatusRequestEntityTooLarge, "event_too_large")
+			} else {
+				writeError(w, http.StatusBadRequest, "invalid_body")
+			}
+			return
+		}
+		providedDigest := r.Header.Values("Content-Digest")
+		if len(providedDigest) != 1 || strings.TrimSpace(providedDigest[0]) != digest {
+			writeError(w, http.StatusBadRequest, "invalid_content_digest")
+			return
+		}
+		if err := validateFederationSignatureProfile(r); err != nil {
+			writeError(w, http.StatusUnauthorized, "invalid_signature_profile")
+			return
+		}
 		verify.ServeHTTP(w, r)
 	})
+}
+
+func validateFederationSignatureProfile(r *http.Request) error {
+	set, err := sigset.Unmarshal(r)
+	if err != nil {
+		return err
+	}
+	message, err := set.Find(federationSignatureTag)
+	if err != nil {
+		return err
+	}
+	want := []string{"@method", "@target-uri", "content-type", "content-length", "content-digest"}
+	got := message.Input.CoveredComponents
+	if message.Input.Alg != "" || message.Input.Tag != federationSignatureTag || len(got) != len(want) {
+		return errors.New("unsupported federation signature profile")
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return errors.New("unsupported federation signature components")
+		}
+	}
+	return nil
 }
 
 func federationServerOrigin(db *sql.DB) (string, bool) {
@@ -142,26 +185,55 @@ func registerFederationPeer(db *sql.DB, origin string, enabled bool) error {
 }
 
 func registerFederationPeerKey(db *sql.DB, origin, keyID string, publicKey []byte) error {
-	if len(publicKey) != 32 || strings.TrimSpace(keyID) != keyID || keyID == "" || len(keyID) > 200 {
+	canonical, err := canonicalFederationOrigin(origin)
+	if err != nil || canonical != origin || len(publicKey) != 32 || !validFederationKeyID(keyID) {
 		return errors.New("invalid federation peer key")
 	}
-	var enabled int
-	if err := db.QueryRow(`SELECT enabled FROM federation_peers WHERE origin=?`, origin).Scan(&enabled); err != nil || enabled != 1 {
-		return errors.New("federation peer is not enabled")
+	var exists int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_peers WHERE origin=?`, origin).Scan(&exists); err != nil || exists != 1 {
+		return errors.New("federation peer does not exist")
 	}
-	_, err := db.Exec(`INSERT INTO federation_peer_keys(key_id,origin,public_key,status,created_at) VALUES(?,?,?,'active',?) ON CONFLICT(key_id) DO UPDATE SET public_key=excluded.public_key,status='active',created_at=excluded.created_at,revoked_at=NULL WHERE federation_peer_keys.origin=excluded.origin`, keyID, origin, publicKey, timestamp())
-	if err != nil {
+	var storedOrigin, status string
+	var storedKey []byte
+	err = db.QueryRow(`SELECT origin,public_key,status FROM federation_peer_keys WHERE key_id=?`, keyID).Scan(&storedOrigin, &storedKey, &status)
+	if err == nil {
+		if storedOrigin == origin && status == "active" && bytes.Equal(storedKey, publicKey) {
+			return nil
+		}
+		return errors.New("federation key ID is already registered and cannot be reused")
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if _, err := db.Exec(`INSERT INTO federation_peer_keys(key_id,origin,public_key,status,created_at) VALUES(?,?,?,'active',?)`, keyID, origin, publicKey, timestamp()); err != nil {
 		return fmt.Errorf("save federation peer key: %w", err)
-	}
-	var storedOrigin string
-	if err := db.QueryRow(`SELECT origin FROM federation_peer_keys WHERE key_id=?`, keyID).Scan(&storedOrigin); err != nil || storedOrigin != origin {
-		return errors.New("federation key ID already belongs to another origin")
 	}
 	return nil
 }
 
+func validFederationKeyID(keyID string) bool {
+	if keyID == "" || len(keyID) > 200 {
+		return false
+	}
+	for _, char := range keyID {
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '-' && char != '_' && char != '.' && char != ':' {
+			return false
+		}
+	}
+	return true
+}
+
 func revokeFederationPeerKey(db *sql.DB, origin, keyID string) error {
-	result, err := db.Exec(`UPDATE federation_peer_keys SET status='revoked',revoked_at=? WHERE origin=? AND key_id=? AND status<>'revoked'`, timestamp(), origin, keyID)
+	canonical, err := canonicalFederationOrigin(origin)
+	if err != nil || canonical != origin || !validFederationKeyID(keyID) {
+		return errors.New("invalid federation peer key")
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(`UPDATE federation_peer_keys SET status='revoked',revoked_at=? WHERE origin=? AND key_id=? AND status<>'revoked'`, timestamp(), origin, keyID)
 	if err != nil {
 		return err
 	}
@@ -172,5 +244,17 @@ func revokeFederationPeerKey(db *sql.DB, origin, keyID string) error {
 	if changed == 0 {
 		return sql.ErrNoRows
 	}
-	return nil
+	var activeKeys int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM federation_peer_keys WHERE origin=? AND status='active'`, origin).Scan(&activeKeys); err != nil {
+		return err
+	}
+	if activeKeys == 0 {
+		if _, err := tx.Exec(`UPDATE federation_peers SET enabled=0,updated_at=? WHERE origin=?`, timestamp(), origin); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM federation_outbox WHERE peer_origin=?`, origin); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

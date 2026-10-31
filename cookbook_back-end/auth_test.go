@@ -25,12 +25,23 @@ func TestOpeningMagicLinkDoesNotConsumeEmailChallenge(t *testing.T) {
 	if opened.Code != http.StatusOK {
 		t.Fatalf("opening the confirmation page status=%d body=%s", opened.Code, opened.Body)
 	}
+	if got := opened.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("confirmation page cache-control=%q, want no-store", got)
+	}
 	var consumed *string
 	if err := db.QueryRow(`SELECT consumed_at FROM email_challenges WHERE id='challenge'`).Scan(&consumed); err != nil {
 		t.Fatal(err)
 	}
 	if consumed != nil {
 		t.Fatalf("opening the email link consumed its challenge at %s", *consumed)
+	}
+}
+
+func TestInvitationLinkPageIsNotCacheable(t *testing.T) {
+	db := testDatabase(t)
+	recorder := callAPI(handlerWithAuth(db, testAuth(db)), http.MethodGet, "/?invite=one-time-token", nil, nil)
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("invitation page status=%d cache-control=%q", recorder.Code, recorder.Header().Get("Cache-Control"))
 	}
 }
 

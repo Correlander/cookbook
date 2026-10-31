@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -41,6 +42,7 @@ type storedWebAuthnCredential struct {
 
 type passkeySummary struct {
 	ID        string `json:"id"`
+	Name      string `json:"name"`
 	CreatedAt string `json:"created_at"`
 	LastUsed  string `json:"last_used_at,omitempty"`
 }
@@ -106,7 +108,12 @@ func (h passkeyHandler) finishRegistration(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "invalid_passkey_response")
 		return
 	}
-	if err := h.storeCredential(user.id, *credential); err != nil {
+	name, err := normalizePasskeyName(r.Header.Get("X-Cookbook-Passkey-Name"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_passkey_name")
+		return
+	}
+	if err := h.storeCredential(user.id, *credential, name); err != nil {
 		if errors.Is(err, errPasskeyAlreadyRegistered) {
 			writeError(w, http.StatusConflict, "passkey_already_registered")
 			return
@@ -159,7 +166,7 @@ func (h passkeyHandler) finishLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h passkeyHandler) list(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.db.Query(`SELECT credential_id,created_at,COALESCE(last_used_at,'') FROM webauthn_credentials WHERE user_id=? ORDER BY created_at`, authenticatedUser(r))
+	rows, err := h.db.Query(`SELECT credential_id,name,created_at,COALESCE(last_used_at,'') FROM webauthn_credentials WHERE user_id=? ORDER BY created_at`, authenticatedUser(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
@@ -169,7 +176,7 @@ func (h passkeyHandler) list(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var id []byte
 		var item passkeySummary
-		if err := rows.Scan(&id, &item.CreatedAt, &item.LastUsed); err != nil {
+		if err := rows.Scan(&id, &item.Name, &item.CreatedAt, &item.LastUsed); err != nil {
 			writeError(w, http.StatusInternalServerError, "storage_error")
 			return
 		}
@@ -296,13 +303,17 @@ func (h passkeyHandler) consumeCeremony(w http.ResponseWriter, r *http.Request, 
 	return session, true
 }
 
-func (h passkeyHandler) storeCredential(userID string, credential webauthn.Credential) error {
+func (h passkeyHandler) storeCredential(userID string, credential webauthn.Credential, name string) error {
+	name, err := normalizePasskeyName(name)
+	if err != nil {
+		return err
+	}
 	stored := storedWebAuthnCredential{Credential: credential, Flags: credential.Flags.ProtocolValue()}
 	encoded, err := json.Marshal(stored)
 	if err != nil {
 		return err
 	}
-	result, err := h.db.Exec(`INSERT INTO webauthn_credentials(credential_id,user_id,credential_json,created_at) VALUES(?,?,?,?) ON CONFLICT(credential_id) DO NOTHING`, credential.ID, userID, string(encoded), timestamp())
+	result, err := h.db.Exec(`INSERT INTO webauthn_credentials(credential_id,user_id,name,credential_json,created_at) VALUES(?,?,?,?,?) ON CONFLICT(credential_id) DO NOTHING`, credential.ID, userID, name, string(encoded), timestamp())
 	if err != nil {
 		return err
 	}
@@ -314,6 +325,22 @@ func (h passkeyHandler) storeCredential(userID string, credential webauthn.Crede
 		return errPasskeyAlreadyRegistered
 	}
 	return nil
+}
+
+func normalizePasskeyName(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = "Passkey"
+	}
+	if len(value) > 80 {
+		return "", errors.New("passkey name is too long")
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return "", errors.New("passkey name contains control characters")
+		}
+	}
+	return value, nil
 }
 
 var errPasskeyAlreadyRegistered = errors.New("passkey credential is already registered")

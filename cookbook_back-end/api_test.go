@@ -571,15 +571,36 @@ func TestPasskeyCredentialCannotBeRegisteredToTwoAccounts(t *testing.T) {
 	}
 	h := passkeyHandler{db: db}
 	credential := webauthn.Credential{ID: []byte("credential-id")}
-	if err := h.storeCredential("owner", credential); err != nil {
+	if err := h.storeCredential("owner", credential, "Kitchen laptop"); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.storeCredential("another-user", credential); !errors.Is(err, errPasskeyAlreadyRegistered) {
+	if err := h.storeCredential("another-user", credential, "Other device"); !errors.Is(err, errPasskeyAlreadyRegistered) {
 		t.Fatalf("duplicate credential error = %v, want already registered", err)
 	}
-	var owner string
-	if err := db.QueryRow(`SELECT user_id FROM webauthn_credentials WHERE credential_id=?`, credential.ID).Scan(&owner); err != nil || owner != "owner" {
-		t.Fatalf("credential owner = %q, err = %v", owner, err)
+	var owner, name string
+	if err := db.QueryRow(`SELECT user_id,name FROM webauthn_credentials WHERE credential_id=?`, credential.ID).Scan(&owner, &name); err != nil || owner != "owner" || name != "Kitchen laptop" {
+		t.Fatalf("credential owner/name = %q/%q, err = %v", owner, name, err)
+	}
+	token, _, err := issueSession(db, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := callAPI(handlerWithAuth(db, testAuth(db)), http.MethodGet, "/api/auth/passkeys", nil, &http.Cookie{Name: sessionCookie, Value: token})
+	var items []passkeySummary
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &items) != nil || len(items) != 1 || items[0].Name != "Kitchen laptop" {
+		t.Fatalf("passkey list response=%d body=%s", response.Code, response.Body)
+	}
+}
+
+func TestPasskeyNamesHaveSafeLengthAndDefault(t *testing.T) {
+	if name, err := normalizePasskeyName("  "); err != nil || name != "Passkey" {
+		t.Fatalf("blank name = %q, %v", name, err)
+	}
+	if _, err := normalizePasskeyName(strings.Repeat("a", 81)); err == nil {
+		t.Fatal("overlong passkey name was accepted")
+	}
+	if _, err := normalizePasskeyName("device\nname"); err == nil {
+		t.Fatal("control character in passkey name was accepted")
 	}
 }
 

@@ -103,3 +103,4 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 
 - At audit time, `go test ./...` could not use the host's read-only default Go build cache and frontend dependencies were not installed. Subsequent implementation checkpoints passed Go tests/vet with caches under `/tmp` and frontend lint/build using the lockfile-installed dependencies.
 - Docker Compose configuration validates; the image build and deployment rehearsal remain unverified because the host has no running Docker daemon.
+- Email-link sign-in now offers an optional first-passkey setup prompt; passkeys can be named, listed, and revoked in account security rather than recipe editing. Existing credentials migrate with the display name “Passkey”.

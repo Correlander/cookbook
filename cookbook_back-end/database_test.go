@@ -60,6 +60,31 @@ func TestExistingInstanceSettingsReceiveRetentionDefaults(t *testing.T) {
 	}
 }
 
+func TestExistingPasskeyCredentialsReceiveDefaultName(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "passkey-upgrade.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = legacy.Exec(`CREATE TABLE users(id TEXT PRIMARY KEY,email TEXT NOT NULL UNIQUE,display_name TEXT NOT NULL,created_at TEXT NOT NULL); CREATE TABLE webauthn_credentials(credential_id BLOB PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),credential_json TEXT NOT NULL,created_at TEXT NOT NULL,last_used_at TEXT); INSERT INTO users VALUES('owner','owner@example.test','Owner','now'); INSERT INTO webauthn_credentials VALUES(X'0102','owner','{}','now',NULL);`)
+	if err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var name string
+	if err := db.QueryRow(`SELECT name FROM webauthn_credentials WHERE credential_id=X'0102'`).Scan(&name); err != nil || name != "Passkey" {
+		t.Fatalf("migrated passkey name = %q, err=%v", name, err)
+	}
+}
+
 func TestAccessPolicyDefaults(t *testing.T) {
 	publicBook := access{instancePublic: true, visibility: visibilityPublic, ownerID: "owner"}
 	privateBook := access{instancePublic: true, visibility: visibilityPrivate, ownerID: "owner"}

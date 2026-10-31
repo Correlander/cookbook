@@ -54,7 +54,7 @@ function serializeCredential(credential, registration) {
   }
 }
 
-async function runCeremony(path, finishPath, registration) {
+async function runCeremony(path, finishPath, registration, name) {
   if (!window.PublicKeyCredential || !window.isSecureContext) {
     throw new Error('Passkeys require a supported browser and a secure connection.')
   }
@@ -71,6 +71,7 @@ async function runCeremony(path, finishPath, registration) {
     headers: {
       'Content-Type': 'application/json',
       'X-Cookbook-Ceremony': ceremonyID,
+      ...(registration ? { 'X-Cookbook-Passkey-Name': name || 'Passkey' } : {}),
     },
     body: JSON.stringify(serializeCredential(credential, registration)),
   })
@@ -78,8 +79,8 @@ async function runCeremony(path, finishPath, registration) {
   return finishResponse.json()
 }
 
-export function registerPasskey() {
-  return runCeremony('/api/auth/passkey/register/begin', '/api/auth/passkey/register/finish', true)
+export function registerPasskey(name = 'Passkey') {
+  return runCeremony('/api/auth/passkey/register/begin', '/api/auth/passkey/register/finish', true, name)
 }
 
 export function signInWithPasskey() {

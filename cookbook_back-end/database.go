@@ -63,6 +63,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE TABLE IF NOT EXISTS webauthn_credentials (
   credential_id BLOB PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL DEFAULT 'Passkey',
   credential_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
   last_used_at TEXT
@@ -178,6 +179,7 @@ func openDatabase(path string) (*sql.DB, error) {
 		{"instance_settings", "registration_policy_configured", `INTEGER NOT NULL DEFAULT 0 CHECK (registration_policy_configured IN (0, 1))`},
 		{"instance_settings", "revision_retention_days", `INTEGER NOT NULL DEFAULT 365 CHECK (revision_retention_days IN (0, 7, 30, 90, 365))`},
 		{"instance_settings", "audit_retention_days", `INTEGER NOT NULL DEFAULT 365 CHECK (audit_retention_days IN (0, 7, 30, 90, 365))`},
+		{"webauthn_credentials", "name", `TEXT NOT NULL DEFAULT 'Passkey'`},
 		{"users", "is_admin", `INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1))`},
 		{"email_challenges", "display_name", `TEXT NOT NULL DEFAULT ''`},
 		{"email_challenges", "invitation_id", `TEXT REFERENCES invitations(id)`},

@@ -193,6 +193,10 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/"), "/")
 	parts := strings.Split(path, "/")
 	switch {
+	case len(parts) == 1 && parts[0] == "export":
+		h.exportData(w, r)
+	case len(parts) == 1 && parts[0] == "import":
+		h.importData(w, r)
 	case len(parts) == 1 && parts[0] == "cookbooks":
 		h.cookbooks(w, r)
 	case len(parts) == 2 && parts[0] == "cookbooks":

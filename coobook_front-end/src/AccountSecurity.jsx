@@ -6,6 +6,7 @@ export default function AccountSecurity() {
   const [name, setName] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [importBusy, setImportBusy] = useState(false)
 
   async function reload() {
     const response = await fetch('/api/auth/passkeys')
@@ -49,6 +50,7 @@ export default function AccountSecurity() {
     <p>Passkeys let you sign in without a link from your email.</p>
     {items.map(item => <div className="passkey-row" key={item.id}><span>{item.name}<small>Added {new Date(item.created_at).toLocaleDateString()}{item.last_used_at ? ` · Last used ${new Date(item.last_used_at).toLocaleDateString()}` : ''}</small></span><button className="text-link" type="button" onClick={() => remove(item)}>Remove</button></div>)}
     {!items.length && !error && <p>No passkeys added yet.</p>}
+    <div className="account-portability"><h3>Your recipes and cookbooks</h3><p>Export your owned recipes and cookbooks, or import a previous export. Imports are private copies and do not include photos or revision history.</p><a className="button button--green" href="/api/export">Download export</a><label htmlFor="cookbook-import">Import a Cookbook export (JSON)</label><input id="cookbook-import" type="file" accept="application/json,.json" disabled={importBusy} onChange={async event => { const file = event.target.files?.[0]; if (!file) return; setImportBusy(true); setError(''); try { if (file.size > 10 * 1024 * 1024) throw new Error('Export files must be 10 MiB or smaller.'); const response = await fetch('/api/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: file }); if (!response.ok) throw new Error('This export could not be imported. Check that it is a valid Cookbook export.'); const result = await response.json(); window.alert(`Imported ${result.recipes} recipes and ${result.cookbooks} cookbooks as private copies.`); } catch (err) { setError(err.message) } finally { setImportBusy(false); event.target.value = '' } }} /></div>
     <form className="inline-invite" onSubmit={add}><label htmlFor="passkey-name">Add a passkey</label><input id="passkey-name" value={name} onChange={event => setName(event.target.value)} maxLength={80} placeholder="e.g. Kitchen laptop"/><button className="button button--green" type="submit" disabled={busy}>{busy ? 'Waiting…' : 'Add passkey'}</button></form>
     {error && <p className="form-message" role="alert">{error}</p>}
   </section>

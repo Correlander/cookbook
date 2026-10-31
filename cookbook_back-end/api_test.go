@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"image"
@@ -37,6 +38,62 @@ func callAPI(h http.Handler, method, path string, body any, cookie *http.Cookie)
 	}
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+func TestPortableExportAndImportKeepOwnershipAndPrivacySafe(t *testing.T) {
+	db := testDatabase(t)
+	_, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('other','other@example.test','Other','now'); INSERT INTO cookbooks(id,owner_id,title,description,visibility,created_at,updated_at) VALUES('book','owner','Family recipes','Notes','public','now','now'),('other-book','other','Other book','','private','now','now'); INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,edit_policy,version,created_at,updated_at) VALUES('recipe','owner','Grandma','Soup','Warm soup','[{"name":"water"}]','[{"text":"Boil"}]',4,10,20,'["family"]','public','owner_only',1,'now','now'),('other-recipe','other','Other','Secret','','[]','[]',0,0,0,'[]','private','owner_only',1,'now','now'); INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES('book','recipe','owner','now')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := apiHandler{db: db}
+	export := httptest.NewRecorder()
+	h.ServeHTTP(export, requestForUser(http.MethodGet, "/api/export", "owner"))
+	if export.Code != http.StatusOK {
+		t.Fatalf("export status=%d body=%s", export.Code, export.Body)
+	}
+	var bundle portableBundle
+	if err := json.Unmarshal(export.Body.Bytes(), &bundle); err != nil {
+		t.Fatal(err)
+	}
+	if len(bundle.Cookbooks) != 1 || len(bundle.Recipes) != 1 || bundle.Recipes[0].CreatorName != "Grandma" || len(bundle.Cookbooks[0].RecipeIDs) != 1 {
+		t.Fatalf("incomplete export: %+v", bundle)
+	}
+	importResponse := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/import", strings.NewReader(export.Body.String()))
+	request = request.WithContext(context.WithValue(request.Context(), userContextKey{}, "owner"))
+	h.ServeHTTP(importResponse, request)
+	if importResponse.Code != http.StatusCreated {
+		t.Fatalf("import status=%d body=%s", importResponse.Code, importResponse.Body)
+	}
+	var recipeCount, bookCount, publicCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM recipes WHERE owner_id='owner' AND visibility='private' AND creator_name='Grandma'`).Scan(&recipeCount); err != nil || recipeCount != 1 {
+		t.Fatalf("imported private attributed recipes=%d err=%v", recipeCount, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM cookbooks WHERE owner_id='owner' AND visibility='private' AND title='Family recipes'`).Scan(&bookCount); err != nil || bookCount != 1 {
+		t.Fatalf("imported private cookbooks=%d err=%v", bookCount, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM recipes WHERE owner_id='other'`).Scan(&publicCount); err != nil || publicCount != 1 {
+		t.Fatalf("other user's data affected=%d err=%v", publicCount, err)
+	}
+}
+
+func TestPortableImportRejectsInvalidAndOversizedBundles(t *testing.T) {
+	if err := validatePortableBundle(portableBundle{Format: portableFormat, Recipes: []portableRecipe{{ID: "r", Title: "Dish", Visibility: "public", CookbookIDs: []string{"missing"}}}}); err == nil {
+		t.Fatal("accepted unknown cookbook reference")
+	}
+	if err := validatePortableBundle(portableBundle{Format: "unknown"}); err == nil {
+		t.Fatal("accepted unsupported format")
+	}
+	db := testDatabase(t)
+	h := apiHandler{db: db}
+	request := httptest.NewRequest(http.MethodPost, "/api/import", strings.NewReader(strings.Repeat("x", maxImportBytes+1)))
+	request = request.WithContext(context.WithValue(request.Context(), userContextKey{}, "owner"))
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("oversized import status=%d", response.Code)
+	}
 }
 
 func TestAuthStateChangesRequireSameOrigin(t *testing.T) {

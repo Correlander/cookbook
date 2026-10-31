@@ -83,6 +83,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 
 ### M5 — Self-hosting and portability
 - Dockerfile/Compose, `.env.example`, health checks, persistent SQLite/media volumes, admin bootstrap, upgrade and backup/restore runbook, import/export format with attribution.
+- Owner-scoped `cookbook-export-v1` JSON export/import is implemented with a strict size limit, validation, fresh private ownership on import, and attribution preservation. It excludes media and revision history.
 - Acceptance: reproducible local deployment and backup/restore rehearsal remain outstanding; Dockerfile and Compose configuration are prepared, and upgrade paths have migration tests.
 
 ### M6 — Visual and accessibility polish

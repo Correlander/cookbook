@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
 	"database/sql"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -26,6 +29,77 @@ func TestApplicationServerUsesBoundedTimeouts(t *testing.T) {
 	}
 	if server.MaxHeaderBytes != 1<<20 {
 		t.Errorf("maximum header bytes = %d, want 1 MiB", server.MaxHeaderBytes)
+	}
+}
+
+func TestRunHTTPServerDrainsInFlightRequestOnCancellation(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	server := newApplicationServer(listener.Addr().String(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveResult := make(chan error, 1)
+	go func() {
+		serveResult <- runHTTPServer(ctx, server, listener, 2*time.Second)
+	}()
+
+	requestResult := make(chan error, 1)
+	go func() {
+		response, requestErr := (&http.Client{Timeout: 2 * time.Second}).Get("http://" + listener.Addr().String())
+		if requestErr == nil {
+			if response.StatusCode != http.StatusNoContent {
+				requestErr = fmt.Errorf("response status = %d, want %d", response.StatusCode, http.StatusNoContent)
+			}
+			_ = response.Body.Close()
+		}
+		requestResult <- requestErr
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("request did not reach the handler")
+	}
+
+	cancel()
+	select {
+	case err := <-serveResult:
+		t.Fatalf("server stopped before the active request finished: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+
+	select {
+	case err := <-requestResult:
+		if err != nil {
+			t.Fatalf("active request failed during graceful shutdown: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("active request did not finish")
+	}
+	select {
+	case err := <-serveResult:
+		if err != nil {
+			t.Fatalf("server shutdown returned an error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not exit after the active request finished")
 	}
 }
 

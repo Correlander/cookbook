@@ -5,15 +5,19 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -160,34 +164,47 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func main() {
-	cfg, err := loadConfig()
-	if err != nil {
+	if err := run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func run() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(cfg.mediaDir, 0700); err != nil {
-		log.Fatal("create media directory: ", err)
+		return fmt.Errorf("create media directory: %w", err)
 	}
 
 	db, err := openDatabase(cfg.database)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer db.Close()
 	startTrashCleanup(db, cfg.trashRetentionDays, cfg.mediaDir)
 	if err := configureRegistrationPolicy(db); err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("configure registration policy: %w", err)
 	}
 	if err := provisionAdministrator(db); err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("provision administrator: %w", err)
 	}
 
 	auth, err := authConfig(db)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("configure authentication: %w", err)
 	}
 	server := newApplicationServer(cfg.address, handlerWithAuthConfig(db, auth, cfg))
+	listener, err := net.Listen("tcp", cfg.address)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", cfg.address, err)
+	}
 	log.Printf("Cookbook API listening on %s", cfg.address)
-	log.Fatal(server.ListenAndServe())
+	return runHTTPServer(ctx, server, listener, 20*time.Second)
 }
 
 func requireSession(db *sql.DB, next http.Handler) http.Handler {

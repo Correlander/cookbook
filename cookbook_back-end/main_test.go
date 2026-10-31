@@ -22,6 +22,15 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
+func TestAPIResponsesAreNotCacheable(t *testing.T) {
+	db := testDatabase(t)
+	recorder := httptest.NewRecorder()
+	handlerWithAuth(db, testAuth(db)).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/public/recipes", nil))
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("API response status=%d cache-control=%q", recorder.Code, recorder.Header().Get("Cache-Control"))
+	}
+}
+
 func TestUnknownPageServesFrontendShell(t *testing.T) {
 	db := testDatabase(t)
 	recorder := httptest.NewRecorder()

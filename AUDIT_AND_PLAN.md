@@ -23,6 +23,7 @@ At audit time the repository was an early prototype. Implementation has since ad
 - Recipe membership role resolution is consistent when a recipe is referenced by multiple cookbooks; editing still requires the recipe's explicit `cookbook_editors` policy.
 - Recipe responses include only cookbook associations the requesting user can read, preventing private and unlisted cookbook IDs from leaking through a readable recipe.
 - Private recipe images are served with `no-store`; images on explicitly public recipes are cacheable for five minutes.
+- JSON API responses use `no-store` to prevent browser or intermediary reuse of account-specific data.
 - M4 history: recipe snapshots are written atomically at create/update, including servings, preparation/cook time, tags, and images. Updates use optimistic versions, authorized users can read history and compare two versions, and restore-as-new-version uses an optimistic version check. Owner-only trash/restore and configurable retention cleanup are implemented. Successful authenticated API mutations and authenticated 403 denials are recorded separately in an administrator-only, paged security audit log.
 - Frontend dependencies were updated within existing semver ranges; the ESLint 10 migration and a minimatch override clear the current audit findings. Go tests/vet and frontend lint/build have been run successfully at recent checkpoints.
 - GitHub Actions now runs backend tests/vet, frontend unit tests/lint/build, Compose validation, and a Docker image build on pushes to `main` and pull requests.

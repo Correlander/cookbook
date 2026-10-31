@@ -1144,15 +1144,13 @@ func (h apiHandler) recipeRevisions(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	uid := authenticatedUser(r)
-	var owner string
-	var visibilityValue visibility
-	var public int
-	if err := h.db.QueryRow(`SELECT r.owner_id,r.visibility,s.public_instance FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.id=? AND r.deleted_at IS NULL`, id).Scan(&owner, &visibilityValue, &public); err != nil {
+	var owner, editPolicy string
+	if err := h.db.QueryRow(`SELECT owner_id,edit_policy FROM recipes WHERE id=? AND deleted_at IS NULL`, id).Scan(&owner, &editPolicy); err != nil {
 		writeError(w, 404, "not_found")
 		return
 	}
 	member := recipeMemberRole(h.db, id, uid)
-	if !canReadResource(uid, access{instancePublic: public == 1, visibility: visibilityValue, ownerID: owner, memberRole: member}) {
+	if !canEditRecipe(uid, access{ownerID: owner, memberRole: member}, editPolicy) {
 		writeError(w, 404, "not_found")
 		return
 	}
@@ -1199,15 +1197,13 @@ func (h apiHandler) recipeRevisionDiff(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 	uid := authenticatedUser(r)
-	var owner string
-	var visibilityValue visibility
-	var public int
-	if err := h.db.QueryRow(`SELECT r.owner_id,r.visibility,s.public_instance FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.id=? AND r.deleted_at IS NULL`, recipeID).Scan(&owner, &visibilityValue, &public); err != nil {
+	var owner, editPolicy string
+	if err := h.db.QueryRow(`SELECT owner_id,edit_policy FROM recipes WHERE id=? AND deleted_at IS NULL`, recipeID).Scan(&owner, &editPolicy); err != nil {
 		writeError(w, http.StatusNotFound, "not_found")
 		return
 	}
 	member := recipeMemberRole(h.db, recipeID, uid)
-	if !canReadResource(uid, access{instancePublic: public == 1, visibility: visibilityValue, ownerID: owner, memberRole: member}) {
+	if !canEditRecipe(uid, access{ownerID: owner, memberRole: member}, editPolicy) {
 		writeError(w, http.StatusNotFound, "not_found")
 		return
 	}

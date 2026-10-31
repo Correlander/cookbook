@@ -444,6 +444,69 @@ func TestRecipeRevisionsAndOptimisticUpdates(t *testing.T) {
 	}
 }
 
+func TestRecipeHistoryRequiresEditPermission(t *testing.T) {
+	db := testDatabase(t)
+	_, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1;
+		INSERT INTO users(id,email,display_name,created_at) VALUES
+		('owner','owner@example.test','Owner','now'),
+		('viewer','viewer@example.test','Viewer','now'),
+		('editor','editor@example.test','Editor','now'),
+		('visitor','visitor@example.test','Visitor','now');
+		INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at) VALUES
+		('viewer-book','owner','Viewer book','private','now','now'),
+		('editor-book','owner','Editor book','private','now','now');
+		INSERT INTO cookbook_memberships(cookbook_id,user_id,role,created_at) VALUES
+		('viewer-book','viewer','viewer','now'),
+		('editor-book','editor','editor','now');
+		INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,version,created_at,updated_at)
+		VALUES('shared','owner','Owner','Public recipe','','[]','[]','public','cookbook_editors',2,'now','now');
+		INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES
+		('viewer-book','shared','owner','now'),
+		('editor-book','shared','owner','now')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := insertTestRevision(db, "shared-v1", "shared", 1, "2026-01-01"); err != nil {
+		t.Fatal(err)
+	}
+	if err := insertTestRevision(db, "shared-v2", "shared", 2, "2026-01-02"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE recipe_revisions SET visibility='public' WHERE id='shared-v2'`); err != nil {
+		t.Fatal(err)
+	}
+	handler := handlerWithAuth(db, testAuth(db))
+	tokens := map[string]string{}
+	for _, userID := range []string{"viewer", "editor", "visitor"} {
+		token, _, err := issueSession(db, userID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tokens[userID] = token
+	}
+	visitorCookie := &http.Cookie{Name: sessionCookie, Value: tokens["visitor"]}
+	current := callAPI(handler, http.MethodGet, "/api/recipes/shared", nil, visitorCookie)
+	if current.Code != http.StatusOK {
+		t.Fatalf("public recipe read status=%d, want 200: %s", current.Code, current.Body)
+	}
+	for _, userID := range []string{"viewer", "visitor"} {
+		cookie := &http.Cookie{Name: sessionCookie, Value: tokens[userID]}
+		for _, path := range []string{"/api/recipes/shared/revisions", "/api/recipes/shared/revisions/diff?from=1&to=2"} {
+			response := callAPI(handler, http.MethodGet, path, nil, cookie)
+			if response.Code != http.StatusNotFound {
+				t.Errorf("%s read of %s status=%d, want 404: %s", userID, path, response.Code, response.Body)
+			}
+		}
+	}
+	editorCookie := &http.Cookie{Name: sessionCookie, Value: tokens["editor"]}
+	for _, path := range []string{"/api/recipes/shared/revisions", "/api/recipes/shared/revisions/diff?from=1&to=2"} {
+		response := callAPI(handler, http.MethodGet, path, nil, editorCookie)
+		if response.Code != http.StatusOK {
+			t.Errorf("authorized editor read of %s status=%d, want 200: %s", path, response.Code, response.Body)
+		}
+	}
+}
+
 func TestCookbookEditorCannotChangeRecipeVisibility(t *testing.T) {
 	db := testDatabase(t)
 	_, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1;

@@ -14,7 +14,7 @@ Each instance's signing key is Ed25519, generated locally and stored as PKCS#8 P
 
 ## Event envelope
 
-All events are UTF-8 JSON with a 128 KiB maximum body. Unknown fields and event types are rejected. Duplicate JSON object keys, invalid UTF-8, trailing values, and values outside the documented bounds are rejected. The version 1 envelope is:
+All events are UTF-8 JSON with a 2 MiB maximum body, matching the bounded local recipe payload with headroom for JSON encoding. Unknown fields and event types are rejected. Duplicate JSON object keys, invalid UTF-8, trailing values, and values outside the documented bounds are rejected. The version 1 envelope is:
 
 ```json
 {
@@ -56,7 +56,7 @@ Receipt, event-ID deduplication, sequence advancement, and remote recipe/tombsto
 
 Local public recipe mutations enqueue an allowlisted immutable event in the same transaction as the recipe/revision change. Unpublish and deletion enqueue a tombstone before future content events can be created. The setting is disabled by default, and publishing requires both the instance federation switch and explicit public recipe visibility. A transition to private/unlisted or a deleted recipe prevents new snapshots immediately.
 
-The queue is durable in SQLite, capped at 1,000 pending events per peer and 10,000 total. A bounded worker runs at most four deliveries concurrently and one at a time per peer. Each attempt has a 10-second total timeout, does not follow redirects, and reads at most 64 KiB of response data. Failures retry with exponential backoff from one minute to six hours, with jitter, for at most 12 attempts; exhausted events remain inspectable and require an administrator retry or discard. One slow/offline peer cannot delay recipe writes or another peer. Queue payloads and peer key material are never exposed through public APIs.
+The queue is durable in SQLite, capped at 1,000 pending events per peer, 10,000 total, 16 MiB per peer, and 64 MiB total. A bounded worker runs at most four deliveries concurrently and one at a time per peer. Each attempt has a 10-second total timeout, does not follow redirects, and reads at most 64 KiB of response data. Failures retry with exponential backoff from one minute to six hours, with jitter, for at most 12 attempts; exhausted events remain inspectable and require an administrator retry or discard. One slow/offline peer cannot delay recipe writes or another peer. Queue payloads and peer key material are never exposed through public APIs.
 
 Outbound requests go only to administrator-configured HTTPS origins. URL parsing rejects userinfo, fragments, paths beyond the fixed inbox route, IP literals, localhost, and non-HTTPS schemes. Resolution rejects the destination if any returned address is loopback, private, link-local, multicast, unspecified, or otherwise non-global-unicast. The transport pins the validated resolved address for that request while preserving hostname-based TLS verification; it revalidates on every new connection, uses no proxy environment variables, and disables redirects. Production configuration has no private-address exception. Two-instance tests use an injected test transport rather than weakening production checks.
 

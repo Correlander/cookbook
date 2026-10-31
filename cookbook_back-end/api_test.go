@@ -112,12 +112,12 @@ func TestForkCreatesPrivateOwnedCopyAndPreservesAttribution(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &copied); err != nil {
 		t.Fatal(err)
 	}
-	if copied.ID == "source" || copied.OwnerID != "forker" || copied.CreatorName != "Forker" || copied.Visibility != visibilityPrivate || copied.EditPolicy != "owner_only" || copied.Title != "Pie (copy)" {
+	if copied.ID == "source" || copied.OwnerID != "forker" || copied.CreatorName != "Original creator" || copied.SourceRecipeID != "source" || copied.Visibility != visibilityPrivate || copied.EditPolicy != "owner_only" || copied.Title != "Pie (copy)" {
 		t.Fatalf("fork response=%+v", copied)
 	}
 	var creator, visibilityValue, editPolicy string
 	var revisions int
-	if err := db.QueryRow(`SELECT creator_name,visibility,edit_policy FROM recipes WHERE id=?`, copied.ID).Scan(&creator, &visibilityValue, &editPolicy); err != nil || creator != "Forker" || visibilityValue != "private" || editPolicy != "owner_only" {
+	if err := db.QueryRow(`SELECT creator_name,visibility,edit_policy FROM recipes WHERE id=?`, copied.ID).Scan(&creator, &visibilityValue, &editPolicy); err != nil || creator != "Original creator" || visibilityValue != "private" || editPolicy != "owner_only" {
 		t.Fatalf("stored fork=%s/%s/%s err=%v", creator, visibilityValue, editPolicy, err)
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM recipe_revisions WHERE recipe_id=?`, copied.ID).Scan(&revisions); err != nil || revisions != 1 {

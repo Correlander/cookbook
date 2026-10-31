@@ -74,7 +74,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 - Anonymous visitors can search and page through public cookbooks and their public recipes. Cookbook-scoped reads omit private and unlisted recipes even when those recipes are referenced by a public cookbook.
 - Recipe owners alone can change resource visibility; cookbook editors can edit content only when the recipe's edit policy permits it.
 - Signed-in users now land on a compact kitchen dashboard header; the large editorial hero and signup banner remain anonymous-only.
-- A reader may save an accessible recipe as a private owner-controlled copy. The original creator name remains as attribution; the new owner account owns the copy and its new revision history.
+- A signed-in reader may save an accessible recipe as a private owner-controlled copy. Original creator attribution and source recipe ID are preserved; the new account owns the copy and its new revision history.
 
 ### M4 — History and recovery (partial)
 - Atomic revision snapshots, concurrency/version checks, diff/restore-as-new-version, distinct audit records, soft delete/trash, configurable retention and cleanup.
@@ -90,6 +90,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 
 ### M6 — Visual and accessibility polish
 - Refine the app using reference 02; ensure keyboard/focus, contrast, reduced motion, mobile layouts, loading/empty/error states, accessible dialogs and cooking mode.
+- A distraction-reduced cooking view includes touch-sized ingredient checkboxes, one instruction at a time, keyboard step navigation, Escape to close, focus restoration, and live step announcements.
 - Acceptance: responsive/accessibility review and frontend checks.
 
 ### M7 — Courses (optional)

@@ -28,21 +28,22 @@ type portableCookbook struct {
 }
 
 type portableRecipe struct {
-	ID          string       `json:"id"`
-	CreatorName string       `json:"creator_name"`
-	Title       string       `json:"title"`
-	Description string       `json:"description"`
-	Ingredients []ingredient `json:"ingredients"`
-	Steps       []recipeStep `json:"steps"`
-	Servings    int          `json:"servings"`
-	PrepTime    int          `json:"prep_time_minutes"`
-	CookTime    int          `json:"cook_time_minutes"`
-	Tags        []string     `json:"tags"`
-	Visibility  string       `json:"visibility"`
-	EditPolicy  string       `json:"edit_policy"`
-	CookbookIDs []string     `json:"cookbook_ids"`
-	CreatedAt   string       `json:"created_at"`
-	UpdatedAt   string       `json:"updated_at"`
+	ID             string       `json:"id"`
+	CreatorName    string       `json:"creator_name"`
+	SourceRecipeID string       `json:"source_recipe_id,omitempty"`
+	Title          string       `json:"title"`
+	Description    string       `json:"description"`
+	Ingredients    []ingredient `json:"ingredients"`
+	Steps          []recipeStep `json:"steps"`
+	Servings       int          `json:"servings"`
+	PrepTime       int          `json:"prep_time_minutes"`
+	CookTime       int          `json:"cook_time_minutes"`
+	Tags           []string     `json:"tags"`
+	Visibility     string       `json:"visibility"`
+	EditPolicy     string       `json:"edit_policy"`
+	CookbookIDs    []string     `json:"cookbook_ids"`
+	CreatedAt      string       `json:"created_at"`
+	UpdatedAt      string       `json:"updated_at"`
 }
 
 func (h apiHandler) exportData(w http.ResponseWriter, r *http.Request) {
@@ -75,7 +76,7 @@ func (h apiHandler) exportData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	books.Close()
-	rows, err := h.db.Query(`SELECT id,creator_name,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,edit_policy,created_at,updated_at FROM recipes WHERE owner_id=? AND deleted_at IS NULL ORDER BY id`, uid)
+	rows, err := h.db.Query(`SELECT id,creator_name,source_recipe_id,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,edit_policy,created_at,updated_at FROM recipes WHERE owner_id=? AND deleted_at IS NULL ORDER BY id`, uid)
 	if err != nil {
 		writeError(w, 500, "storage_error")
 		return
@@ -84,7 +85,7 @@ func (h apiHandler) exportData(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var recipe portableRecipe
 		var ingredients, steps, tags string
-		if err := rows.Scan(&recipe.ID, &recipe.CreatorName, &recipe.Title, &recipe.Description, &ingredients, &steps, &recipe.Servings, &recipe.PrepTime, &recipe.CookTime, &tags, &recipe.Visibility, &recipe.EditPolicy, &recipe.CreatedAt, &recipe.UpdatedAt); err != nil {
+		if err := rows.Scan(&recipe.ID, &recipe.CreatorName, &recipe.SourceRecipeID, &recipe.Title, &recipe.Description, &ingredients, &steps, &recipe.Servings, &recipe.PrepTime, &recipe.CookTime, &tags, &recipe.Visibility, &recipe.EditPolicy, &recipe.CreatedAt, &recipe.UpdatedAt); err != nil {
 			rows.Close()
 			writeError(w, 500, "storage_error")
 			return
@@ -201,7 +202,7 @@ func (h apiHandler) importData(w http.ResponseWriter, r *http.Request) {
 		if creator == "" {
 			creator = "Unknown creator"
 		}
-		if _, err := tx.Exec(`INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,edit_policy,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`, id, uid, creator, recipe.Title, recipe.Description, string(ingredients), string(steps), recipe.Servings, recipe.PrepTime, recipe.CookTime, string(tags), "private", "owner_only", timestamp(), timestamp()); err != nil {
+		if _, err := tx.Exec(`INSERT INTO recipes(id,owner_id,creator_name,source_recipe_id,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,edit_policy,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`, id, uid, creator, recipe.SourceRecipeID, recipe.Title, recipe.Description, string(ingredients), string(steps), recipe.Servings, recipe.PrepTime, recipe.CookTime, string(tags), "private", "owner_only", timestamp(), timestamp()); err != nil {
 			writeError(w, 500, "storage_error")
 			return
 		}

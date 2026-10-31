@@ -40,11 +40,6 @@ func (h apiHandler) forkRecipe(w http.ResponseWriter, r *http.Request, recipeID 
 		writeError(w, 500, "storage_error")
 		return
 	}
-	var displayName string
-	if err := h.db.QueryRow(`SELECT display_name FROM users WHERE id=?`, userID).Scan(&displayName); err != nil {
-		writeError(w, 500, "storage_error")
-		return
-	}
 	var input struct {
 		CookbookIDs []string `json:"cookbook_ids"`
 	}
@@ -66,7 +61,7 @@ func (h apiHandler) forkRecipe(w http.ResponseWriter, r *http.Request, recipeID 
 	sourceID := source.ID
 	source.ID = id
 	source.OwnerID = userID
-	source.CreatorName = displayName
+	source.SourceRecipeID = sourceID
 	source.Title = strings.TrimSpace(source.Title) + " (copy)"
 	if len(source.Title) > 200 {
 		source.Title = source.Title[:200]
@@ -90,7 +85,7 @@ func (h apiHandler) forkRecipe(w http.ResponseWriter, r *http.Request, recipeID 
 		return
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,edit_policy,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`, id, userID, displayName, source.Title, source.Description, string(ingredientJSON), string(stepJSON), source.Servings, source.PrepTime, source.CookTime, string(tagJSON), visibilityPrivate, "owner_only", now, now); err != nil {
+	if _, err := tx.Exec(`INSERT INTO recipes(id,owner_id,creator_name,source_recipe_id,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,edit_policy,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`, id, userID, source.CreatorName, sourceID, source.Title, source.Description, string(ingredientJSON), string(stepJSON), source.Servings, source.PrepTime, source.CookTime, string(tagJSON), visibilityPrivate, "owner_only", now, now); err != nil {
 		writeError(w, 500, "storage_error")
 		return
 	}

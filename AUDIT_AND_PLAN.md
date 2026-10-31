@@ -94,6 +94,7 @@ All four provided PNGs were inspected. Reference 02 is the visual north star: wa
 ### M6 — Visual and accessibility polish
 - Refine the app using reference 02; ensure keyboard/focus, contrast, reduced motion, mobile layouts, loading/empty/error states, accessible dialogs and cooking mode.
 - A distraction-reduced cooking view includes touch-sized ingredient checkboxes, one instruction at a time, keyboard step navigation, Escape to close, focus restoration, and live step announcements.
+- App dialogs move keyboard focus inside when opened, keep Tab navigation within the topmost dialog, close on Escape, and return focus to the opener when closed.
 - Acceptance: responsive/accessibility review and frontend checks.
 
 ### M7 — Courses (optional)

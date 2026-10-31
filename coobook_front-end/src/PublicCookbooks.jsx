@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import useModalFocus from './useModalFocus.js';
 
 export default function PublicCookbooks() {
   const [query, setQuery] = useState('');
@@ -98,6 +99,8 @@ export default function PublicCookbooks() {
 }
 
 function PublicCookbookDialog({ book, onClose }) {
+  const dialogRef = useRef(null);
+  useModalFocus(dialogRef, onClose);
   const [query, setQuery] = useState('');
   const [recipes, setRecipes] = useState([]);
   const [offset, setOffset] = useState(0);
@@ -161,7 +164,7 @@ function PublicCookbookDialog({ book, onClose }) {
 
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="signin-dialog public-cookbook-dialog" role="dialog" aria-modal="true" aria-labelledby="public-cookbook-dialog-title">
+      <section ref={dialogRef} tabIndex={-1} className="signin-dialog public-cookbook-dialog" role="dialog" aria-modal="true" aria-labelledby="public-cookbook-dialog-title">
         <button className="icon-button dialog-close" type="button" aria-label="Close cookbook" onClick={onClose}>×</button>
         {selectedRecipe ? <>
           <button className="text-link" type="button" onClick={() => setSelectedRecipe(null)}>Back to {book.title}</button>

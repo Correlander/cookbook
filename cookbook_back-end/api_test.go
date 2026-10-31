@@ -96,6 +96,48 @@ func TestPortableImportRejectsInvalidAndOversizedBundles(t *testing.T) {
 	}
 }
 
+func TestForkCreatesPrivateOwnedCopyAndPreservesAttribution(t *testing.T) {
+	db := testDatabase(t)
+	_, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('forker','forker@example.test','Forker','now'); UPDATE instance_settings SET public_instance=1; INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,edit_policy,version,created_at,updated_at) VALUES('source','owner','Original creator','Pie','Notes','[{"name":"flour"}]','[{"text":"Bake"}]',6,20,40,'["dessert"]','public','owner_only',1,'now','now');`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := apiHandler{db: db}
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, requestForUser(http.MethodPost, "/api/recipes/source/fork", "forker"))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("fork status=%d body=%s", response.Code, response.Body)
+	}
+	var copied recipe
+	if err := json.Unmarshal(response.Body.Bytes(), &copied); err != nil {
+		t.Fatal(err)
+	}
+	if copied.ID == "source" || copied.OwnerID != "forker" || copied.CreatorName != "Forker" || copied.Visibility != visibilityPrivate || copied.EditPolicy != "owner_only" || copied.Title != "Pie (copy)" {
+		t.Fatalf("fork response=%+v", copied)
+	}
+	var creator, visibilityValue, editPolicy string
+	var revisions int
+	if err := db.QueryRow(`SELECT creator_name,visibility,edit_policy FROM recipes WHERE id=?`, copied.ID).Scan(&creator, &visibilityValue, &editPolicy); err != nil || creator != "Forker" || visibilityValue != "private" || editPolicy != "owner_only" {
+		t.Fatalf("stored fork=%s/%s/%s err=%v", creator, visibilityValue, editPolicy, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM recipe_revisions WHERE recipe_id=?`, copied.ID).Scan(&revisions); err != nil || revisions != 1 {
+		t.Fatalf("fork revision count=%d err=%v", revisions, err)
+	}
+}
+
+func TestForkCannotReadPrivateRecipeWithoutAccess(t *testing.T) {
+	db := testDatabase(t)
+	_, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('other','other@example.test','Other','now'); INSERT INTO recipes(id,owner_id,creator_name,title,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at) VALUES('private','owner','Owner','Secret','[]','[]','[]','private','owner_only','now','now')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	apiHandler{db: db}.ServeHTTP(response, requestForUser(http.MethodPost, "/api/recipes/private/fork", "other"))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("private fork status=%d", response.Code)
+	}
+}
+
 func TestAuthStateChangesRequireSameOrigin(t *testing.T) {
 	db := testDatabase(t)
 	h := handlerWithAuth(db, testAuth(db))

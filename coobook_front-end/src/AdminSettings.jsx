@@ -7,6 +7,7 @@ export default function AdminSettings({ onSaved }) {
   const [registrationPolicy, setRegistrationPolicy] = useState('invite_only');
   const [revisionRetention, setRevisionRetention] = useState(365);
   const [auditRetention, setAuditRetention] = useState(365);
+  const [federationEnabled, setFederationEnabled] = useState(false);
   const [confirmPublication, setConfirmPublication] = useState(false);
   const [authorized, setAuthorized] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -32,6 +33,7 @@ export default function AdminSettings({ onSaved }) {
         setRegistrationPolicy(data.registration_policy);
         setRevisionRetention(data.revision_retention_days);
         setAuditRetention(data.audit_retention_days);
+        setFederationEnabled(data.federation_enabled);
         setAuthorized(true);
       })
       .catch((loadError) => {
@@ -55,20 +57,28 @@ export default function AdminSettings({ onSaved }) {
           registration_policy: registrationPolicy,
           revision_retention_days: Number(revisionRetention),
           audit_retention_days: Number(auditRetention),
+          federation_enabled: federationEnabled,
           confirm_publication: confirmPublication,
         }),
       });
-      if (response.status === 409) {
-        throw new Error('Review the existing public content, then confirm before enabling public browsing or courses.');
-      }
-      if (!response.ok) throw new Error('Could not save instance settings.');
       const updated = await response.json();
+      if (!response.ok) {
+        const messages = {
+          reauthentication_required: 'Sign in again before changing administrator settings.',
+          publication_confirmation_required: 'Review the existing public content, then confirm before enabling public browsing or courses.',
+          federation_identity_unavailable: 'The federation signing key is unavailable. Check the persistent key directory and its permissions.',
+          federation_origin_required: 'Set the instance’s stable HTTPS federation origin before enabling federation.',
+          enabled_peer_required: 'Add and enable at least one peer with an approved public key before enabling federation.',
+        };
+        throw new Error(messages[updated?.error] || 'Could not save instance settings.');
+      }
       setSettings(updated);
       setPublicInstance(updated.public_instance);
       setCoursesEnabled(updated.courses_enabled);
       setRegistrationPolicy(updated.registration_policy);
       setRevisionRetention(updated.revision_retention_days);
       setAuditRetention(updated.audit_retention_days);
+      setFederationEnabled(updated.federation_enabled);
       setConfirmPublication(false);
       setNotice('Instance settings saved.');
       onSaved?.(updated);
@@ -158,7 +168,14 @@ export default function AdminSettings({ onSaved }) {
             <small>Courses are separate multi-lesson learning content. When disabled, course pages are hidden and course API routes are unavailable.</small>
           </span>
         </label>
-        <p className="admin-settings-note">Federation remains disabled and has no active routes.</p>
+        <label className="admin-settings-option" htmlFor="federation-enabled">
+          <input id="federation-enabled" type="checkbox" checked={federationEnabled} onChange={(event) => setFederationEnabled(event.target.checked)} />
+          <span>
+            <strong>Enable recipe federation</strong>
+            <small>Exchange public recipe snapshots with peers you approve. A stable HTTPS origin and at least one enabled peer key are required. Private and unlisted recipes are never sent.</small>
+          </span>
+        </label>
+        <p className="admin-settings-note">Configured origin: {settings.federation_origin || 'not configured'}. Federation is {settings.federation_enabled ? 'enabled' : 'disabled'}.</p>
         <button className="button button--green" type="submit" disabled={saving || (needsPublicationReview && !confirmPublication)}>
           {saving ? 'Saving…' : 'Save instance settings'}
         </button>

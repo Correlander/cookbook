@@ -1,6 +1,6 @@
 # Federation protocol comparison and threat model
 
-Status: research and design only. No federation endpoints, peer calls, or background delivery are enabled or implemented. Federation remains off by default. The proposed version 1 wire and delivery profile is in [FEDERATION_PROTOCOL.md](FEDERATION_PROTOCOL.md); its design does not authorize enabling federation before the remaining gates pass.
+Status: the research and threat model informed the version 1 federation implementation in [FEDERATION_PROTOCOL.md](FEDERATION_PROTOCOL.md). Federation is implemented but remains off by default and requires explicit administrator setup on each instance.
 
 Research checked 2026-10-31 against the linked primary specifications.
 
@@ -55,15 +55,8 @@ The initial exchange profile should have these boundaries:
 | Peer is unavailable or slow | Keep delivery asynchronous, bounded, retry with capped backoff, and isolate each peer. A failed peer must not delay local recipe saves or block other peers. Test timeouts, repeated failures, queue restart, and recovery. |
 | Attribution or revisions are lost or overwritten | Preserve source instance and creator attribution; store remote copies separately from local ownership and local revision history. Never let an incoming event change a local recipe. Test attribution across update, delete, and restore/import paths. |
 
-## Gate before any implementation
+## Verification and operations
 
-Do not implement federation until all of these are true:
+The implementation persists and locks the canonical HTTPS origin, derives stable object IDs, serializes public allowlisted events, verifies signed inbox requests, validates events strictly, stores remote copies and replay-safe receipts atomically, and queues local public recipe changes transactionally. Administrator peer/key/identity/outbox APIs and controls, owner-only PKCS#8 Ed25519 signing keys with staged rotation, retry and discard operations, and public remote recipe reads are implemented. Outbound delivery pins validated public DNS answers while preserving TLS hostname verification, disables proxies and redirects, and bounds timeouts and acknowledgement reads.
 
-1. Public origin and stable globally addressable IDs are configured and migration-tested.
-2. The local public/private/unlisted and deletion policies have explicit tests covering serialized output.
-3. A durable queue, bounded worker model, peer key lifecycle, and SSRF/egress policy are designed.
-4. The exact event schema, ordering, replay window, duplicate behavior, and tombstone retention are versioned in [FEDERATION_PROTOCOL.md](FEDERATION_PROTOCOL.md).
-5. Two local test instances can exercise publish, update, duplicate, replay, offline retry, unpublish, revocation, and deletion without enabling federation in normal installations.
-6. Federation remains disabled by default, and operators must explicitly enable it and configure each peer.
-
-The code now validates and persists an optional canonical HTTPS federation origin, locks it when the federation flag is enabled, migrates older settings rows, and derives recipe object IDs from the existing stable recipe IDs. Those paths have migration/restart tests. No public origin is configured for this checkout, so the deployment-specific portion of gate 1 remains open. A pure public-event serializer and tests now enforce explicit fields and reject private, unlisted, deleted, or disabled-instance snapshots; source-to-queue integration remains future work. Gate 3's queue, key lifecycle, and SSRF controls have a proposed design, but none are implemented. Two-instance verification (gate 5) remains open.
+Coverage includes signature/digest validation, replay and key revocation, strict JSON and sequence/deduplication, queue transactions and retry recovery, peer egress address filtering, redirects, DNS revalidation, and independent sender/receiver databases exchanging publish, update, duplicate, unpublish, republish, and deletion events. The in-process transport keeps those scenarios deterministic; a live public-network and TLS deployment rehearsal remains an operator-level check because each instance must have its own HTTPS origin and certificates. Federation stays disabled by default, and operators must explicitly enable it and configure each peer.

@@ -55,6 +55,9 @@ func purgeExpiredHistory(db *sql.DB) error {
 
 func startTrashCleanup(db *sql.DB, retentionDays int, mediaDir string) {
 	cleanup := func() {
+		if err := purgeExpiredAuthState(db, time.Now()); err != nil {
+			log.Printf("authentication state cleanup failed: %v", err)
+		}
 		if err := purgeExpiredTrash(db, retentionDays); err != nil {
 			log.Printf("trash retention cleanup failed: %v", err)
 		}

@@ -104,6 +104,54 @@ func TestAuditRetentionIsSeparateAndBounded(t *testing.T) {
 	}
 }
 
+func TestExpiredAuthenticationStateIsPurgedInBoundedBatches(t *testing.T) {
+	db := testDatabase(t)
+	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	old := now.Add(-48 * time.Hour).Format(time.RFC3339Nano)
+	recent := now.Add(-30 * time.Minute).Format(time.RFC3339Nano)
+	future := now.Add(time.Hour).Format(time.RFC3339Nano)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner',?)`, old); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < authCleanupBatchSize+1; index++ {
+		if _, err := db.Exec(`INSERT INTO email_challenges(id,email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)`, fmt.Sprintf("expired-%03d", index), "owner@example.test", fmt.Sprintf("hash-%03d", index), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO email_challenges(id,email,token_hash,expires_at,created_at) VALUES('recent','owner@example.test','recent-hash',?,?)`, old, recent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO email_challenges(id,email,token_hash,expires_at,created_at) VALUES('valid','owner@example.test','valid-hash',?,?)`, future, recent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO webauthn_ceremonies(id,purpose,session_data,expires_at,created_at) VALUES('expired','login','{}',?,?),('valid','login','{}',?,?)`, old, old, future, recent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES('expired','owner',?,?),('valid','owner',?,?)`, old, old, future, recent); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := purgeExpiredAuthState(db, now); err != nil {
+		t.Fatal(err)
+	}
+	var challengeCount, ceremonyCount, sessionCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM email_challenges`).Scan(&challengeCount); err != nil || challengeCount != 3 {
+		t.Fatalf("first batch challenge count=%d err=%v; want one old and two recent rows", challengeCount, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM webauthn_ceremonies`).Scan(&ceremonyCount); err != nil || ceremonyCount != 1 {
+		t.Fatalf("ceremony count=%d err=%v; want one unexpired row", ceremonyCount, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&sessionCount); err != nil || sessionCount != 1 {
+		t.Fatalf("session count=%d err=%v; want one unexpired row", sessionCount, err)
+	}
+	if err := purgeExpiredAuthState(db, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM email_challenges`).Scan(&challengeCount); err != nil || challengeCount != 2 {
+		t.Fatalf("second batch challenge count=%d err=%v; recent-hour rows must remain for quota checks", challengeCount, err)
+	}
+}
+
 func insertTestRevision(db *sql.DB, id, recipeID string, version int, createdAt string) error {
 	_, err := db.Exec(`INSERT INTO recipe_revisions(id,recipe_id,version,editor_id,title,description,ingredients_json,steps_json,visibility,created_at) VALUES(?,?,?,'owner','Test','','[]','[]','private',?)`, id, recipeID, version, createdAt)
 	return err

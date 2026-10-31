@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS email_challenges (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_email_challenges_email_created ON email_challenges(email, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_email_challenges_created ON email_challenges(created_at, id);
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at, token_hash);
 CREATE TABLE IF NOT EXISTS webauthn_credentials (
   credential_id BLOB PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

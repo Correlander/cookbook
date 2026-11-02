@@ -55,6 +55,49 @@ test('email sign-in remains explicit, establishes a session, and rejects replay'
   expect((await page.request.get('/api/auth/me')).status()).toBe(401)
   await page.getByRole('button', { name: /continue to cookbook/i }).click()
   await expect.poll(async () => (await page.request.get('/api/auth/me')).status()).toBe(200)
+
+  const createRecipe = await page.evaluate(async () => {
+    const response = await fetch('/api/recipes', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: 'Browser private recipe', description: 'Created by Playwright', servings: 2,
+        prep_time_minutes: 10, cook_time_minutes: 20, tags: [], visibility: 'private',
+        ingredients: [{ name: 'Flour', quantity: '1 cup', notes: '' }], steps: [{ text: 'Mix' }],
+      }),
+    })
+    return { status: response.status, body: await response.json() }
+  })
+  expect(createRecipe.status).toBe(201)
+  expect(createRecipe.body.visibility).toBe('private')
+  const recipeID = createRecipe.body.id as string
+  const update = await page.evaluate(async ({ recipeID }) => {
+    const response = await fetch(`/api/recipes/${recipeID}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: 'Browser private recipe updated', description: 'Updated', servings: 2,
+        prep_time_minutes: 10, cook_time_minutes: 20, tags: [], visibility: 'private', version: 1,
+        ingredients: [{ name: 'Flour', quantity: '1 cup', notes: '' }], steps: [{ text: 'Mix well' }],
+      }),
+    })
+    return { status: response.status, body: await response.json() }
+  }, { recipeID })
+  expect(update.status).toBe(200)
+  expect(update.body.version).toBe(2)
+  const revisions = await page.request.get(`/api/recipes/${recipeID}/revisions`)
+  expect(revisions.status()).toBe(200)
+  expect((await revisions.json()).length).toBeGreaterThanOrEqual(2)
+  const stale = await page.evaluate(async ({ recipeID }) => fetch(`/api/recipes/${recipeID}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: 'Stale overwrite', visibility: 'private', version: 1 }),
+  }).then((response) => response.status), { recipeID })
+  expect(stale).toBe(409)
+  const restore = await page.request.post(`/api/recipes/${recipeID}/revisions/1/restore`, { data: { expected_version: 2 } })
+  expect(restore.status()).toBe(200)
+  expect((await restore.json()).version).toBe(3)
+  const anonymous = await page.context().browser()!.newContext()
+  try { expect((await anonymous.request.get(`${origin}/api/recipes/${recipeID}`)).status()).toBe(401) }
+  finally { await anonymous.close() }
+
   const token = new URL(payload!.sign_in_url).searchParams.get('token')
   expect(token).toBeTruthy()
   await page.request.post('/api/auth/logout', { headers: { Origin: origin } })

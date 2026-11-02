@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test'
+import { resolve } from 'node:path'
 
 export default defineConfig({
   testDir: '.',
@@ -6,7 +7,7 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: 0,
-  reporter: './e2e/safe-reporter.ts',
+  reporter: resolve(process.cwd(), 'e2e/safe-reporter.ts'),
   outputDir: process.env.PLAYWRIGHT_OUTPUT_DIR ?? '/tmp/cookbook-playwright-output',
   use: {
     baseURL: process.env.PLAYWRIGHT_BASE_URL ?? 'http://127.0.0.1:4178',

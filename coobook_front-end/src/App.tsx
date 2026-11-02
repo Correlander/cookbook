@@ -629,6 +629,16 @@ export default function App() {
     [featureVersion, setFeatureVersion] = useState(0);
   const feed = useRecipeFeed({ signedIn, query });
   const emailDialogRef = useRef<HTMLElement>(null);
+  function handleSignedOut() {
+    setSignedIn(false);
+    setCurrentUser(null);
+    setCreateOpen(false);
+    setEditRecipe(null);
+    setSelected(null);
+    setSelectedRemote(null);
+    setEmailOpen(false);
+    setPasskeyPrompt(false);
+  }
   useModalFocus(emailDialogRef, () => setEmailOpen(false), emailOpen);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -1020,11 +1030,7 @@ export default function App() {
             setCreateOpen(false);
             setEditRecipe(null);
           }}
-          onSignedOut={() => {
-            setSignedIn(false);
-            setCreateOpen(false);
-            setCurrentUser(null);
-          }}
+          onSignedOut={handleSignedOut}
           onCreated={(recipe) => {
             feed.addRecipe(recipe);
             setCreateOpen(false);

@@ -81,8 +81,11 @@ const headers = [
   '/*',
   '  X-Content-Type-Options: nosniff',
   '  Referrer-Policy: no-referrer',
-  '/**/*.html',
-  '  Cache-Control: no-store',
+  ...records.flatMap(({ route, file }) => {
+    const htmlPath = `/${file}`
+    const aliases = route === '/' ? ['/', htmlPath] : [route, htmlPath]
+    return [...new Set(aliases)].flatMap((path) => [path, '  Cache-Control: no-store'])
+  }),
   '/_astro/*',
   '  Cache-Control: public, max-age=31536000, immutable',
   '',
@@ -93,5 +96,7 @@ const caddy = records.map(({ route, file, policy }, index) => {
   const paths = file === 'auth/confirm.html' ? `${route} /${file}` : route
   return `@document${index} path ${paths}\nheader @document${index} Content-Security-Policy "${policy}"`
 }).join('\n\n') + '\n'
-await writeFile(join(dist, 'static-csp.caddy'), caddy)
+const htmlPaths = [...new Set(records.flatMap(({ route, file }) => route === '/' ? ['/', `/${file}`] : [route, `/${file}`]))]
+const cacheCaddy = `@html path ${htmlPaths.join(' ')}\nheader @html Cache-Control "no-store"\n`
+await writeFile(join(dist, 'static-csp.caddy'), `${caddy}\n${cacheCaddy}`)
 console.log(`Generated static headers for ${records.length} HTML pages in ${relative(process.cwd(), dist).split(sep).join('/')}`)

@@ -54,7 +54,7 @@ const server = createServer(async (request, response) => {
     response.end(error?.code === 'ENOENT' ? 'not found' : 'static host error')
   }
 })
-server.listen(port, '127.0.0.1')
+server.listen(port, 'localhost')
 const stop = () => server.close(() => process.exit(0))
 process.on('SIGTERM', stop)
 process.on('SIGINT', stop)

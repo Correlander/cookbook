@@ -54,7 +54,7 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
     })
     let hostError = ''
     child.stderr.setEncoding('utf8').on('data', (chunk) => { hostError += chunk })
-    const base = `http://127.0.0.1:${staticPort}`
+    const base = `http://localhost:${staticPort}`
     let ready = false
     for (let attempt = 0; attempt < 50; attempt++) {
       try { if ((await fetch(`${base}/healthz`)).ok) { ready = true; break } } catch { /* Wait for the private local host to start. */ }
@@ -71,7 +71,7 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
     assert.equal(apiResponse.headers.get('content-security-policy'), "default-src 'self'; script-src 'self'")
     assert.equal(apiResponse.headers.get('cache-control'), 'no-store')
     assert.match(apiResponse.headers.get('set-cookie'), /session=private/)
-    assert.equal(apiResponse.headers.get('x-forwarded-check'), `127.0.0.1:${staticPort}|${origin}|/api/probe?invite=opaque-test-value|{"probe":true}`)
+    assert.equal(apiResponse.headers.get('x-forwarded-check'), `localhost:${staticPort}|${origin}|/api/probe?invite=opaque-test-value|{"probe":true}`)
     const missing = await fetch(`${base}/api/missing`)
     assert.notEqual(missing.headers.get('content-type'), 'text/html')
   } finally {

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { cp, mkdtemp, mkdir, rm, writeFile, chmod } from 'node:fs/promises'
+import { cp, lstat, mkdtemp, mkdir, readdir, rm, writeFile, chmod } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createServer } from 'node:net'
@@ -20,6 +20,20 @@ await writeFile(emailCommand, `#!/bin/sh\ncat > '${capture}'\nchmod 600 '${captu
 const children = []
 let shutdownPromise
 
+async function makeWritableTree(path) {
+  const entries = await readdir(path, { withFileTypes: true }).catch(() => [])
+  for (const entry of entries) {
+    const child = join(path, entry.name)
+    if (entry.isDirectory()) {
+      await chmod(child, 0o700).catch(() => {})
+      await makeWritableTree(child)
+    } else if (entry.isFile()) {
+      const mode = (await lstat(child)).mode & 0o777
+      await chmod(child, mode | 0o200).catch(() => {})
+    }
+  }
+}
+
 function start(command, args, options) {
   const child = spawn(command, args, { stdio: ['ignore', 'inherit', 'inherit'], detached: process.platform !== 'win32', ...options })
   children.push(child)
@@ -38,6 +52,8 @@ function stopAll() {
         await waitForExit(child)
       }
     }
+    await makeWritableTree(runDir)
+    await chmod(runDir, 0o700).catch(() => {})
     await rm(runDir, { recursive: true, force: true })
   })()
   return shutdownPromise
@@ -59,7 +75,7 @@ async function run(command, args, options = {}) {
 try {
   const apiPort = await freePort()
   const staticPort = await freePort()
-  const baseURL = `http://127.0.0.1:${staticPort}`
+  const baseURL = `http://localhost:${staticPort}`
   const env = {
     ...process.env,
     ASTRO_TELEMETRY_DISABLED: '1',
@@ -80,12 +96,17 @@ try {
   const retainedBrowserCache = resolve(root, '..', 'engineering-local/tools/playwright/browsers')
   if (!env.PLAYWRIGHT_BROWSERS_PATH && existsSync(retainedBrowserCache)) env.PLAYWRIGHT_BROWSERS_PATH = retainedBrowserCache
   await mkdir(env.COOKBOOK_MEDIA_DIR, { recursive: true, mode: 0o700 })
-  await run('npm', ['run', 'build'], { cwd: frontend, env })
+  if (process.env.E2E_SKIP_BUILD !== '1') await run('npm', ['run', 'build'], { cwd: frontend, env })
   await cp(join(frontend, 'dist'), env.PLAYWRIGHT_DIST, { recursive: true, errorOnExist: true })
   const apiBinary = join(runDir, 'cookbook-api')
   await run('go', ['build', '-mod=mod', '-o', apiBinary, '.'], {
     cwd: join(root, 'cookbook_back-end'),
-    env: { ...env, GOCACHE: join(runDir, 'go-cache'), GOMODCACHE: join(runDir, 'go-mod-cache'), GOPATH: join(runDir, 'go-path') },
+    env: {
+      ...env,
+      GOCACHE: process.env.GOCACHE ?? join(runDir, 'go-cache'),
+      GOMODCACHE: process.env.GOMODCACHE ?? join(runDir, 'go-mod-cache'),
+      GOPATH: process.env.GOPATH ?? join(runDir, 'go-path'),
+    },
   })
   const api = start(apiBinary, [], { cwd: runDir, env })
   const staticHost = start(process.execPath, [join(frontend, 'scripts/static-host.mjs')], {
@@ -100,7 +121,7 @@ try {
     }
     if (!ready) throw new Error(`service did not become ready: ${new URL(url).pathname}`)
   }
-  await run(join(frontend, 'node_modules/.bin/playwright'), ['test', '--config=e2e/playwright.config.ts'], { cwd: frontend, env })
+  await run(join(frontend, 'node_modules/.bin/playwright'), ['test', '--config=e2e/playwright.config.ts', ...process.argv.slice(2)], { cwd: frontend, env })
 } finally {
   await stopAll()
 }

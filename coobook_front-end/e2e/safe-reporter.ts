@@ -8,7 +8,8 @@ class SafeReporter implements Reporter {
   onTestEnd(test: TestCase, result: TestResult): void {
     const label = result.status === 'passed' ? 'PASS' : result.status === 'skipped' ? 'SKIP' : 'FAIL'
     console.log(`${label} ${redact(test.title)}`)
-    if (result.status === 'failed') console.error(redact(result.errors.map((error) => error.message ?? '').join('\n')))
+    for (const annotation of test.annotations.filter(({ type }) => type === 'metric')) console.log(`METRIC ${redact(annotation.description ?? '')}`)
+    if (result.status !== 'passed' && result.status !== 'skipped') console.error(redact(result.errors.map((error) => error.message ?? '').join('\n')))
   }
   onEnd(result: { status: string }): void { console.log(`Playwright result: ${result.status}`) }
 }

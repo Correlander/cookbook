@@ -11,6 +11,10 @@ test('serves built Astro root with its generated CSP and static metadata', async
   await expect(page.locator('a.skip-link')).toHaveAttribute('href', '#home')
   const policies = JSON.parse(await readFile(`${process.env.PLAYWRIGHT_DIST}/static-csp.json`, 'utf8')) as Array<{ route: string; policy: string }>
   expect(response?.headers()['content-security-policy']).toBe(policies.find((policy) => policy.route === '/')?.policy)
+  const loadedJavaScriptBytes = await page.evaluate(() => performance.getEntriesByType('resource')
+    .filter((entry) => /\/_astro\/.*\.js(?:\?|$)/.test(entry.name))
+    .reduce((sum, entry) => sum + (entry as PerformanceResourceTiming).decodedBodySize, 0))
+  test.info().annotations.push({ type: 'metric', description: `anonymous decoded JavaScript resource bytes: ${loadedJavaScriptBytes}` })
   await page.waitForTimeout(250)
   expect(violations).toEqual([])
 })
@@ -34,6 +38,46 @@ test('preserves invite query on the static root without caching the token URL', 
 
 test('email sign-in remains explicit, establishes a session, and rejects replay', async ({ page, request }) => {
   const origin = process.env.PLAYWRIGHT_BASE_URL ?? 'http://127.0.0.1:4178'
+  const cdp = await page.context().newCDPSession(page)
+  await cdp.send('WebAuthn.enable')
+  const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', {
+    options: {
+      protocol: 'ctap2', transport: 'internal', hasResidentKey: true,
+      hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true,
+    },
+  })
+  await cdp.send('WebAuthn.setAutomaticPresenceSimulation', { authenticatorId, enabled: true })
+  await cdp.send('WebAuthn.setUserVerified', { authenticatorId, isUserVerified: true })
+  await page.addInitScript(() => {
+    const state = { create: 'not-called', options: null as unknown, result: null as unknown }
+    ;(window as Window & { __passkeyDiagnostic?: typeof state }).__passkeyDiagnostic = state
+    const original = navigator.credentials.create.bind(navigator.credentials)
+    navigator.credentials.create = async (options) => {
+      const publicKey = options?.publicKey
+      state.create = 'started'
+      state.options = publicKey ? {
+        keys: Object.keys(publicKey),
+        rpId: publicKey.rp?.id ?? location.hostname,
+        authenticatorSelection: publicKey.authenticatorSelection ? {
+          ...publicKey.authenticatorSelection,
+        } : null,
+      } : { keys: Object.keys(options ?? {}) }
+      try {
+        const result = await original(options)
+        state.create = 'resolved'
+        state.result = result ? {
+          type: result.type,
+          idPresent: Boolean(result.id),
+          responseType: result instanceof PublicKeyCredential ? result.response.constructor.name : null,
+        } : null
+        return result
+      } catch (error) {
+        state.create = 'rejected'
+        state.result = { name: error instanceof DOMException ? error.name : 'Error' }
+        throw error
+      }
+    }
+  })
   const response = await request.post('/api/auth/email', {
     headers: { Origin: origin },
     data: { email: 'cook@example.test', display_name: 'Browser Cook' },
@@ -56,53 +100,104 @@ test('email sign-in remains explicit, establishes a session, and rejects replay'
   await page.getByRole('button', { name: /continue to cookbook/i }).click()
   await expect.poll(async () => (await page.request.get('/api/auth/me')).status()).toBe(200)
 
-  const createRecipe = await page.evaluate(async () => {
-    const response = await fetch('/api/recipes', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title: 'Browser private recipe', description: 'Created by Playwright', servings: 2,
-        prep_time_minutes: 10, cook_time_minutes: 20, tags: [], visibility: 'private',
-        ingredients: [{ name: 'Flour', quantity: '1 cup', notes: '' }], steps: [{ text: 'Mix' }],
-      }),
-    })
-    return { status: response.status, body: await response.json() }
+  const passkeyDialog = page.getByRole('dialog', { name: 'Add a passkey?' })
+  const passkeyRequests: Array<{ path: string; status?: number }> = []
+  page.on('request', (request) => {
+    const url = new URL(request.url())
+    if (/^\/api\/auth\/passkey\/(register|login)\/(begin|finish)$/.test(url.pathname)) passkeyRequests.push({ path: url.pathname })
   })
-  expect(createRecipe.status).toBe(201)
-  expect(createRecipe.body.visibility).toBe('private')
-  const recipeID = createRecipe.body.id as string
-  const update = await page.evaluate(async ({ recipeID }) => {
-    const response = await fetch(`/api/recipes/${recipeID}`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title: 'Browser private recipe updated', description: 'Updated', servings: 2,
-        prep_time_minutes: 10, cook_time_minutes: 20, tags: [], visibility: 'private', version: 1,
-        ingredients: [{ name: 'Flour', quantity: '1 cup', notes: '' }], steps: [{ text: 'Mix well' }],
-      }),
-    })
-    return { status: response.status, body: await response.json() }
-  }, { recipeID })
-  expect(update.status).toBe(200)
-  expect(update.body.version).toBe(2)
-  const revisions = await page.request.get(`/api/recipes/${recipeID}/revisions`)
-  expect(revisions.status()).toBe(200)
-  expect((await revisions.json()).length).toBeGreaterThanOrEqual(2)
+  page.on('response', (response) => {
+    const url = new URL(response.url())
+    if (/^\/api\/auth\/passkey\/(register|login)\/(begin|finish)$/.test(url.pathname)) {
+      const found = [...passkeyRequests].reverse().find((item) => item.path === url.pathname && item.status === undefined)
+      if (found) found.status = response.status()
+    }
+  })
+  await page.getByRole('button', { name: 'Create passkey' }).click()
+  try {
+    await expect.poll(() => passkeyRequests.find((item) => item.path === '/api/auth/passkey/register/begin')?.status ?? 0, { timeout: 12_000 }).toBeGreaterThan(0)
+  } catch {
+    const diagnostic = await page.evaluate(() => ({
+      passkey: (window as Window & { __passkeyDiagnostic?: unknown }).__passkeyDiagnostic,
+      submit: (() => {
+        const form = document.querySelector('[role="dialog"] form')
+        const input = form?.querySelector('input')
+        return { valid: form instanceof HTMLFormElement ? form.checkValidity() : null, inputRequired: input?.required ?? null, inputValuePresent: Boolean(input?.value) }
+      })(),
+    }))
+    throw new Error(`passkey registration did not begin: ${JSON.stringify({ requests: passkeyRequests, diagnostic })}`)
+  }
+  const beginResponse = passkeyRequests.find((item) => item.path === '/api/auth/passkey/register/begin')
+  if (!beginResponse || beginResponse.status !== 200) throw new Error(`passkey register begin failed: ${JSON.stringify({ requests: passkeyRequests, webauthn: await page.evaluate(() => (window as Window & { __passkeyDiagnostic?: unknown }).__passkeyDiagnostic) })}`)
+  expect(beginResponse.status, 'passkey registration ceremony begins').toBe(200)
+  await expect.poll(async () => (await passkeyDialog.isHidden()) || Boolean(await passkeyDialog.getByRole('alert').textContent()), { timeout: 15_000 }).toBe(true)
+  if (await passkeyDialog.isVisible()) {
+    const message = await passkeyDialog.getByRole('alert').textContent()
+    const webauthn = await page.evaluate(() => (window as Window & { __passkeyDiagnostic?: unknown }).__passkeyDiagnostic)
+    throw new Error(`virtual passkey registration failed: ${JSON.stringify({ message, requests: passkeyRequests, webauthn })}`)
+  }
+  await expect.poll(() => passkeyRequests.find((item) => item.path === '/api/auth/passkey/register/finish')?.status ?? 0).toBe(201)
+  await page.getByRole('button', { name: 'Add a recipe', exact: true }).first().click()
+  const form = page.getByRole('dialog', { name: 'Add a recipe' })
+  await form.getByLabel('Title').fill('Browser private recipe')
+  await form.getByLabel('Description').fill('Created by the browser journey')
+  await form.getByLabel(/Ingredients/).fill('Flour | 1 cup | sifted')
+  await form.locator('textarea[id^="recipe-step-"]').first().fill('Mix')
+  await form.getByRole('button', { name: 'Save private recipe' }).click()
+  await expect(form).toBeHidden()
+  const recipeCard = page.getByRole('button', { name: 'Open Browser private recipe' })
+  await expect(recipeCard).toBeVisible()
+  await recipeCard.click()
+  await page.getByRole('button', { name: 'Edit recipe' }).click()
+  const edit = page.getByRole('dialog', { name: 'Edit recipe' })
+  await edit.getByLabel('Title').fill('Browser private recipe updated')
+  await edit.locator('textarea[id^="recipe-step-"]').first().fill('Mix well')
+  await edit.getByRole('button', { name: 'Save changes' }).click()
+  await expect(edit).toBeHidden()
+  await page.getByRole('button', { name: 'Open Browser private recipe updated' }).click()
+  await page.getByRole('button', { name: 'Version history' }).click()
+  const history = page.getByLabel('Recipe version history')
+  await expect(history.getByText(/Version 1: Browser private recipe/)).toBeVisible()
+  await expect(history.getByText(/Version 2: Browser private recipe updated/)).toBeVisible()
+  page.once('dialog', (dialog) => dialog.accept())
+  await history.getByRole('button', { name: 'Restore' }).click()
+  await expect(page.getByRole('heading', { name: 'Browser private recipe' })).toBeVisible()
+  const recipes = await page.request.get('/api/recipes')
+  const currentRecipes = await recipes.json()
+  const privateRecipe = currentRecipes.find((recipe: { title: string }) => recipe.title === 'Browser private recipe')
+  expect(privateRecipe?.visibility).toBe('private')
+  const recipeID = privateRecipe.id as string
   const stale = await page.evaluate(async ({ recipeID }) => fetch(`/api/recipes/${recipeID}`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title: 'Stale overwrite', visibility: 'private', version: 1 }),
+    body: JSON.stringify({
+      title: 'Stale overwrite', description: 'stale', servings: 2, prep_time_minutes: 10,
+      cook_time_minutes: 20, tags: [], visibility: 'private', version: 2,
+      ingredients: [{ name: 'Flour', quantity: '1 cup', notes: '' }], steps: [{ text: 'Mix' }],
+    }),
   }).then((response) => response.status), { recipeID })
-  expect(stale).toBe(409)
-  const restore = await page.request.post(`/api/recipes/${recipeID}/revisions/1/restore`, { data: { expected_version: 2 } })
-  expect(restore.status()).toBe(200)
-  expect((await restore.json()).version).toBe(3)
+  expect(stale, 'stale recipe update is rejected').toBe(409)
   const anonymous = await page.context().browser()!.newContext()
-  try { expect((await anonymous.request.get(`${origin}/api/recipes/${recipeID}`)).status()).toBe(401) }
+  try { expect((await anonymous.request.get(`${origin}/api/recipes/${recipeID}`)).status(), 'private recipe requires an authenticated session').toBe(401) }
   finally { await anonymous.close() }
+
+  await page.getByRole('button', { name: 'Edit recipe' }).click()
+  await page.getByRole('button', { name: 'Sign out' }).click()
+  await expect.poll(async () => (await page.request.get('/api/auth/me')).status()).toBe(401)
+  const editDialog = page.getByRole('dialog', { name: 'Edit recipe' })
+  await expect(editDialog, 'signing out closes the auth-bound editor').toBeHidden()
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+  await page.getByRole('button', { name: 'Sign in with a passkey' }).click()
+  await expect.poll(() => passkeyRequests.find((item) => item.path === '/api/auth/passkey/login/finish')?.status ?? 0).toBe(200)
+  await expect.poll(async () => (await page.request.get('/api/auth/me')).status()).toBe(200)
+  await cdp.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId })
+  await cdp.send('WebAuthn.disable')
 
   const token = new URL(payload!.sign_in_url).searchParams.get('token')
   expect(token).toBeTruthy()
   await page.request.post('/api/auth/logout', { headers: { Origin: origin } })
   const replay = await page.request.post('/api/auth/consume', { headers: { Origin: origin }, data: { token } })
-  expect(replay.status()).toBe(401)
+  expect(replay.status()).toBe(400)
+  expect((await replay.json()).error).toBe('invalid_or_expired_token')
 })
 
 test('proxies health and API misses without static-index fallback', async ({ request }) => {

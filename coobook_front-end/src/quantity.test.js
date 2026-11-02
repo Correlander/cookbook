@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { scaleQuantity } from './quantity.js'
+import { scaleQuantity } from './quantity.ts'
 
 test('scales integer, decimal, fraction, and mixed-fraction amounts', () => {
   assert.equal(scaleQuantity('2 cups', 1.5), '3 cups')

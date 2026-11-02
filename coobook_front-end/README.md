@@ -1,16 +1,32 @@
-# React + Vite
+# Cookbook frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+The frontend builds to static HTML with Astro. React remains available for interactive features; ASTRO-01 keeps the existing application in a browser-only island while the Astro document shell, metadata, static fallbacks, root route, and email-confirmation route are introduced. No Astro server adapter or runtime is included.
 
-Currently, two official plugins are available:
+## Requirements
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- Node.js `22.23.4` or newer (see `.nvmrc`)
+- npm
 
-## React Compiler
+## Development
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Run the Go API from `cookbook_back-end` on `127.0.0.1:8000`, then start the frontend:
 
-## Expanding the ESLint configuration
+```sh
+npm ci
+npm run dev
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Astro serves the UI at `http://localhost:4321` and proxies `/api/*` requests to the Go service.
+
+## Checks and production output
+
+```sh
+npm test
+npm run lint
+npm run build
+npm audit
+```
+
+`npm run build` runs Astro type checks and creates static output in `dist/`. With Astro's `file` format, the confirmation page is generated as `dist/auth/confirm.html`; the later static-host deployment must resolve `/auth/confirm?token=...` to this file without dropping the query. The Go API remains independent.
+
+Existing `.jsx` application modules remain a documented ASTRO-01 transition and are scheduled for conversion in ASTRO-02. They are not covered by Astro's TypeScript checks; new TypeScript and Astro files use the strict Astro TypeScript preset.

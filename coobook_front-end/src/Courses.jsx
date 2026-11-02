@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import useModalFocus from './useModalFocus.js'
-import { moveStep } from './steps.js'
+import { moveStep } from './steps.ts'
 
 export default function Courses({ onOpenRecipe }) {
   const [courses, setCourses] = useState([])

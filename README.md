@@ -6,11 +6,11 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the data model, access-control rules,
 
 ## Local development
 
-Requirements: Go 1.24+, Node.js 20.19+, and npm.
+Requirements: Go 1.24+, Node.js 22.23.4+, and npm.
 
 1. Copy `cookbook_back-end/.env.example` to `cookbook_back-end/.env` and configure the public URL and mail delivery. The Go service reads environment variables directly; load the file with your shell or preferred environment loader.
 2. Run the API from `cookbook_back-end` with `go run .` (defaults to `127.0.0.1:8000`). It initializes the SQLite schema. Its embedded frontend is a placeholder during local development; the Vite server is the development UI.
-3. In a second terminal, run `npm ci && npm run dev` from `coobook_front-end`. Vite serves the development UI at `http://localhost:5173` and proxies API requests to the Go service.
+3. In a second terminal, run `npm ci && npm run dev` from `coobook_front-end`. Astro serves the development UI at `http://localhost:4321` and proxies API requests to the Go service.
 
 Run backend checks with `go test ./...` and `go vet ./...` from `cookbook_back-end`. Run frontend checks with `npm test`, `npm run lint`, and `npm run build` from `coobook_front-end`.
 

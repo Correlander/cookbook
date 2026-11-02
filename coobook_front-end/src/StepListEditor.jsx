@@ -1,4 +1,4 @@
-import { createStep, moveStep } from './steps.js'
+import { createStep, moveStep } from './steps.ts'
 
 export default function StepListEditor({ steps, onChange }) {
   function updateStep(id, text) {

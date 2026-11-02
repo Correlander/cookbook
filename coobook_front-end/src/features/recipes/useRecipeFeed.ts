@@ -1,8 +1,28 @@
 import { useEffect, useRef, useState } from 'react'
-import { fetchRecipePage, RECIPE_PAGE_SIZE } from './recipeFeedApi.js'
+import { fetchRecipePage, RECIPE_PAGE_SIZE } from './recipeFeedApi.ts'
+import type { RecipeFeedEntry } from './recipeFeedApi.ts'
 
-export default function useRecipeFeed({ signedIn, query }) {
-  const [items, setItems] = useState([])
+export interface RecipeFeedOptions {
+  signedIn: boolean
+  query: string
+}
+
+export interface RecipeFeed {
+  items: RecipeFeedEntry[]
+  loading: boolean
+  loadingMore: boolean
+  loadError: boolean
+  loadMoreError: string
+  hasMore: boolean
+  loadMore: () => Promise<void>
+  addRecipe: (recipe: RecipeFeedEntry) => void
+  replaceRecipe: (recipe: RecipeFeedEntry) => void
+  removeRecipe: (id: string) => void
+  restoreRecipe: (recipe: RecipeFeedEntry) => void
+}
+
+export default function useRecipeFeed({ signedIn, query }: RecipeFeedOptions): RecipeFeed {
+  const [items, setItems] = useState<RecipeFeedEntry[]>([])
   const [loadedCount, setLoadedCount] = useState(0)
   const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -41,7 +61,7 @@ export default function useRecipeFeed({ signedIn, query }) {
     return () => { active = false }
   }, [signedIn, query])
 
-  async function loadMore() {
+  async function loadMore(): Promise<void> {
     if (loadingMore) return
     const requestedListKey = listKey
     const requestGeneration = requestGenerationRef.current
@@ -58,26 +78,26 @@ export default function useRecipeFeed({ signedIn, query }) {
       setLoadedCount(count => count + data.length)
       setHasMore(data.length === RECIPE_PAGE_SIZE)
     } catch (error) {
-      if (isCurrent()) setLoadMoreError(error.message)
+      if (isCurrent()) setLoadMoreError(error instanceof Error ? error.message : String(error))
     } finally {
       if (isCurrent()) setLoadingMore(false)
     }
   }
 
-  function addRecipe(recipe) {
+  function addRecipe(recipe: RecipeFeedEntry): void {
     setItems(current => [recipe, ...current])
   }
 
-  function replaceRecipe(recipe) {
+  function replaceRecipe(recipe: RecipeFeedEntry): void {
     setItems(current => current.map(item => item.id === recipe.id ? recipe : item))
   }
 
-  function removeRecipe(id) {
+  function removeRecipe(id: string): void {
     setItems(current => current.filter(item => item.id !== id))
   }
 
-  function restoreRecipe(recipe) {
-    if (query.trim() && !`${recipe.title} ${recipe.description}`.toLowerCase().includes(query.trim().toLowerCase())) return
+  function restoreRecipe(recipe: RecipeFeedEntry): void {
+    if (query.trim() && !`${recipe.title} ${recipe.description ?? ''}`.toLowerCase().includes(query.trim().toLowerCase())) return
     setItems(current => [recipe, ...current.filter(item => item.id !== recipe.id)].slice(0, RECIPE_PAGE_SIZE))
   }
 

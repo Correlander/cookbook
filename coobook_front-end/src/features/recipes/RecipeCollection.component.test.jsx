@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import RecipeCollection from './RecipeCollection.jsx'
-import useRecipeFeed from './useRecipeFeed.js'
+import useRecipeFeed from './useRecipeFeed.ts'
 
 afterEach(() => {
   cleanup()

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { fetchRecipePage } from './recipeFeedApi.js'
+import { fetchRecipePage } from './recipeFeedApi.ts'
 
 test('requests public and signed-in recipe pages with the existing query shape', async t => {
   const calls = []

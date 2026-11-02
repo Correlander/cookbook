@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { moveStep } from './steps.js'
+import { moveStep } from './steps.ts'
 
 test('moves a step without mutating the original list', () => {
   const steps = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]

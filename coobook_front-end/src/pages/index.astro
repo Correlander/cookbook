@@ -1,0 +1,11 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro'
+import LegacyAppIsland from '../components/LegacyAppIsland.astro'
+
+const title = 'Cookbook — recipes worth coming back to'
+const description = 'Keep the recipes you love, organize them into cookbooks, and pass the good ones along.'
+---
+
+<BaseLayout title={title} description={description}>
+  <LegacyAppIsland pageTitle={title} description={description} />
+</BaseLayout>

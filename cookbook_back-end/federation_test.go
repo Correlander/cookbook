@@ -206,6 +206,25 @@ func TestDecodeFederationEventRejectsDuplicateUnknownAndMismatchedData(t *testin
 	}
 }
 
+func TestDecodeFederationEventRejectsInvalidUTF8TrailingAndOversizedBodies(t *testing.T) {
+	valid, err := serializeFederationEvent(testFederationOrigin, testFederationID, federationEventSnapshot, 1, time.Now(), true, true, federationRecipeSource{ID: testFederationID, CreatorName: "Creator", Title: "Dish", Visibility: visibilityPublic})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := map[string][]byte{
+		"invalid UTF-8":       append(append([]byte(nil), valid...), 0xff),
+		"trailing JSON value": append(append([]byte(nil), valid...), []byte(` {}`)...),
+		"oversized body":      bytes.Repeat([]byte(" "), maxFederationEventBytes+1),
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := decodeFederationEvent(body); err == nil {
+				t.Fatal("accepted invalid event body")
+			}
+		})
+	}
+}
+
 func TestFederationOutboxSharesRecipeTransactions(t *testing.T) {
 	db := testDatabase(t)
 	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.org','Owner','now')`); err != nil {

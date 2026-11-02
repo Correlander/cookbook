@@ -206,6 +206,30 @@ func TestDecodeFederationEventRejectsDuplicateUnknownAndMismatchedData(t *testin
 	}
 }
 
+func TestDecodeFederationEventRejectsNestedDuplicateAndUnknownKeys(t *testing.T) {
+	valid, err := serializeFederationEvent(testFederationOrigin, testFederationID, federationEventSnapshot, 1, time.Now(), true, true, federationRecipeSource{
+		ID: testFederationID, CreatorName: "Creator", Title: "Dish", Visibility: visibilityPublic,
+		Ingredients: []ingredient{{Name: "tomatoes", Quantity: "4"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(valid)
+	tests := map[string]string{
+		"duplicate recipe title":    strings.Replace(body, `"title":"Dish"`, `"title":"Dish","title":"Dish"`, 1),
+		"duplicate ingredient name": strings.Replace(body, `"name":"tomatoes"`, `"name":"tomatoes","name":"tomatoes"`, 1),
+		"unknown recipe key":        strings.Replace(body, `"title":"Dish"`, `"title":"Dish","secret":"value"`, 1),
+		"unknown ingredient key":    strings.Replace(body, `"name":"tomatoes"`, `"name":"tomatoes","secret":"value"`, 1),
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := decodeFederationEvent([]byte(body)); err == nil {
+				t.Fatal("accepted nested invalid event field")
+			}
+		})
+	}
+}
+
 func TestDecodeFederationEventRejectsInvalidUTF8TrailingAndOversizedBodies(t *testing.T) {
 	valid, err := serializeFederationEvent(testFederationOrigin, testFederationID, federationEventSnapshot, 1, time.Now(), true, true, federationRecipeSource{ID: testFederationID, CreatorName: "Creator", Title: "Dish", Visibility: visibilityPublic})
 	if err != nil {

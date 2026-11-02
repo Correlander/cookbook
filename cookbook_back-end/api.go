@@ -1067,46 +1067,29 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 	ingredientsJSON, _ := json.Marshal(in.Ingredients)
 	stepsJSON, _ := json.Marshal(in.Steps)
 	tagsJSON, _ := json.Marshal(in.Tags)
-	tx, err := h.db.Begin()
+	_, err := commitRecipeMutation(h.db, recipeMutation{
+		RecipeID: id, ActorID: in.UserID, ExpectedVersion: in.Version,
+		Snapshot: recipeMutationSnapshot{
+			Title: in.Title, Description: in.Description, IngredientsJSON: ingredientsJSON,
+			StepsJSON: stepsJSON, Servings: in.Servings, PrepTime: in.PrepTime,
+			CookTime: in.CookTime, TagsJSON: tagsJSON, Visibility: in.Visibility,
+		},
+		CookbookIDs: in.CookbookIDs, ReplaceCookbookRefs: true,
+	})
+	if errors.Is(err, errRecipeMutationConflict) {
+		writeError(w, http.StatusConflict, "version_conflict")
+		return
+	}
+	if errors.Is(err, errRecipeMutationCookbookRefs) {
+		writeError(w, http.StatusForbidden, "cookbook_access_denied")
+		return
+	}
+	if errors.Is(err, errRecipeMutationFederation) {
+		writeError(w, http.StatusServiceUnavailable, "federation_queue_unavailable")
+		return
+	}
 	if err != nil {
-		writeError(w, 500, "storage_error")
-		return
-	}
-	res, err := tx.Exec(`UPDATE recipes SET title=?,description=?,ingredients_json=?,steps_json=?,servings=?,prep_time_minutes=?,cook_time_minutes=?,tags_json=?,visibility=?,version=version+1,updated_at=? WHERE id=? AND version=? AND deleted_at IS NULL`, in.Title, in.Description, string(ingredientsJSON), string(stepsJSON), in.Servings, in.PrepTime, in.CookTime, string(tagsJSON), in.Visibility, timestamp(), id, in.Version)
-	if err != nil {
-		tx.Rollback()
-		writeError(w, 500, "storage_error")
-		return
-	}
-	n, _ := res.RowsAffected()
-	if n != 1 {
-		tx.Rollback()
-		writeError(w, 409, "version_conflict")
-		return
-	}
-	if err := replaceCookbookRefs(tx, id, in.UserID, in.CookbookIDs); err != nil {
-		tx.Rollback()
-		writeError(w, 403, "cookbook_access_denied")
-		return
-	}
-	var imagePath string
-	if err := tx.QueryRow(`SELECT image_path FROM recipes WHERE id=?`, id).Scan(&imagePath); err != nil {
-		_ = tx.Rollback()
-		writeError(w, 500, "storage_error")
-		return
-	}
-	if err := insertRecipeRevision(tx, id, in.Version+1, in.UserID, in.Title, in.Description, ingredientsJSON, stepsJSON, in.Servings, in.PrepTime, in.CookTime, tagsJSON, in.Visibility, imagePath); err != nil {
-		tx.Rollback()
-		writeError(w, 500, "storage_error")
-		return
-	}
-	if err := enqueueFederationChange(tx, id); err != nil {
-		_ = tx.Rollback()
-		writeError(w, 503, "federation_queue_unavailable")
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, 500, "storage_error")
+		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
 	h.recipeByID(w, requestForUser(http.MethodGet, "/api/recipes/"+id, in.UserID), id)
@@ -1366,35 +1349,25 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 		writeError(w, 403, "instance_private")
 		return
 	}
-	tx, err := h.db.Begin()
+	_, err = commitRecipeMutation(h.db, recipeMutation{
+		RecipeID: recipeID, ActorID: userID, ExpectedVersion: input.ExpectedVersion,
+		Snapshot: recipeMutationSnapshot{
+			Title: title, Description: description, IngredientsJSON: []byte(ingredients),
+			StepsJSON: []byte(steps), Servings: servings, PrepTime: prepTime,
+			CookTime: cookTime, TagsJSON: []byte(tags), Visibility: restoredVisibility,
+		},
+		ImagePath: &restoredImage,
+	})
+	if errors.Is(err, errRecipeMutationConflict) {
+		writeError(w, http.StatusConflict, "version_conflict")
+		return
+	}
+	if errors.Is(err, errRecipeMutationFederation) {
+		writeError(w, http.StatusServiceUnavailable, "federation_queue_unavailable")
+		return
+	}
 	if err != nil {
-		writeError(w, 500, "storage_error")
-		return
-	}
-	result, err := tx.Exec(`UPDATE recipes SET title=?,description=?,ingredients_json=?,steps_json=?,servings=?,prep_time_minutes=?,cook_time_minutes=?,tags_json=?,visibility=?,image_path=?,version=version+1,updated_at=? WHERE id=? AND version=? AND deleted_at IS NULL`, title, description, ingredients, steps, servings, prepTime, cookTime, tags, restoredVisibility, restoredImage, timestamp(), recipeID, currentVersion)
-	if err != nil {
-		_ = tx.Rollback()
-		writeError(w, 500, "storage_error")
-		return
-	}
-	updated, _ := result.RowsAffected()
-	if updated != 1 {
-		_ = tx.Rollback()
-		writeError(w, 409, "version_conflict")
-		return
-	}
-	if err := insertRecipeRevision(tx, recipeID, currentVersion+1, userID, title, description, []byte(ingredients), []byte(steps), servings, prepTime, cookTime, []byte(tags), restoredVisibility, restoredImage); err != nil {
-		_ = tx.Rollback()
-		writeError(w, 500, "storage_error")
-		return
-	}
-	if err := enqueueFederationChange(tx, recipeID); err != nil {
-		_ = tx.Rollback()
-		writeError(w, 503, "federation_queue_unavailable")
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, 500, "storage_error")
+		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
 	h.recipeByID(w, requestForUser(http.MethodGet, "/api/recipes/"+recipeID, userID), recipeID)

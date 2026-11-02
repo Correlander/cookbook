@@ -1,0 +1,15 @@
+// Optional infrastructure-only proxy template. Static asset requests fall through
+// to the Workers Static Assets binding; API and health requests pass through to Go.
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url)
+    if (url.pathname.startsWith('/api/') || url.pathname === '/healthz') {
+      if (!env.GO_API_ORIGIN_HOST) return new Response('API origin is not configured', { status: 503 })
+      // GO_API_ORIGIN_HOST must be a same-zone hostname or same-zone CNAME alias.
+      // resolveOverride changes DNS resolution while the public URL/Host stays intact.
+      const proxied = new Request(request)
+      return fetch(proxied, { cf: { resolveOverride: env.GO_API_ORIGIN_HOST } })
+    }
+    return env.ASSETS.fetch(request)
+  },
+}

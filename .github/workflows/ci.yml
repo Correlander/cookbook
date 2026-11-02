@@ -29,7 +29,7 @@ jobs:
       - run: go vet ./...
 
   frontend:
-    name: Frontend tests, lint, and build
+    name: Frontend checks and browser integration
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -38,13 +38,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.23.4
           cache: npm
           cache-dependency-path: coobook_front-end/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cookbook_back-end/go.mod
+          cache-dependency-path: cookbook_back-end/go.sum
       - run: npm ci
       - run: npm test
       - run: npm run lint
       - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
 
   container:
     name: Container build and Compose validation
@@ -52,7 +58,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker compose config --quiet
-      - run: docker build --tag cookbook:ci .
+      - run: docker compose build
 
   operations:
     name: Backup tooling checks

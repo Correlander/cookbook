@@ -2,9 +2,13 @@
 
 This document describes the implementation in this checkout. It is a working architecture record, not a claim that every product milestone is finished. See [AUDIT_AND_PLAN.md](AUDIT_AND_PLAN.md) for acceptance status and [FEDERATION_RESEARCH.md](FEDERATION_RESEARCH.md) for the separate federation decision and security gates.
 
+## Frontend and API deployment (current)
+
+Astro builds a static frontend artifact independently of the Go API. The root Dockerfile builds only the Go service; `deploy/Dockerfile.frontend` serves generated static files through Caddy and proxies same-origin `/api/*` and `/healthz`. `/auth/confirm` resolves to generated `auth/confirm.html` with its query preserved for explicit user confirmation. API routes are matched before static files, so API errors cannot become frontend HTML. The static host preserves public Host/Origin and Go response headers. Per-page static CSP response headers are generated from hashes emitted in Astro HTML; Go remains the owner of API CSP. The optional Cloudflare template is static hosting plus infrastructure-only API pass-through, not application logic or an Astro runtime.
+
 ## Runtime and storage
 
-- **Application:** one Go HTTP service serves the JSON API and the built React/Vite client. The frontend is client-rendered; there is no SSR requirement or separate application service.
+- **Application:** one Go HTTP service owns the JSON API and a separate Astro static artifact owns browser documents/assets. A same-origin static host proxies API/health routes to Go; Astro has no server runtime.
 - **HTTP lifecycle:** the server limits header reads to 5 seconds, full request reads and response writes to 3 minutes, idle connections to 60 seconds, and request headers to 1 MiB. The read deadline accommodates the 100 MiB compressed import limit; deployments with unusually slow clients may need a configurable timeout policy. SIGINT/SIGTERM drains active requests for up to 20 seconds before closing the listener; Compose allows 25 seconds before forced termination.
 - **Database:** SQLite, opened with foreign-key enforcement, WAL mode, a busy timeout, and a single connection. Startup creates the schema and applies additive compatibility columns. SQLite and local media live together under `/data` in Compose; both must be backed up.
 - **Media:** recipe images are local files with random generated names. Uploads accept JPEG, PNG, and WebP, enforce a 5 MiB file limit and a 40 million pixel limit, and are decoded to check type and dimensions. Recipe/revision rows refer to the image filename. Reads go through the API and check recipe visibility; only the recipe owner can upload, replace, or remove an image. Private images use `private, no-store`; images on public recipes in public instances may be cached for five minutes.

@@ -5,6 +5,6 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: 'jsdom',
-    include: ['src/**/*.component.test.jsx'],
+    include: ['src/**/*.component.test.tsx', 'src/passkeys.test.ts'],
   },
 })

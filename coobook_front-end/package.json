@@ -9,8 +9,12 @@
   "scripts": {
     "dev": "astro dev",
     "build": "astro check && astro build",
+    "postbuild": "node scripts/generate-static-headers.mjs",
     "lint": "eslint .",
-    "test": "node --test src/*.test.js src/features/recipes/*.test.js && vitest run",
+    "test": "npm run test:ops && node --test src/quantity.test.ts src/steps.test.ts src/features/recipes/recipeFeedApi.test.ts && vitest run",
+    "test:ops": "node --test scripts/generate-static-headers.test.mjs scripts/static-host.test.mjs",
+    "test:e2e": "playwright test --config=e2e/playwright.config.ts",
+    "e2e": "node scripts/run-e2e.mjs",
     "preview": "astro preview"
   },
   "dependencies": {
@@ -23,9 +27,11 @@
     "@astrojs/check": "0.9.12",
     "@astrojs/react": "7.1.2",
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "1.64.1",
     "@tailwindcss/postcss": "^4.1.14",
     "@testing-library/dom": "10.4.1",
     "@testing-library/react": "16.3.3",
+    "@types/node": "^26.6.6",
     "@types/react": "^19.1.16",
     "@types/react-dom": "^19.1.9",
     "@vitejs/plugin-react": "^5.0.4",
@@ -37,8 +43,10 @@
     "globals": "^16.4.0",
     "jsdom": "29.1.0",
     "postcss": "^8.5.6",
+    "prettier": "^3.9.10",
     "tailwindcss": "^4.1.14",
     "typescript": "6.0.3",
+    "typescript-eslint": "^8.72.1",
     "vite": "^7.1.7",
     "vitest": "4.1.12"
   },

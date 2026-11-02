@@ -1,5 +1,6 @@
 ---
 import '../index.css'
+import SiteFooter from '../components/SiteFooter.astro'
 
 interface Props {
   title: string
@@ -24,7 +25,10 @@ const { title, description } = Astro.props
   </head>
   <body>
     <a class="skip-link" href="#home">Skip to main content</a>
-    <slot />
+    <div class="app-shell">
+      <slot />
+      <SiteFooter />
+    </div>
     <noscript>
       <p class="empty-state">Cookbook needs JavaScript to load your recipe library and sign-in controls.</p>
     </noscript>

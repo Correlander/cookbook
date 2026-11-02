@@ -11,28 +11,32 @@ export default function useRecipeFeed({ signedIn, query }) {
   const [loadMoreError, setLoadMoreError] = useState('')
   const listKey = `${signedIn}:${query.trim()}`
   const listKeyRef = useRef(listKey)
+  const requestGenerationRef = useRef(0)
   listKeyRef.current = listKey
 
   useEffect(() => {
+    const requestGeneration = ++requestGenerationRef.current
     let active = true
     setLoading(true)
+    setLoadingMore(false)
     setLoadMoreError('')
+    const isCurrent = () => active && requestGenerationRef.current === requestGeneration
     fetchRecipePage({ signedIn, query, offset: 0 })
       .then(data => {
-        if (!active) return
+        if (!isCurrent()) return
         setItems(data)
         setLoadedCount(data.length)
         setHasMore(data.length === RECIPE_PAGE_SIZE)
         setLoadError(false)
       })
       .catch(() => {
-        if (!active) return
+        if (!isCurrent()) return
         setLoadError(true)
         setItems([])
         setHasMore(false)
       })
       .finally(() => {
-        if (active) setLoading(false)
+        if (isCurrent()) setLoading(false)
       })
     return () => { active = false }
   }, [signedIn, query])
@@ -40,11 +44,13 @@ export default function useRecipeFeed({ signedIn, query }) {
   async function loadMore() {
     if (loadingMore) return
     const requestedListKey = listKey
+    const requestGeneration = requestGenerationRef.current
+    const isCurrent = () => requestGenerationRef.current === requestGeneration && listKeyRef.current === requestedListKey
     setLoadingMore(true)
     setLoadMoreError('')
     try {
       const data = await fetchRecipePage({ signedIn, query, offset: loadedCount })
-      if (listKeyRef.current !== requestedListKey) return
+      if (!isCurrent()) return
       setItems(current => {
         const known = new Set(current.map(recipe => recipe.id))
         return [...current, ...data.filter(recipe => !known.has(recipe.id))]
@@ -52,9 +58,9 @@ export default function useRecipeFeed({ signedIn, query }) {
       setLoadedCount(count => count + data.length)
       setHasMore(data.length === RECIPE_PAGE_SIZE)
     } catch (error) {
-      setLoadMoreError(error.message)
+      if (isCurrent()) setLoadMoreError(error.message)
     } finally {
-      setLoadingMore(false)
+      if (isCurrent()) setLoadingMore(false)
     }
   }
 

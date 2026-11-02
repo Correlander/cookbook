@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import RecipeCollection from './RecipeCollection.jsx'
 import useRecipeFeed from './useRecipeFeed.js'
@@ -15,8 +15,9 @@ function jsonResponse(data) {
 
 function deferred() {
   let resolve
-  const promise = new Promise(done => { resolve = done })
-  return { promise, resolve }
+  let reject
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail })
+  return { promise, resolve, reject }
 }
 
 function Harness({ initialSignedIn = false, onOpenRecipe = () => {} }) {
@@ -84,6 +85,49 @@ describe('RecipeCollection', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Stale recipe' })).toBeNull())
     expect(screen.queryByRole('button', { name: 'Recipe 24 duplicate' })).toBeNull()
     expect(screen.getByRole('button', { name: 'New search result' })).toBeTruthy()
+  })
+
+  it('ignores a stale pagination rejection without clearing the new request loading state', async () => {
+    const oldPage = deferred()
+    const newPage = deferred()
+    let defaultFeedLoads = 0
+    let paginationLoads = 0
+    vi.stubGlobal('fetch', vi.fn(url => {
+      if (url.includes('q=new') && url.includes('offset=0')) {
+        return Promise.resolve(jsonResponse(Array.from({ length: 24 }, (_, index) => ({ id: index + 101, title: `New recipe ${index + 1}` }))))
+      }
+      if (url.endsWith('offset=0')) {
+        defaultFeedLoads += 1
+        const titlePrefix = defaultFeedLoads === 1 ? 'Recipe' : 'Refreshed recipe'
+        const firstID = defaultFeedLoads === 1 ? 1 : 201
+        return Promise.resolve(jsonResponse(Array.from({ length: 24 }, (_, index) => ({ id: firstID + index, title: `${titlePrefix} ${index + 1}` }))))
+      }
+      paginationLoads += 1
+      return paginationLoads === 1 ? oldPage.promise : newPage.promise
+    }))
+    render(<Harness />)
+    await screen.findByRole('button', { name: 'Recipe 1' })
+    fireEvent.click(screen.getByRole('button', { name: 'Load more recipes' }))
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search recipes' }), { target: { value: 'new' } })
+    await screen.findByRole('button', { name: 'New recipe 1' })
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search recipes' }), { target: { value: '' } })
+    await screen.findByRole('button', { name: 'Refreshed recipe 1' })
+    expect(screen.getByRole('button', { name: 'Load more recipes' }).disabled).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more recipes' }))
+    expect(screen.getByRole('button', { name: 'Loading…' }).disabled).toBe(true)
+    await act(async () => {
+      oldPage.reject(new Error('Stale network failure'))
+      await oldPage.promise.catch(() => {})
+    })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Loading…' }).disabled).toBe(true)
+
+    newPage.resolve(jsonResponse(Array.from({ length: 24 }, (_, index) => ({ id: index + 225, title: `Refreshed recipe ${index + 25}` }))))
+    expect(await screen.findByRole('button', { name: 'Refreshed recipe 25' })).toBeTruthy()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Load more recipes' }).disabled).toBe(false))
   })
 
   it('appends new page results while keeping duplicate recipe IDs once', async () => {

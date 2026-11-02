@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -75,9 +77,10 @@ func TestApplicationRoutesPreserveMethodsAndMiddleware(t *testing.T) {
 				t.Fatalf("body = %q, want prefix %q", rec.Body.String(), test.wantBody)
 			}
 			for header, want := range map[string]string{
-				"X-Content-Type-Options": "nosniff",
-				"Referrer-Policy":        "no-referrer",
-				"X-Frame-Options":        "DENY",
+				"X-Content-Type-Options":  "nosniff",
+				"Referrer-Policy":         "no-referrer",
+				"X-Frame-Options":         "DENY",
+				"Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
 			} {
 				if got := rec.Header().Get(header); got != want {
 					t.Errorf("%s = %q, want %q", header, got, want)
@@ -96,5 +99,69 @@ func TestApplicationRoutesPreserveMethodsAndMiddleware(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestApplicationFederationInboxRouteAcceptsSignedRequestsWithoutBrowserSession(t *testing.T) {
+	db := testDatabase(t)
+	localOrigin := "https://local.example"
+	peerOrigin := "https://peer.example.org"
+	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1,federation_enabled=1,federation_origin=? WHERE id=1`, localOrigin); err != nil {
+		t.Fatal(err)
+	}
+	if err := registerFederationPeer(db, peerOrigin, true); err != nil {
+		t.Fatal(err)
+	}
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registerFederationPeerKey(db, peerOrigin, "peer-key", publicKey); err != nil {
+		t.Fatal(err)
+	}
+	wrongPublicKey, wrongPrivateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(wrongPublicKey) == string(publicKey) {
+		t.Fatal("generated duplicate federation public key")
+	}
+
+	event, err := serializeFederationEvent(peerOrigin, testFederationID, federationEventSnapshot, 1, time.Now(), true, true, federationRecipeSource{ID: testFederationID, CreatorName: "Remote cook", Title: "Signed recipe", Visibility: visibilityPublic})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := handlerWithAuthConfig(db, testAuth(db), config{
+		mediaDir: t.TempDir(), federationKeyDir: t.TempDir(), federationOrigin: localOrigin,
+	})
+
+	validRequest := signedFederationRequest(t, privateKey, "peer-key", strings.Repeat("valid", 8), string(event))
+	if got := validRequest.Header.Get("Origin"); got != "" {
+		t.Fatalf("federation request Origin = %q, want none", got)
+	}
+	if _, err := validRequest.Cookie(sessionCookie); err == nil {
+		t.Fatal("federation request unexpectedly contains a browser session")
+	}
+	validResponse := httptest.NewRecorder()
+	handler.ServeHTTP(validResponse, validRequest)
+	if validResponse.Code != http.StatusAccepted || !strings.Contains(validResponse.Body.String(), `"status":"accepted"`) {
+		t.Fatalf("valid signed inbox response status=%d body=%q", validResponse.Code, validResponse.Body.String())
+	}
+
+	invalidRequest := signedFederationRequest(t, wrongPrivateKey, "peer-key", strings.Repeat("invalid", 6), string(event))
+	invalidResponse := httptest.NewRecorder()
+	handler.ServeHTTP(invalidResponse, invalidRequest)
+	if invalidResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid signature status=%d body=%q, want %d", invalidResponse.Code, invalidResponse.Body.String(), http.StatusUnauthorized)
+	}
+	var acceptedEvents, remoteRecipes int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_received_events`).Scan(&acceptedEvents); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_remote_recipes`).Scan(&remoteRecipes); err != nil {
+		t.Fatal(err)
+	}
+	if acceptedEvents != 1 || remoteRecipes != 1 {
+		t.Fatalf("invalid signature changed inbox state: accepted events=%d remote recipes=%d", acceptedEvents, remoteRecipes)
 	}
 }

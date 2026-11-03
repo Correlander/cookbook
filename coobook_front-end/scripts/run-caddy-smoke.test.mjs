@@ -122,7 +122,7 @@ import { readFile, writeFile, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 if (process.env.CADDY_BROWSER_GREP_EXPECTED) assert.ok(process.argv.includes('--grep=' + process.env.CADDY_BROWSER_GREP_EXPECTED))
 assert.ok(process.argv.includes('--workers=1'))
-assert.equal(process.env.PLAYWRIGHT_BASE_URL, 'http://127.0.0.1:' + process.env.CADDY_TEST_PORT)
+assert.equal(process.env.PLAYWRIGHT_BASE_URL, 'http://localhost:' + process.env.CADDY_TEST_PORT)
 assert.equal(process.env.E2E_EMAIL_CAPTURE, join(dirname(process.env.E2E_EMAIL_CAPTURE), 'capture.json'))
 assert.equal(await readFile(join(process.env.PLAYWRIGHT_DIST, 'static-csp.json'), 'utf8'), '{"scriptHashes":[]}')
 const tempRoot = dirname(dirname(process.env.E2E_EMAIL_CAPTURE))
@@ -180,17 +180,22 @@ async function runBrowserFixture({ directory, statePath, engine }, port, fail, g
   const backend = state.calls.find((record) => record[0] === 'run' && record.includes('backend:browser-fixture'))
   assert.ok(backend)
   assert.ok(backend.includes('--tmpfs') && backend.some((arg) => arg.startsWith('/data:')))
+  assert.ok(backend.some((arg) => arg === `COOKBOOK_PUBLIC_URL=http://localhost:${port}`))
+  assert.ok(backend.some((arg) => arg === `COOKBOOK_RP_ORIGIN=http://localhost:${port}`))
   assert.ok(backend.includes('COOKBOOK_EMAIL_COMMAND=/smoke-mail/capture-email'))
   assert.ok(backend.includes('COOKBOOK_REGISTRATION=open'))
   assert.ok(backend.includes('COOKBOOK_ADMIN_EMAIL=admin@example.test'))
   assert.ok(backend.includes('COOKBOOK_ADMIN_NAME=E2E Admin'))
   assert.ok(backend.some((arg) => arg.includes(':/smoke-mail:rw,Z')))
+  const frontend = state.calls.find((record) => record[0] === 'run' && record.includes('frontend:browser-fixture'))
+  assert.ok(frontend)
+  assert.ok(frontend.includes('127.0.0.1::8080/tcp'))
   assert.ok(state.calls.some((record) => record[0] === 'cp' && record[1].endsWith(':/srv/static-csp.json')))
   assert.equal(state.containers.length, 0)
   assert.equal(state.networks.length, 0)
   assert.deepEqual((await readdir(directory)).sort(), ['browser-cache', 'fake-engine.mjs', 'fake-playwright.mjs', 'state.json', ...(await readdir(directory)).filter((name) => name === 'browser-state.json')].sort())
   const browser = JSON.parse(await readFile(browserState, 'utf8'))
-  assert.equal(browser.baseUrl, `http://127.0.0.1:${port}`)
+  assert.equal(browser.baseUrl, `http://localhost:${port}`)
   assert.equal(browser.browsers, browserCache)
   assert.match(browser.dist, /playwright-dist$/)
   assert.match(browser.output, /playwright-output$/)
@@ -223,7 +228,8 @@ async function withHttpFixture(run, { redirectRoot = false, oversizeRoot = false
     } else if (request.url === '/_astro/app.js') {
       response.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'public, max-age=31536000, immutable' }).end('')
     } else if (request.url === '/api/auth/consume' && request.method === 'POST') {
-      if (request.headers.origin !== `http://127.0.0.1:${server.address().port}`) {
+      const expectedPublicOrigin = `http://localhost:${server.address().port}`
+      if (request.headers.host !== `localhost:${server.address().port}` || request.headers.origin !== expectedPublicOrigin) {
         response.writeHead(403, { 'content-type': 'application/json' }).end('{"error":"csrf_origin_mismatch"}')
       } else {
         response.writeHead(400, { 'content-type': 'application/json', 'cache-control': 'no-store', 'content-security-policy': csp })

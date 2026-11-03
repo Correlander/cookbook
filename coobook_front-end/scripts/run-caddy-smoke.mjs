@@ -472,7 +472,7 @@ async function main() {
     const portResult = await runCommand(selectedEngine, ['port', frontendName, '8080/tcp'])
     const mappedPort = portResult.stdout.trim().match(/^127\.0\.0\.1:([0-9]+)$/)?.[1]
     assert(mappedPort, `container engine did not publish frontend strictly on loopback: ${portResult.stdout}`)
-    const origin = `http://127.0.0.1:${mappedPort}`
+    const origin = `http://localhost:${mappedPort}`
 
     await runCommand(selectedEngine, [
       'run', '--detach', '--pull=never', '--name', backendName,

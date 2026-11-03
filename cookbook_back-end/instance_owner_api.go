@@ -9,9 +9,10 @@ import (
 )
 
 type instanceAuthorityResponse struct {
-	IsInstanceOwner bool `json:"is_instance_owner"`
-	IsAdmin         bool `json:"is_admin"`
-	OwnerClaimed    bool `json:"owner_claimed"`
+	IsInstanceOwner        bool `json:"is_instance_owner"`
+	IsAdmin                bool `json:"is_admin"`
+	OwnerClaimed           bool `json:"owner_claimed"`
+	CanManageInstanceRoles bool `json:"can_manage_instance_roles"`
 }
 
 type instanceOwnerTransferResponse struct {
@@ -97,10 +98,16 @@ func (h apiHandler) instanceOwnerAPI(w http.ResponseWriter, r *http.Request) {
 			writeOwnerAPIError(w, err)
 			return
 		}
+		canManageRoles, err := canManageInstanceRoles(ctx, h.db, actorID)
+		if err != nil {
+			writeOwnerAPIError(w, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, instanceAuthorityResponse{
-			IsInstanceOwner: capabilities.IsInstanceOwner,
-			IsAdmin:         capabilities.IsAdmin,
-			OwnerClaimed:    capabilities.OwnerClaimed,
+			IsInstanceOwner:        capabilities.IsInstanceOwner,
+			IsAdmin:                capabilities.IsAdmin,
+			OwnerClaimed:           capabilities.OwnerClaimed,
+			CanManageInstanceRoles: canManageRoles,
 		})
 	case r.Method == http.MethodPost && r.URL.Path == "/api/instance/owner-transfers":
 		var input struct {

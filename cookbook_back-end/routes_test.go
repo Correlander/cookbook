@@ -3,12 +3,37 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestApplicationPublicConfigRouteIsAnonymousAndNoStore(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`UPDATE instance_settings SET registration_policy='disabled',public_instance=1,courses_enabled=0 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	auth := testAuth(db)
+	auth.sender = nil
+	cfg := config{mediaDir: t.TempDir(), federationKeyDir: t.TempDir()}
+	handler := handlerWithAuthConfig(db, auth, cfg)
+	request := httptest.NewRequest(http.MethodGet, "/api/public/config", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("anonymous GET public config status=%d cache=%q body=%s", response.Code, response.Header().Get("Cache-Control"), response.Body)
+	}
+	var got publicConfigResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.AuthMethods.EmailLink || !got.AuthMethods.Passkey || got.RegistrationPolicy != "disabled" || !got.PublicInstance || got.CoursesEnabled {
+		t.Fatalf("unexpected composed public config: %+v", got)
+	}
+}
 
 func TestApplicationRoutesPreserveMethodsAndMiddleware(t *testing.T) {
 	db := testDatabase(t)

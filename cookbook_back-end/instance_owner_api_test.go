@@ -34,11 +34,11 @@ func TestInstanceOwnerAPIExposesCapabilityAndTransfersOnlyThroughRecentSession(t
 	adminCookie := &http.Cookie{Name: sessionCookie, Value: adminToken}
 	capability := callAPI(handler, http.MethodGet, "/api/instance/authority", nil, ownerCookie)
 	var state instanceAuthorityResponse
-	if capability.Code != http.StatusOK || capability.Header().Get("Cache-Control") != "no-store" || json.Unmarshal(capability.Body.Bytes(), &state) != nil || !state.IsInstanceOwner || state.IsAdmin || !state.OwnerClaimed {
+	if capability.Code != http.StatusOK || capability.Header().Get("Cache-Control") != "no-store" || json.Unmarshal(capability.Body.Bytes(), &state) != nil || !state.IsInstanceOwner || state.IsAdmin || !state.OwnerClaimed || !state.CanManageInstanceRoles {
 		t.Fatalf("owner capability status=%d cache=%q body=%s state=%+v", capability.Code, capability.Header().Get("Cache-Control"), capability.Body, state)
 	}
 	adminRole := callAPI(handler, http.MethodGet, "/api/instance/authority", nil, adminCookie)
-	if adminRole.Code != http.StatusOK || json.Unmarshal(adminRole.Body.Bytes(), &state) != nil || state.IsInstanceOwner || !state.IsAdmin || !state.OwnerClaimed {
+	if adminRole.Code != http.StatusOK || json.Unmarshal(adminRole.Body.Bytes(), &state) != nil || state.IsInstanceOwner || !state.IsAdmin || !state.OwnerClaimed || state.CanManageInstanceRoles {
 		t.Fatalf("admin capability status=%d body=%s state=%+v", adminRole.Code, adminRole.Body, state)
 	}
 	created := callAPI(handler, http.MethodPost, "/api/instance/owner-transfers", map[string]string{"target_user_id": "target"}, ownerCookie)
@@ -64,6 +64,26 @@ func TestInstanceOwnerAPIExposesCapabilityAndTransfersOnlyThroughRecentSession(t
 	}
 }
 
+func TestInstanceAuthorityOwnerWhoIsAlsoAdminCanManageRoles(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,is_admin,created_at) VALUES('owner-admin','owner-admin@example.test','Owner Admin',1,'now')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClaimInstanceOwner(context.Background(), db, "owner-admin"); err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := issueSession(db, "owner-admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := handlerWithAuth(db, testAuth(db))
+	response := callAPI(handler, http.MethodGet, "/api/instance/authority", nil, &http.Cookie{Name: sessionCookie, Value: token})
+	var got instanceAuthorityResponse
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &got) != nil || !got.IsInstanceOwner || !got.IsAdmin || !got.OwnerClaimed || !got.CanManageInstanceRoles {
+		t.Fatalf("owner-admin capability status=%d body=%s capabilities=%+v", response.Code, response.Body, got)
+	}
+}
+
 func TestInstanceOwnerRoleDelegationSwitchesAtClaimWithoutContentBypass(t *testing.T) {
 	db := testDatabase(t)
 	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,is_admin,created_at) VALUES
@@ -83,6 +103,15 @@ func TestInstanceOwnerRoleDelegationSwitchesAtClaimWithoutContentBypass(t *testi
 	}
 	ownerCookie := &http.Cookie{Name: sessionCookie, Value: ownerToken}
 	adminCookie := &http.Cookie{Name: sessionCookie, Value: adminToken}
+	var capability instanceAuthorityResponse
+	ownerBeforeClaim := callAPI(handler, http.MethodGet, "/api/instance/authority", nil, ownerCookie)
+	if ownerBeforeClaim.Code != http.StatusOK || json.Unmarshal(ownerBeforeClaim.Body.Bytes(), &capability) != nil || capability.OwnerClaimed || capability.CanManageInstanceRoles {
+		t.Fatalf("unclaimed non-admin owner capability status=%d body=%s capability=%+v", ownerBeforeClaim.Code, ownerBeforeClaim.Body, capability)
+	}
+	adminBeforeClaim := callAPI(handler, http.MethodGet, "/api/instance/authority", nil, adminCookie)
+	if adminBeforeClaim.Code != http.StatusOK || json.Unmarshal(adminBeforeClaim.Body.Bytes(), &capability) != nil || capability.OwnerClaimed || !capability.CanManageInstanceRoles {
+		t.Fatalf("unclaimed admin capability status=%d body=%s capability=%+v", adminBeforeClaim.Code, adminBeforeClaim.Body, capability)
+	}
 	compatibilityPromotion := callAPI(handler, http.MethodPatch, "/api/admin/users/member", map[string]bool{"is_admin": true}, adminCookie)
 	if compatibilityPromotion.Code != http.StatusOK {
 		t.Fatalf("unclaimed admin compatibility promotion status=%d body=%s", compatibilityPromotion.Code, compatibilityPromotion.Body)
@@ -97,6 +126,14 @@ func TestInstanceOwnerRoleDelegationSwitchesAtClaimWithoutContentBypass(t *testi
 	adminList := callAPI(handler, http.MethodGet, "/api/admin/users", nil, adminCookie)
 	if adminList.Code != http.StatusOK {
 		t.Fatalf("ordinary admin lost account listing after claim: status=%d body=%s", adminList.Code, adminList.Body)
+	}
+	ownerAfterClaim := callAPI(handler, http.MethodGet, "/api/instance/authority", nil, ownerCookie)
+	if ownerAfterClaim.Code != http.StatusOK || json.Unmarshal(ownerAfterClaim.Body.Bytes(), &capability) != nil || !capability.OwnerClaimed || !capability.IsInstanceOwner || !capability.CanManageInstanceRoles {
+		t.Fatalf("claimed non-admin owner capability status=%d body=%s capability=%+v", ownerAfterClaim.Code, ownerAfterClaim.Body, capability)
+	}
+	adminAfterClaim := callAPI(handler, http.MethodGet, "/api/instance/authority", nil, adminCookie)
+	if adminAfterClaim.Code != http.StatusOK || json.Unmarshal(adminAfterClaim.Body.Bytes(), &capability) != nil || !capability.OwnerClaimed || !capability.IsAdmin || capability.CanManageInstanceRoles {
+		t.Fatalf("claimed ordinary admin capability status=%d body=%s capability=%+v", adminAfterClaim.Code, adminAfterClaim.Body, capability)
 	}
 	ordinaryAdminPromotion := callAPI(handler, http.MethodPatch, "/api/admin/users/admin", map[string]bool{"is_admin": true}, adminCookie)
 	if ordinaryAdminPromotion.Code != http.StatusForbidden {

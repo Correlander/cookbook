@@ -218,6 +218,14 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/"), "/")
 	parts := strings.Split(path, "/")
 	switch {
+	case len(parts) == 2 && parts[0] == "account" && parts[1] == "creator-profile":
+		h.creatorProfileSelf(w, r)
+	case len(parts) == 2 && parts[0] == "creator-profiles":
+		h.creatorProfileByID(w, r, parts[1])
+	case len(parts) == 3 && parts[0] == "creator-profiles" && parts[2] == "recipes":
+		h.creatorProfileRecipes(w, r, parts[1])
+	case len(parts) == 3 && parts[0] == "creator-profiles" && parts[2] == "cookbooks":
+		h.creatorProfileCookbooks(w, r, parts[1])
 	case len(parts) == 1 && parts[0] == "export":
 		h.exportData(w, r)
 	case len(parts) == 1 && parts[0] == "import":
@@ -626,8 +634,26 @@ func (h apiHandler) cookbooks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		id, now := newID(), timestamp()
-		_, err := h.db.Exec(`INSERT INTO cookbooks(id,owner_id,title,description,visibility,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, id, input.OwnerID, input.Title, input.Description, input.Visibility, now, now)
+		tx, err := h.db.BeginTx(r.Context(), nil)
 		if err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		defer tx.Rollback()
+		profile, err := ensureCreatorProfile(r.Context(), tx, input.OwnerID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		if _, err := tx.ExecContext(r.Context(), `INSERT INTO cookbooks(id,owner_id,title,description,visibility,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, id, input.OwnerID, input.Title, input.Description, input.Visibility, now, now); err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		if err := insertLocalAttribution(r.Context(), tx, "cookbook", id, profile.ID, "creator", "local_record_creation"); err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		if err := tx.Commit(); err != nil {
 			writeError(w, http.StatusInternalServerError, "storage_error")
 			return
 		}
@@ -644,7 +670,7 @@ func (h apiHandler) cookbooks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	userID := authenticatedUser(r)
-	rows, err := h.db.Query(`SELECT c.id,c.owner_id,c.title,c.description,c.visibility,c.created_at,c.updated_at FROM cookbooks c JOIN instance_settings s ON s.id=1 WHERE (c.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_memberships m WHERE m.cookbook_id=c.id AND m.user_id=?)) OR (s.public_instance=1 AND c.visibility='public') ORDER BY c.updated_at DESC,c.id LIMIT ? OFFSET ?`, userID, userID, limit, offset)
+	rows, err := h.db.Query(`SELECT c.id,c.owner_id,c.title,c.description,c.visibility,c.created_at,c.updated_at FROM cookbooks c JOIN instance_settings s ON s.id=1 WHERE `+cookbookActorReadPredicate+` ORDER BY c.updated_at DESC,c.id LIMIT ? OFFSET ?`, userID, userID, limit, offset)
 	if err != nil {
 		writeError(w, 500, "storage_error")
 		return
@@ -669,21 +695,14 @@ func (h apiHandler) cookbooks(w http.ResponseWriter, r *http.Request) {
 func (h apiHandler) cookbookByID(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method == http.MethodGet {
 		var c cookbook
-		var public int
-		err := h.db.QueryRow(`SELECT c.id,c.owner_id,c.title,c.description,c.visibility,c.created_at,c.updated_at,s.public_instance FROM cookbooks c JOIN instance_settings s ON s.id=1 WHERE c.id=?`, id).Scan(&c.ID, &c.OwnerID, &c.Title, &c.Description, &c.Visibility, &c.CreatedAt, &c.UpdatedAt, &public)
+		uid := authenticatedUser(r)
+		err := h.db.QueryRow(`SELECT c.id,c.owner_id,c.title,c.description,c.visibility,c.created_at,c.updated_at FROM cookbooks c JOIN instance_settings s ON s.id=1 WHERE c.id=? AND `+cookbookActorReadPredicate, id, uid, uid).Scan(&c.ID, &c.OwnerID, &c.Title, &c.Description, &c.Visibility, &c.CreatedAt, &c.UpdatedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, 404, "not_found")
 			return
 		}
 		if err != nil {
 			writeError(w, 500, "storage_error")
-			return
-		}
-		uid := authenticatedUser(r)
-		var member role
-		_ = h.db.QueryRow(`SELECT role FROM cookbook_memberships WHERE cookbook_id=? AND user_id=?`, id, uid).Scan(&member)
-		if !canReadResource(uid, access{instancePublic: public == 1, visibility: c.Visibility, ownerID: c.OwnerID, memberRole: member}) {
-			writeError(w, 404, "not_found")
 			return
 		}
 		writeJSON(w, 200, c)
@@ -724,7 +743,7 @@ func (h apiHandler) cookbookByID(w http.ResponseWriter, r *http.Request, id stri
 const recipeRowsQuery = `SELECT r.id,r.owner_id,r.creator_name,r.source_recipe_id,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,s.public_instance,r.image_path
 	FROM recipes r JOIN instance_settings s ON s.id=1
 	WHERE r.deleted_at IS NULL
-	AND ((r.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_recipes cr JOIN cookbook_memberships m ON m.cookbook_id=cr.cookbook_id WHERE cr.recipe_id=r.id AND m.user_id=?)) OR (s.public_instance=1 AND r.visibility='public' AND EXISTS(SELECT 1 FROM recipe_publication_policy p WHERE p.recipe_id=r.id AND p.publication_state='published')))
+	AND ` + recipeActorReadPredicate + `
 	AND (?='' OR instr(lower(r.title||' '||r.description||' '||r.tags_json),lower(?))>0)
 	AND (?='' OR EXISTS(SELECT 1 FROM cookbooks scope_book JOIN instance_settings scope_settings ON scope_settings.id=1 WHERE scope_book.id=? AND (scope_book.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_memberships scope_member WHERE scope_member.cookbook_id=scope_book.id AND scope_member.user_id=?) OR (scope_settings.public_instance=1 AND scope_book.visibility='public'))))
 	AND (?='' OR EXISTS(SELECT 1 FROM cookbook_recipes scope WHERE scope.recipe_id=r.id AND scope.cookbook_id=?))
@@ -733,12 +752,12 @@ const recipeRowsQuery = `SELECT r.id,r.owner_id,r.creator_name,r.source_recipe_i
 
 func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
-		var input recipeCreateInput
+		var input recipeCreateRequest
 		if !decodeJSON(w, r, &input) {
 			return
 		}
 		in := input.recipeInput
-		if err := in.validate(); err != nil {
+		if err := in.validate(); err != nil || validateCreatorAttributionInput(input.CreatorAttribution) != nil {
 			writeError(w, 400, "invalid_recipe")
 			return
 		}
@@ -762,6 +781,14 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 		if err := h.db.QueryRow(`SELECT display_name FROM users WHERE id=?`, in.OwnerID).Scan(&creator); err != nil {
 			writeError(w, 400, "invalid_owner")
 			return
+		}
+		if input.CreatorAttribution != nil {
+			switch input.CreatorAttribution.Kind {
+			case "local_profile", "unknown":
+				creator = ""
+			case "name_claim":
+				creator = input.CreatorAttribution.Name
+			}
 		}
 		id := newID()
 		edit := in.EditPolicy
@@ -804,6 +831,14 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 			_ = tx.Rollback()
 			writeError(w, 500, "storage_error")
 			return
+		}
+		if input.CreatorAttribution != nil && input.CreatorAttribution.Kind == "local_profile" {
+			profile, profileErr := ensureCreatorProfile(r.Context(), tx, in.OwnerID)
+			if profileErr != nil || insertLocalAttribution(r.Context(), tx, "recipe", id, profile.ID, "creator", "self_asserted_at_creation") != nil {
+				_ = tx.Rollback()
+				writeError(w, http.StatusInternalServerError, "storage_error")
+				return
+			}
 		}
 		if err = enqueueFederationChange(tx, id); err != nil {
 			_ = tx.Rollback()

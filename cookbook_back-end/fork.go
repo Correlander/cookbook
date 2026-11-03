@@ -96,6 +96,15 @@ func (h apiHandler) forkRecipe(w http.ResponseWriter, r *http.Request, recipeID 
 		writeError(w, 500, "storage_error")
 		return
 	}
+	profile, err := ensureCreatorProfile(r.Context(), tx, userID)
+	if err != nil {
+		writeError(w, 500, "storage_error")
+		return
+	}
+	if err := insertLocalAttribution(r.Context(), tx, "recipe", id, profile.ID, "adapter", "adapter_source"); err != nil {
+		writeError(w, 500, "storage_error")
+		return
+	}
 	for _, bookID := range input.CookbookIDs {
 		if _, err := tx.Exec(`INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES(?,?,?,?)`, bookID, id, userID, now); err != nil {
 			writeError(w, 400, "invalid_cookbook")

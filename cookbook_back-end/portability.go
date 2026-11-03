@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const maxImportBytes = 100 << 20
@@ -21,16 +22,18 @@ const maxImportManifestBytes = 40 << 20
 const maxPortableMediaCount = 50
 const maxPortableMediaBytes = 50 << 20
 const maxPortableRelationships = 100_000
+const portableFormatV4 = "cookbook-export-v4"
 const portableFormatV3 = "cookbook-export-v3"
 const portableFormat = "cookbook-export-v2"
 const legacyPortableFormat = "cookbook-export-v1"
 
 type portableBundle struct {
-	Format    string             `json:"format"`
-	Exported  string             `json:"exported_at"`
-	Cookbooks []portableCookbook `json:"cookbooks"`
-	Recipes   []portableRecipe   `json:"recipes"`
-	Bookmarks []portableBookmark `json:"bookmarks"`
+	Format       string                `json:"format"`
+	Exported     string                `json:"exported_at"`
+	Cookbooks    []portableCookbook    `json:"cookbooks"`
+	Recipes      []portableRecipe      `json:"recipes"`
+	Bookmarks    []portableBookmark    `json:"bookmarks"`
+	Attributions []portableAttribution `json:"attributions"`
 }
 
 // portableBookmark contains only the saved source identity and creation time.
@@ -48,6 +51,7 @@ type portableBookmarkIdentity struct {
 }
 
 var errPortableBookmarkLimitReached = errors.New("portable bookmark limit reached")
+var errPortableExportTooLarge = errors.New("portable export too large")
 
 type portableCookbook struct {
 	ID          string   `json:"id"`
@@ -83,7 +87,7 @@ func (h apiHandler) exportData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := authenticatedUser(r)
-	bundle := portableBundle{Format: portableFormatV3, Exported: time.Now().UTC().Format(time.RFC3339Nano), Cookbooks: []portableCookbook{}, Recipes: []portableRecipe{}, Bookmarks: []portableBookmark{}}
+	bundle := portableBundle{Format: portableFormatV4, Exported: time.Now().UTC().Format(time.RFC3339Nano), Cookbooks: []portableCookbook{}, Recipes: []portableRecipe{}, Bookmarks: []portableBookmark{}, Attributions: []portableAttribution{}}
 	manifestSize := 128
 	books, err := h.db.Query(`SELECT id,title,description,visibility FROM cookbooks WHERE owner_id=? ORDER BY id`, uid)
 	if err != nil {
@@ -240,6 +244,14 @@ func (h apiHandler) exportData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	links.Close()
+	if err := appendPortableAttributions(r.Context(), h.db, uid, &bundle, bookSet, recipeSet, &manifestSize); err != nil {
+		if errors.Is(err, errPortableExportTooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "export_too_large")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
 	bookmarkRows, err := h.db.Query(`SELECT target_kind,local_instance_id,local_recipe_id,remote_object_uri,created_at
 		FROM recipe_bookmarks WHERE user_id=? ORDER BY created_at DESC,id`, uid)
 	if err != nil {
@@ -349,6 +361,68 @@ func (h apiHandler) exportData(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_ = archive.Close()
+}
+
+func appendPortableAttributions(ctx context.Context, db *sql.DB, userID string, bundle *portableBundle, books, recipes map[string]bool, manifestSize *int) error {
+	instanceID, err := currentLibraryInstanceID(ctx, db)
+	if err != nil {
+		return err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT CASE WHEN a.recipe_id IS NOT NULL THEN 'recipe' ELSE 'cookbook' END,
+		COALESCE(a.recipe_id,a.cookbook_id),a.subject_kind,a.creator_id,a.claim_source_instance_id,a.claim_creator_id,a.claim_name,a.role,a.provenance,
+		p.user_id,p.visibility,p.public_name
+		FROM content_attributions a
+		LEFT JOIN recipes r ON r.id=a.recipe_id
+		LEFT JOIN cookbooks c ON c.id=a.cookbook_id
+		LEFT JOIN creator_profiles p ON p.creator_id=a.creator_id
+		WHERE ((r.owner_id=? AND r.deleted_at IS NULL) OR c.owner_id=?)
+		AND (a.subject_kind='external_claim' OR (a.subject_kind='local' AND (p.user_id=? OR p.visibility='instance')))
+		ORDER BY CASE WHEN a.recipe_id IS NOT NULL THEN 0 ELSE 1 END,COALESCE(a.recipe_id,a.cookbook_id),a.id`, userID, userID, userID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var targetKind, targetID, subjectKind, roleValue, provenance string
+		var creatorID, sourceInstanceID, claimCreatorID, claimName, profileUserID, profileVisibility, profileName sql.NullString
+		if err := rows.Scan(&targetKind, &targetID, &subjectKind, &creatorID, &sourceInstanceID, &claimCreatorID, &claimName, &roleValue, &provenance, &profileUserID, &profileVisibility, &profileName); err != nil {
+			return err
+		}
+		if targetKind == "recipe" && !recipes[targetID] || targetKind == "cookbook" && !books[targetID] {
+			continue
+		}
+		item := portableAttribution{TargetKind: targetKind, TargetID: targetID, Role: roleValue, Provenance: provenance}
+		if subjectKind == "local" {
+			// The SQL visibility predicate prevents private foreign identity fields
+			// from entering the export at all. The owner may self-export privately.
+			if !profileUserID.Valid || (profileUserID.String != userID && profileVisibility.String != "instance") {
+				continue
+			}
+			item.SourceInstanceID = instanceID
+			item.CreatorID = creatorID.String
+			if profileName.Valid {
+				item.NameClaim = profileName.String
+			}
+		} else if subjectKind == "external_claim" {
+			item.SourceInstanceID = sourceInstanceID.String
+			item.CreatorID = claimCreatorID.String
+			if claimName.Valid {
+				item.NameClaim = claimName.String
+			}
+		} else {
+			return errors.New("invalid stored attribution subject")
+		}
+		if len(bundle.Attributions) >= maxPortableRelationships {
+			return errPortableExportTooLarge
+		}
+		encoded, err := json.Marshal(item)
+		if err != nil || *manifestSize+len(encoded)+1 > maxImportManifestBytes {
+			return errPortableExportTooLarge
+		}
+		*manifestSize += len(encoded) + 1
+		bundle.Attributions = append(bundle.Attributions, item)
+	}
+	return rows.Err()
 }
 
 func (h apiHandler) importData(w http.ResponseWriter, r *http.Request) {
@@ -484,12 +558,37 @@ func (h apiHandler) importData(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
+	if err := insertPortableAttributionImport(r.Context(), tx, bundle.Attributions, recipeIDs, bookIDs); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, 500, "storage_error")
 		return
 	}
 	committed = true
 	writeJSON(w, http.StatusCreated, map[string]int{"cookbooks": len(bundle.Cookbooks), "recipes": len(bundle.Recipes)})
+}
+
+func insertPortableAttributionImport(ctx context.Context, tx *sql.Tx, attributions []portableAttribution, recipeIDs, bookIDs map[string]string) error {
+	for _, item := range attributions {
+		var targetID string
+		switch item.TargetKind {
+		case "recipe":
+			targetID = recipeIDs[item.TargetID]
+		case "cookbook":
+			targetID = bookIDs[item.TargetID]
+		default:
+			return errors.New("invalid portable attribution target")
+		}
+		if targetID == "" {
+			return errors.New("portable attribution target is missing")
+		}
+		if err := insertExternalAttribution(ctx, tx, item.TargetKind, targetID, item); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func portableBookmarkKey(bookmark portableBookmark) portableBookmarkIdentity {
@@ -582,15 +681,21 @@ func portableBookmarkNullable(value string) any {
 }
 
 func validatePortableBundle(bundle portableBundle) error {
-	if (bundle.Format != portableFormatV3 && bundle.Format != portableFormat && bundle.Format != legacyPortableFormat) ||
+	if (bundle.Format != portableFormatV4 && bundle.Format != portableFormatV3 && bundle.Format != portableFormat && bundle.Format != legacyPortableFormat) ||
 		len(bundle.Cookbooks) > 1000 || len(bundle.Recipes) > 10000 || len(bundle.Bookmarks) > maxRecipeBookmarksPerAccount {
 		return errors.New("unsupported or oversized import")
 	}
-	if bundle.Format == portableFormatV3 && bundle.Bookmarks == nil {
-		return errors.New("v3 archive is missing bookmarks")
+	if (bundle.Format == portableFormatV3 || bundle.Format == portableFormatV4) && bundle.Bookmarks == nil {
+		return errors.New("versioned archive is missing bookmarks")
 	}
-	if bundle.Format != portableFormatV3 && len(bundle.Bookmarks) != 0 {
+	if bundle.Format != portableFormatV3 && bundle.Format != portableFormatV4 && len(bundle.Bookmarks) != 0 {
 		return errors.New("legacy archives cannot carry bookmarks")
+	}
+	if bundle.Format == portableFormatV4 && bundle.Attributions == nil {
+		return errors.New("v4 archive is missing attributions")
+	}
+	if bundle.Format != portableFormatV4 && len(bundle.Attributions) != 0 {
+		return errors.New("legacy archives cannot carry attributions")
 	}
 	for _, bookmark := range bundle.Bookmarks {
 		if err := validatePortableBookmark(bookmark); err != nil {
@@ -674,7 +779,7 @@ func validatePortableBundle(bundle portableBundle) error {
 		}
 		recipeIDsByBook[b.ID] = seenRecipes
 	}
-	if bundle.Format == portableFormat || bundle.Format == portableFormatV3 {
+	if bundle.Format == portableFormat || bundle.Format == portableFormatV3 || bundle.Format == portableFormatV4 {
 		if relationshipCount != recipeRelationshipCount {
 			return errors.New("inconsistent cookbook relationships")
 		}
@@ -684,6 +789,37 @@ func validatePortableBundle(bundle portableBundle) error {
 					return errors.New("inconsistent cookbook relationships")
 				}
 			}
+		}
+	}
+	if bundle.Format == portableFormatV4 {
+		if len(bundle.Attributions) > maxPortableRelationships {
+			return errors.New("too many attributions")
+		}
+		seen := make(map[string]struct{}, len(bundle.Attributions))
+		for _, item := range bundle.Attributions {
+			if item.TargetKind != "recipe" && item.TargetKind != "cookbook" {
+				return errors.New("invalid attribution target kind")
+			}
+			if item.TargetID == "" || len(item.TargetID) > 80 || (item.TargetKind == "recipe" && !recipes[item.TargetID]) || (item.TargetKind == "cookbook" && !books[item.TargetID]) {
+				return errors.New("unknown attribution target")
+			}
+			if !validLibraryInstanceID(item.SourceInstanceID) || !validLibraryInstanceID(item.CreatorID) {
+				return errors.New("invalid attribution identity")
+			}
+			if item.Role != "creator" && item.Role != "contributor" && item.Role != "adapter" {
+				return errors.New("invalid attribution role")
+			}
+			if !utf8.ValidString(item.Provenance) || strings.ContainsRune(item.Provenance, '\x00') || len(item.Provenance) < 1 || len(item.Provenance) > 128 {
+				return errors.New("invalid attribution provenance")
+			}
+			if item.NameClaim != "" && (!utf8.ValidString(item.NameClaim) || strings.ContainsRune(item.NameClaim, '\x00') || utf8.RuneCountInString(item.NameClaim) > 80 || len(item.NameClaim) > 320) {
+				return errors.New("invalid attribution name claim")
+			}
+			key := strings.Join([]string{item.TargetKind, item.TargetID, item.SourceInstanceID, item.CreatorID, item.Role}, "\x00")
+			if _, ok := seen[key]; ok {
+				return errors.New("duplicate attribution")
+			}
+			seen[key] = struct{}{}
 		}
 	}
 	return nil
@@ -716,6 +852,9 @@ func decodePortableArchive(data []byte) (portableBundle, map[string][]byte, erro
 	media := map[string][]byte{}
 	archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if errors.Is(err, zip.ErrFormat) {
+		if !utf8.Valid(data) {
+			return portableBundle{}, nil, errors.New("manifest is not valid UTF-8")
+		}
 		var bundle portableBundle
 		decoder := json.NewDecoder(bytes.NewReader(data))
 		decoder.DisallowUnknownFields()
@@ -795,6 +934,9 @@ func decodePortableArchive(data []byte) (portableBundle, map[string][]byte, erro
 	if manifest == nil {
 		return portableBundle{}, nil, errors.New("manifest is missing")
 	}
+	if !utf8.Valid(manifest) {
+		return portableBundle{}, nil, errors.New("manifest is not valid UTF-8")
+	}
 	var bundle portableBundle
 	decoder := json.NewDecoder(bytes.NewReader(manifest))
 	decoder.DisallowUnknownFields()
@@ -805,7 +947,7 @@ func decodePortableArchive(data []byte) (portableBundle, map[string][]byte, erro
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		return portableBundle{}, nil, errors.New("trailing manifest data")
 	}
-	if bundle.Format != portableFormat && bundle.Format != portableFormatV3 {
+	if bundle.Format != portableFormat && bundle.Format != portableFormatV3 && bundle.Format != portableFormatV4 {
 		return portableBundle{}, nil, errors.New("unsupported archive version")
 	}
 	refs := map[string]bool{}

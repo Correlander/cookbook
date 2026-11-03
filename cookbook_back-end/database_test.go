@@ -282,8 +282,8 @@ INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,
 	if version != 4 || title != "Old title" {
 		t.Fatalf("backfilled revision = version %d, title %q", version, title)
 	}
-	if got := migrationVersion(t, db); got != 6 {
-		t.Fatalf("legacy migration version=%d, want 6", got)
+	if got := migrationVersion(t, db); got != 7 {
+		t.Fatalf("legacy migration version=%d, want 7", got)
 	}
 	var privateState, publicState string
 	var federation string

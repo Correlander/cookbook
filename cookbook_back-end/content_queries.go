@@ -19,6 +19,12 @@ type ContentActor struct {
 	AccountID string
 }
 
+// These predicates are the SQL read boundary for authenticated content lists.
+// Profile visibility never substitutes for resource access.
+const recipeActorReadPredicate = `((r.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_recipes cr JOIN cookbook_memberships m ON m.cookbook_id=cr.cookbook_id WHERE cr.recipe_id=r.id AND m.user_id=?)) OR (s.public_instance=1 AND r.visibility='public' AND EXISTS(SELECT 1 FROM recipe_publication_policy p WHERE p.recipe_id=r.id AND p.publication_state='published')))`
+
+const cookbookActorReadPredicate = `(c.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_memberships m WHERE m.cookbook_id=c.id AND m.user_id=?) OR (s.public_instance=1 AND c.visibility='public'))`
+
 var (
 	errRecipeDetailNotFound = errors.New("recipe detail not found")
 	errRecipeDetailDenied   = errors.New("recipe detail access denied")

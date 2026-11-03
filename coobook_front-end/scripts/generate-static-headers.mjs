@@ -2,7 +2,12 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { join, relative, resolve, sep } from 'node:path'
 
 const dist = resolve(process.argv[2] ?? 'dist')
-const pages = ['index.html', 'auth/confirm.html']
+const pages = [
+  { file: 'index.html', route: '/' },
+  { file: 'auth/confirm.html', route: '/auth/confirm' },
+  { file: 'account/security.html', route: '/account/security' },
+  { file: 'admin/settings.html', route: '/admin/settings' },
+]
 const defaults = {
   'default-src': ["'self'"],
   'object-src': ["'none'"],
@@ -65,18 +70,17 @@ function parsePolicy(html, file) {
 }
 
 const records = []
-for (const file of pages) {
+for (const { file, route } of pages) {
   let html
   try { html = await readFile(join(dist, file), 'utf8') } catch { fail(`missing built page ${file}`) }
   const policy = parsePolicy(html, file)
-  const route = file === 'index.html' ? '/' : `/${file.replace(/\.html$/, '')}`
   records.push({ file, route, policy })
 }
 
 const headers = [
   ...records.flatMap(({ route, file, policy }) => [
     route, `  Content-Security-Policy: ${policy}`,
-    ...(file === 'auth/confirm.html' ? ['/auth/confirm.html', `  Content-Security-Policy: ${policy}`] : []),
+    ...(file !== 'index.html' ? [`/${file}`, `  Content-Security-Policy: ${policy}`] : []),
   ]),
   '/*',
   '  X-Content-Type-Options: nosniff',
@@ -93,7 +97,7 @@ const headers = [
 await writeFile(join(dist, '_headers'), headers)
 await writeFile(join(dist, 'static-csp.json'), `${JSON.stringify(records, null, 2)}\n`)
 const caddy = records.map(({ route, file, policy }, index) => {
-  const paths = file === 'auth/confirm.html' ? `${route} /${file}` : route
+  const paths = `${route} /${file}`
   return `@document${index} path ${paths}\nheader @document${index} Content-Security-Policy "${policy}"`
 }).join('\n\n') + '\n'
 const htmlPaths = [...new Set(records.flatMap(({ route, file }) => route === '/' ? ['/', `/${file}`] : [route, `/${file}`]))]

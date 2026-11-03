@@ -1,0 +1,11 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro'
+import AppIsland from '../../components/AppIsland.astro'
+
+const title = 'Instance settings — Cookbook'
+const description = 'Manage the settings for this Cookbook instance.'
+---
+
+<BaseLayout title={title} description={description} robots="noindex,nofollow">
+  <AppIsland route="admin-settings" pathname="/admin/settings" />
+</BaseLayout>

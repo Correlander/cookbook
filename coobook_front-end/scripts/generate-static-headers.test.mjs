@@ -13,14 +13,16 @@ async function withDist(run) {
   const dist = await mkdtemp(join(tmpdir(), 'cookbook-csp-'))
   try {
     await writeFile(join(dist, 'index.html'), good())
-    await writeFile(join(dist, 'auth-confirm-placeholder'), '')
-    await (await import('node:fs/promises')).mkdir(join(dist, 'auth'))
-    await writeFile(join(dist, 'auth/confirm.html'), good())
+    for (const file of ['auth/confirm.html', 'account/security.html', 'admin/settings.html']) {
+      const directory = file.slice(0, file.lastIndexOf('/'))
+      await (await import('node:fs/promises')).mkdir(join(dist, directory), { recursive: true })
+      await writeFile(join(dist, file), good())
+    }
     return await run(dist)
   } finally { await rm(dist, { recursive: true, force: true }) }
 }
 
-test('emits Cloudflare headers and equivalent Caddy policies for each page', async () => withDist(async (dist) => {
+test('emits Cloudflare headers and equivalent Caddy policies for every static route', async () => withDist(async (dist) => {
   const result = spawnSync(process.execPath, [scriptPath, dist], { encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
   const [headers, caddy, manifest] = await Promise.all([
@@ -31,14 +33,22 @@ test('emits Cloudflare headers and equivalent Caddy policies for each page', asy
   assert.match(headers, /\/\n  Content-Security-Policy:/)
   assert.match(headers, /\/auth\/confirm\n  Content-Security-Policy:/)
   assert.match(headers, /\/auth\/confirm\.html\n  Content-Security-Policy:/)
+  assert.match(headers, /\/account\/security\n  Content-Security-Policy:/)
+  assert.match(headers, /\/account\/security\.html\n  Content-Security-Policy:/)
+  assert.match(headers, /\/admin\/settings\n  Content-Security-Policy:/)
+  assert.match(headers, /\/admin\/settings\.html\n  Content-Security-Policy:/)
   assert.match(headers, /\/\n  Cache-Control: no-store/)
   assert.match(headers, /\/auth\/confirm\n  Cache-Control: no-store/)
+  assert.match(headers, /\/account\/security\n  Cache-Control: no-store/)
+  assert.match(headers, /\/admin\/settings\n  Cache-Control: no-store/)
   assert.match(headers, /\/index\.html\n  Cache-Control: no-store/)
-  assert.match(caddy, /@html path \/ \/index\.html \/auth\/confirm \/auth\/confirm\.html/)
+  assert.match(caddy, /@html path \/ \/index\.html \/auth\/confirm \/auth\/confirm\.html \/account\/security \/account\/security\.html \/admin\/settings \/admin\/settings\.html/)
   assert.match(headers, /Cache-Control: no-store/)
-  assert.match(caddy, /@document0 path \/\nheader @document0 Content-Security-Policy/)
+  assert.match(caddy, /@document0 path \/ \/index\.html\nheader @document0 Content-Security-Policy/)
   assert.match(caddy, /@document1 path \/auth\/confirm/)
-  assert.equal(JSON.parse(manifest).length, 2)
+  assert.match(caddy, /@document2 path \/account\/security \/account\/security\.html/)
+  assert.match(caddy, /@document3 path \/admin\/settings \/admin\/settings\.html/)
+  assert.equal(JSON.parse(manifest).length, 4)
 }))
 
 for (const [name, bad] of [

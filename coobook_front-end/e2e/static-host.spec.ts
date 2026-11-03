@@ -30,6 +30,30 @@ test('serves confirmation as a static route and leaves its token untouched until
   expect(api.headers()['cache-control']).toContain('no-store')
 })
 
+test('opens the shared sign-in dialog from a route link without consuming a token', async ({ page }) => {
+  await page.goto('/?signin=1')
+  await expect(page.getByRole('dialog', { name: /Sign in with email/i })).toBeVisible()
+  expect(new URL(page.url()).searchParams.get('signin')).toBe('1')
+})
+
+test('keeps the root navigation keyboard reachable and retains its legacy hash targets', async ({ page }) => {
+  await page.goto('/')
+  await page.keyboard.press('Tab')
+  await expect(page.locator(':focus')).toHaveAttribute('href', '#home')
+  await page.keyboard.press('Tab')
+  await expect(page.locator(':focus')).toHaveAttribute('href', '/#home')
+  await page.keyboard.press('Tab')
+  await expect(page.locator(':focus')).toHaveAttribute('href', '/#home')
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(/\/#home$/)
+  await page.goto('/#cookbooks')
+  await expect(page.locator('#cookbooks')).toBeVisible()
+  await page.goto('/#recipes')
+  await expect(page.locator('#recipes')).toBeVisible()
+  await page.goto('/#my-cookbooks')
+  await expect(page).toHaveURL(/\/#my-cookbooks$/)
+})
+
 test('preserves invite query on the static root without caching the token URL', async ({ page }) => {
   const response = await page.goto('/?invite=synthetic-unused-invite')
   expect(response?.status()).toBe(200)

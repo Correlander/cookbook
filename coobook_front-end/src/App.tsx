@@ -8,6 +8,8 @@ import PublicCourses from "./PublicCourses.tsx";
 import { scaleQuantity } from "./quantity.ts";
 import useModalFocus from "./useModalFocus.ts";
 import { createStep } from "./steps.ts";
+import { useAppSession } from "./app/AppSession.tsx";
+import AppNavigation from "./app/AppNavigation.tsx";
 import type {
   AdminInvitation,
   AdminInvitationCreated,
@@ -26,14 +28,22 @@ import type {
 } from "./apiModels";
 import { errorMessage } from "./apiModels";
 
-const AccountSecurity = lazy(() => import("./AccountSecurity.tsx"));
 const PasskeySetupPrompt = lazy(() => import("./PasskeySetupPrompt.tsx"));
 const CookingMode = lazy(() => import("./CookingMode.tsx"));
-const AdminSettings = lazy(() => import("./AdminSettings.tsx"));
 const FederationAdmin = lazy(() => import("./FederationAdmin.tsx"));
 const AdminUsers = lazy(() => import("./AdminUsers.tsx"));
 const StepListEditor = lazy(() => import("./StepListEditor.tsx"));
 const Courses = lazy(() => import("./Courses.tsx"));
+const AccountSecurityPage = lazy(() =>
+  import("./app/RoutePages.tsx").then((module) => ({
+    default: module.AccountSecurityPage,
+  })),
+);
+const AdminSettingsPage = lazy(() =>
+  import("./app/RoutePages.tsx").then((module) => ({
+    default: module.AdminSettingsPage,
+  })),
+);
 
 type IconName =
   "search" | "book" | "leaf" | "arrow" | "clock" | "close" | "chef";
@@ -609,7 +619,7 @@ function RecipeDialog({
     </div>
   );
 }
-export default function App() {
+function HomeApp({ pathname }: { pathname: string }) {
   const [query, setQuery] = useState(""),
     [selected, setSelected] = useState<Recipe | null>(null),
     [selectedRemote, setSelectedRemote] = useState<RemoteRecipe | null>(null),
@@ -620,18 +630,16 @@ export default function App() {
     [message, setMessage] = useState(""),
     [confirming, setConfirming] = useState(false),
     [confirmationToken, setConfirmationToken] = useState(""),
-    [signedIn, setSignedIn] = useState(false),
-    [currentUser, setCurrentUser] = useState<UserSummary | null>(null),
     [editRecipe, setEditRecipe] = useState<Recipe | null>(null),
     [createOpen, setCreateOpen] = useState(false),
     [inviteToken, setInviteToken] = useState(""),
-    [passkeyPrompt, setPasskeyPrompt] = useState(false),
-    [featureVersion, setFeatureVersion] = useState(0);
+    [passkeyPrompt, setPasskeyPrompt] = useState(false);
+  const { currentUser, refreshSession, clearSession } = useAppSession();
+  const signedIn = Boolean(currentUser);
   const feed = useRecipeFeed({ signedIn, query });
   const emailDialogRef = useRef<HTMLElement>(null);
   function handleSignedOut() {
-    setSignedIn(false);
-    setCurrentUser(null);
+    clearSession();
     setCreateOpen(false);
     setEditRecipe(null);
     setSelected(null);
@@ -649,26 +657,7 @@ export default function App() {
     const invitation = params.get("invite") || "";
     setConfirmationToken(confirmation);
     setInviteToken(invitation);
-    setEmailOpen(Boolean(confirmation || invitation));
-  }, []);
-  useEffect(() => {
-    let active = true;
-    fetch("/api/auth/me")
-      .then(async (response) =>
-        response.ok ? ((await response.json()) as UserSummary) : null,
-      )
-      .then((user) => {
-        if (active && user) {
-          setCurrentUser(user);
-          setSignedIn(true);
-        }
-      })
-      .catch(() => {
-        if (active) setSignedIn(false);
-      });
-    return () => {
-      active = false;
-    };
+    setEmailOpen(Boolean(confirmation || invitation || params.get("signin")));
   }, []);
   useEffect(() => {
     let active = true;
@@ -700,9 +689,7 @@ export default function App() {
     setMessage("");
     try {
       await signInWithPasskey();
-      const response = await fetch("/api/auth/me");
-      if (response.ok) setCurrentUser(await response.json());
-      setSignedIn(true);
+      await refreshSession();
       setEmailOpen(false);
     } catch (error: unknown) {
       setMessage(errorMessage(error, "Passkey sign-in failed."));
@@ -754,10 +741,7 @@ export default function App() {
         );
       window.history.replaceState({}, "", "/");
       setConfirmationToken("");
-      const me = await fetch("/api/auth/me");
-      const user = me.ok ? ((await me.json()) as UserSummary) : null;
-      setCurrentUser(user);
-      setSignedIn(Boolean(user));
+      const user = await refreshSession();
       if (user) {
         const passkeysResponse = await fetch("/api/auth/passkeys");
         if (passkeysResponse.ok && !(await passkeysResponse.json()).length)
@@ -774,37 +758,15 @@ export default function App() {
   }
   return (
     <div className="app-content">
-      <header className="topbar">
-        <a href="#home" className="brand" aria-label="Cookbook home">
-          <span className="brand-mark">
-            <Icon name="chef" size={25} />
-          </span>
-          <span>Cookbook</span>
-        </a>
-        <nav className="main-nav" aria-label="Main navigation">
-          <a className="main-nav__active" href="#home">
-            Discover
-          </a>
-          <a href="#cookbooks">Cookbooks</a>
-          <a href="#recipes">Recipes</a>
-        </nav>
-        <label className="top-search">
-          <Icon name="search" size={17} />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search…"
-            aria-label="Search recipes"
-          />
-        </label>
-        <button
-          className="signin-button"
-          onClick={() => (signedIn ? setCreateOpen(true) : setEmailOpen(true))}
-        >
-          {signedIn ? "Add a recipe" : "Sign in"}
-        </button>
-      </header>
-      <main id="home">
+      <AppNavigation
+        currentUser={currentUser}
+        pathname={pathname}
+        query={query}
+        onQueryChange={setQuery}
+        actionLabel={signedIn ? "Add a recipe" : "Sign in"}
+        onAction={() => (signedIn ? setCreateOpen(true) : setEmailOpen(true))}
+      />
+      <main id="home" tabIndex={-1}>
         {signedIn ? (
           <section className="dashboard-welcome">
             <div>
@@ -875,18 +837,6 @@ export default function App() {
           </>
         )}
         {signedIn && (
-          <FeatureIsland name="Account security" loading="account security">
-            <AccountSecurity />
-          </FeatureIsland>
-        )}
-        {signedIn && (
-          <FeatureIsland name="Instance settings" loading="instance settings">
-            <AdminSettings
-              onSaved={() => setFeatureVersion((value) => value + 1)}
-            />
-          </FeatureIsland>
-        )}
-        {signedIn && (
           <FeatureIsland
             name="Federation settings"
             loading="federation settings"
@@ -904,7 +854,7 @@ export default function App() {
         )}
         {signedIn && (
           <FeatureIsland name="Courses" loading="courses">
-            <Courses key={featureVersion} onOpenRecipe={setSelected} />
+            <Courses onOpenRecipe={setSelected} />
           </FeatureIsland>
         )}
         {signedIn && <AdminInvitations />}
@@ -1131,6 +1081,32 @@ export default function App() {
   );
 }
 
+type AppRoute = "home" | "account-security" | "admin-settings";
+
+export default function App({
+  route = "home",
+  pathname = "/",
+}: {
+  route?: AppRoute;
+  pathname?: string;
+}) {
+  if (route === "account-security") {
+    return (
+      <FeatureIsland name="Account security page" loading="account security page">
+        <AccountSecurityPage />
+      </FeatureIsland>
+    );
+  }
+  if (route === "admin-settings") {
+    return (
+      <FeatureIsland name="Instance settings page" loading="instance settings page">
+        <AdminSettingsPage />
+      </FeatureIsland>
+    );
+  }
+  return <HomeApp pathname={pathname} />;
+}
+
 interface RecipeFormProps {
   user: UserSummary | null;
   recipe: Recipe | null;
@@ -1176,18 +1152,34 @@ function RecipeForm({
     [imageFile, setImageFile] = useState<File | null>(null),
     [error, setError] = useState(""),
     [saving, setSaving] = useState(false);
+  const sharingCapabilityKnown =
+    !recipe || "can_manage_sharing" in recipe;
+  const canManageCookbookSharing =
+    !recipe ||
+    recipe.can_manage_sharing === true ||
+    (!sharingCapabilityKnown && recipe.owner_id === user?.id);
+  const legacySharingSafetyBlocked =
+    Boolean(recipe && !sharingCapabilityKnown && !canManageCookbookSharing);
   useEffect(() => {
+    if (!canManageCookbookSharing) return;
     fetch("/api/cookbooks")
       .then((response) => (response.ok ? response.json() : []))
       .then(setCookbooks)
       .catch(() => setCookbooks([]));
-  }, []);
+  }, [canManageCookbookSharing]);
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
+    if (legacySharingSafetyBlocked) {
+      setError(
+        "This server does not confirm safe cookbook sharing permissions. Update it before editing this recipe.",
+      );
+      return;
+    }
     setSaving(true);
     try {
-      const payload: RecipeWritePayload = {
+      const payload: Omit<RecipeWritePayload, "cookbook_ids"> &
+        Partial<Pick<RecipeWritePayload, "cookbook_ids">> = {
         title,
         description,
         servings: Number(servings) || 0,
@@ -1199,7 +1191,7 @@ function RecipeForm({
           .filter(Boolean),
         visibility,
         edit_policy: recipe?.edit_policy || "owner_only",
-        cookbook_ids: cookbookIDs,
+        ...(canManageCookbookSharing ? { cookbook_ids: cookbookIDs } : {}),
         ingredients: ingredients
           .split("\n")
           .map((line) => {
@@ -1393,28 +1385,39 @@ function RecipeForm({
               Only the recipe owner can change visibility.
             </p>
           )}
-          <label htmlFor="recipe-cookbooks">Add to cookbooks</label>
-          <select
-            id="recipe-cookbooks"
-            multiple
-            value={cookbookIDs}
-            onChange={(event) =>
-              setCookbookIDs(
-                Array.from(
-                  event.target.selectedOptions,
-                  (option) => option.value,
-                ),
-              )
-            }
-          >
-            {cookbooks
-              .filter((book) => book.owner_id === user?.id)
-              .map((book) => (
-                <option key={book.id} value={book.id}>
-                  {book.title}
-                </option>
-              ))}
-          </select>
+          {canManageCookbookSharing && (
+            <>
+              <label htmlFor="recipe-cookbooks">Add to cookbooks</label>
+              <select
+                id="recipe-cookbooks"
+                multiple
+                value={cookbookIDs}
+                onChange={(event) =>
+                  setCookbookIDs(
+                    Array.from(
+                      event.target.selectedOptions,
+                      (option) => option.value,
+                    ),
+                  )
+                }
+              >
+                {cookbooks
+                  .filter((book) => book.owner_id === user?.id)
+                  .map((book) => (
+                    <option key={book.id} value={book.id}>
+                      {book.title}
+                    </option>
+                  ))}
+              </select>
+            </>
+          )}
+          {legacySharingSafetyBlocked && (
+            <p className="dialog-note" role="status">
+              This server does not confirm safe cookbook sharing permissions.
+              Update it before editing this recipe so existing cookbook links
+              stay intact.
+            </p>
+          )}
           <label htmlFor="recipe-ingredients">
             Ingredients (name | quantity | notes per line)
           </label>
@@ -1430,7 +1433,7 @@ function RecipeForm({
           <button
             className="button button--green"
             type="submit"
-            disabled={saving}
+            disabled={saving || legacySharingSafetyBlocked}
           >
             {saving
               ? "Saving…"

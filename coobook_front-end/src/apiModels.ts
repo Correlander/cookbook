@@ -193,6 +193,7 @@ export interface Recipe {
   edit_policy?: string;
   can_edit: boolean;
   can_delete: boolean;
+  can_manage_sharing?: boolean;
   version: number;
   cookbook_ids?: string[];
   created_at: string;
@@ -210,7 +211,7 @@ export interface RecipeWritePayload {
   tags: string[];
   visibility: Recipe["visibility"];
   edit_policy: string;
-  cookbook_ids: string[];
+  cookbook_ids?: string[];
   ingredients: RecipeIngredient[];
   steps: Array<{ text: string }>;
   version?: number;

@@ -9,6 +9,16 @@ const apiOrigin = process.env.API_ORIGIN
 const port = Number(process.env.STATIC_PORT ?? 4178)
 if (!apiOrigin || !Number.isInteger(port)) throw new Error('API_ORIGIN and STATIC_PORT are required')
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.ico': 'image/x-icon', '.json': 'application/json; charset=utf-8', '.woff2': 'font/woff2' }
+const pageAliases = new Map([
+  ['', { file: 'index.html', route: '/' }],
+  ['index.html', { file: 'index.html', route: '/' }],
+  ['auth/confirm', { file: 'auth/confirm.html', route: '/auth/confirm' }],
+  ['auth/confirm.html', { file: 'auth/confirm.html', route: '/auth/confirm' }],
+  ['account/security', { file: 'account/security.html', route: '/account/security' }],
+  ['account/security.html', { file: 'account/security.html', route: '/account/security' }],
+  ['admin/settings', { file: 'admin/settings.html', route: '/admin/settings' }],
+  ['admin/settings.html', { file: 'admin/settings.html', route: '/admin/settings' }],
+])
 
 const server = createServer(async (request, response) => {
   try {
@@ -26,14 +36,34 @@ const server = createServer(async (request, response) => {
       request.pipe(upstreamRequest)
       return
     }
-    let relative = decodeURIComponent(url.pathname).replace(/^\/+/, '')
-    if (!relative) relative = 'index.html'
-    if (relative === 'auth/confirm') relative = 'auth/confirm.html'
-    let filename = resolve(dist, relative)
-    if (!filename.startsWith(dist + sep) && filename !== resolve(dist, 'index.html')) {
+    let decodedPath
+    try {
+      decodedPath = decodeURIComponent(url.pathname)
+    } catch {
+      response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' }).end('bad path')
+      return
+    }
+    const relative = decodedPath.replace(/^\/+/, '')
+    const page = pageAliases.get(relative)
+    const target = page?.file ?? relative
+    if (target.includes('\\') || target.includes('\0')) {
       response.writeHead(400).end('bad path'); return
     }
-    if ((await stat(filename).catch(() => null))?.isDirectory()) filename = resolve(filename, 'index.html')
+    let filename = resolve(dist, target)
+    if (!filename.startsWith(dist + sep)) {
+      response.writeHead(400).end('bad path'); return
+    }
+    if ((await stat(filename).catch(() => null))?.isDirectory()) {
+      const indexFile = resolve(filename, 'index.html')
+      if (!indexFile.startsWith(dist + sep)) {
+        response.writeHead(400).end('bad path'); return
+      }
+      filename = indexFile
+    }
+    if (extname(filename) === '.html' && !page) {
+      response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end('not found')
+      return
+    }
     const data = await readFile(filename)
     const type = mime[extname(filename)] ?? 'application/octet-stream'
     response.setHeader('Content-Type', type)
@@ -41,9 +71,8 @@ const server = createServer(async (request, response) => {
     if (filename.includes(`${sep}_astro${sep}`)) response.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
     if (extname(filename) === '.html') {
       const policies = JSON.parse(await readFile(resolve(dist, 'static-csp.json'), 'utf8'))
-      const route = filename === resolve(dist, 'index.html') ? '/' : '/auth/confirm'
-      const policy = policies.find((record) => record.route === route)?.policy
-      if (!policy) throw new Error(`no generated CSP policy for ${route}`)
+      const policy = policies.find((record) => record.route === page.route)?.policy
+      if (!policy) throw new Error(`no generated CSP policy for ${page.route}`)
       response.setHeader('Content-Security-Policy', policy)
     }
     response.setHeader('X-Content-Type-Options', 'nosniff')

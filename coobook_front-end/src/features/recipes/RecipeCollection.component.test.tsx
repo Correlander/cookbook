@@ -402,5 +402,13 @@ describe("RecipeCollection", () => {
       expect(status.textContent).toBe("1 recipe found for new."),
     );
     expect(status.textContent).not.toContain("old");
+
+    await act(async () => {
+      oldQuery.resolve(jsonResponse([{ id: 3, title: "Old recipe" }]));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    expect(status.textContent).toBe("1 recipe found for new.");
+    expect(screen.queryByRole("button", { name: "Old recipe" })).toBeNull();
   });
 });

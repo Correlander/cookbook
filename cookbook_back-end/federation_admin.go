@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -27,9 +29,21 @@ type federationPeerAdminKey struct {
 	RevokedAt string `json:"revoked_at,omitempty"`
 }
 
-func (h apiHandler) federationIdentity(w http.ResponseWriter, r *http.Request) {
-	if !isAdministrator(h.db, authenticatedUser(r)) {
+func authorizeFederationIdentity(w http.ResponseWriter, r *http.Request, db *sql.DB) bool {
+	allowed, err := canManageFederationIdentity(r.Context(), db, authenticatedUser(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return false
+	}
+	if !allowed {
 		writeError(w, http.StatusForbidden, "forbidden")
+		return false
+	}
+	return true
+}
+
+func (h apiHandler) federationIdentity(w http.ResponseWriter, r *http.Request) {
+	if !authorizeFederationIdentity(w, r, h.db) {
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -47,10 +61,12 @@ func (h apiHandler) federationIdentity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	identity := map[string]string{"origin": origin, "key_id": key.ID, "public_key": key.publicKeyBase64()}
+	identity["key_fingerprint"] = federationKeyFingerprint(key)
 	pending, pendingErr := readFederationSigningKey(federationPendingKeyPath(h.federationKeyDir))
 	if pendingErr == nil {
 		identity["pending_key_id"] = pending.ID
 		identity["pending_public_key"] = pending.publicKeyBase64()
+		identity["pending_key_fingerprint"] = federationKeyFingerprint(pending)
 	} else if !errors.Is(pendingErr, os.ErrNotExist) {
 		writeError(w, http.StatusInternalServerError, "federation_key_unavailable")
 		return
@@ -59,10 +75,6 @@ func (h apiHandler) federationIdentity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h apiHandler) federationIdentityRotation(w http.ResponseWriter, r *http.Request) {
-	if !isAdministrator(h.db, authenticatedUser(r)) {
-		writeError(w, http.StatusForbidden, "forbidden")
-		return
-	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
@@ -73,34 +85,74 @@ func (h apiHandler) federationIdentityRotation(w http.ResponseWriter, r *http.Re
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	var key federationSigningKey
-	var err error
-	switch input.Action {
-	case "stage":
-		key, err = stageFederationKeyRotation(h.federationKeyDir)
-		if err != nil {
-			if errors.Is(err, errFederationRotationPending) {
-				writeError(w, http.StatusConflict, "federation_rotation_already_pending")
-			} else {
-				writeError(w, http.StatusInternalServerError, "federation_key_unavailable")
-			}
-			return
-		}
-	case "activate":
-		key, err = activateFederationKeyRotation(h.federationKeyDir)
-		if errors.Is(err, os.ErrNotExist) {
-			writeError(w, http.StatusConflict, "pending_federation_key_required")
-			return
-		}
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "federation_key_unavailable")
-			return
-		}
-	default:
+	if input.Action != "stage" && input.Action != "activate" {
 		writeError(w, http.StatusBadRequest, "invalid_rotation_action")
 		return
 	}
+	key, err := rotateFederationSigningKeyForActor(r.Context(), h.db, authenticatedUser(r), h.federationKeyDir, input.Action, nil)
+	if writeFederationRotationError(w, r, h.db, err) {
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "federation_key_unavailable")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"key_id": key.ID, "public_key": key.publicKeyBase64()})
+}
+
+func rotateFederationSigningKeyForActor(ctx context.Context, db *sql.DB, actorID, directory, action string, afterAuthorization func()) (key federationSigningKey, err error) {
+	return rotateFederationSigningKeyForActorWithTransaction(ctx, db, actorID, directory, action, afterAuthorization, withInstanceOwnerWriteTx)
+}
+
+func rotateFederationSigningKeyForActorWithTransaction(ctx context.Context, db *sql.DB, actorID, directory, action string, afterAuthorization func(), transaction func(context.Context, *sql.DB, func(migrationExecutor) error) error) (key federationSigningKey, err error) {
+	fileActionCompleted := false
+	err = transaction(ctx, db, func(tx migrationExecutor) error {
+		allowed, err := canManageInstanceRolesExec(ctx, tx, actorID)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return ErrInstanceOwnerUnauthorized
+		}
+		if afterAuthorization != nil {
+			afterAuthorization()
+		}
+		switch action {
+		case "stage":
+			key, err = stageFederationKeyRotation(directory)
+		case "activate":
+			key, err = activateFederationKeyRotation(directory)
+		default:
+			return errors.New("invalid federation key rotation action")
+		}
+		if err == nil {
+			fileActionCompleted = true
+		}
+		return err
+	})
+	if err != nil && fileActionCompleted {
+		return key, unknownFederationRotationOutcome(fmt.Errorf("finish authority-guard transaction after federation key change: %w", err))
+	}
+	return key, err
+}
+
+func writeFederationRotationError(w http.ResponseWriter, r *http.Request, db *sql.DB, err error) bool {
+	switch {
+	case errors.Is(err, ErrInstanceOwnerUnauthorized):
+		writeError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, errFederationRotationPending):
+		writeError(w, http.StatusConflict, "federation_rotation_already_pending")
+	case errors.Is(err, os.ErrNotExist):
+		writeError(w, http.StatusConflict, "pending_federation_key_required")
+	case errors.Is(err, errFederationRotationOutcomeUnknown):
+		// This records an attempted/unknown operation only; a failed transaction
+		// cannot provide a durable success audit for a filesystem key change.
+		recordAuditBestEffort(db, authenticatedUser(r), "POST /admin/federation/identity/rotation", "admin", "", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "federation_key_rotation_outcome_unknown")
+	default:
+		return false
+	}
+	return true
 }
 
 func (h apiHandler) federationPeers(w http.ResponseWriter, r *http.Request) {

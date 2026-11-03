@@ -199,7 +199,7 @@ func TestRegistrationPolicyConfiguration(t *testing.T) {
 	}
 }
 
-func TestAdministratorBootstrapIsOneTimeAndConfigurable(t *testing.T) {
+func TestAdministratorBootstrapOnlyUsesConfiguredEmailOnEmptyInstance(t *testing.T) {
 	db := testDatabase(t)
 	t.Setenv("COOKBOOK_ADMIN_EMAIL", "owner@example.test")
 	t.Setenv("COOKBOOK_ADMIN_NAME", "Instance Owner")
@@ -212,7 +212,16 @@ func TestAdministratorBootstrapIsOneTimeAndConfigurable(t *testing.T) {
 		t.Fatalf("bootstrap account = %q %q admin=%d, err=%v", email, name, admin, err)
 	}
 	if err := provisionAdministrator(db); err != nil {
-		t.Fatalf("persistent bootstrap setting should be harmless after first admin: %v", err)
+		t.Fatalf("persistent bootstrap setting should be harmless after first account: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE users SET is_admin=0 WHERE email=?`, email); err != nil {
+		t.Fatal(err)
+	}
+	if err := provisionAdministrator(db); err != nil {
+		t.Fatalf("configured email must not re-promote an existing account: %v", err)
+	}
+	if err := db.QueryRow(`SELECT is_admin FROM users WHERE email=?`, email).Scan(&admin); err != nil || admin != 0 {
+		t.Fatalf("existing configured account was promoted: admin=%d err=%v", admin, err)
 	}
 }
 

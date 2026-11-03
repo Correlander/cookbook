@@ -595,6 +595,153 @@ func TestFederationIdentityKeyRotationStagesBeforeActivation(t *testing.T) {
 	}
 }
 
+func TestFederationIdentityRotationSerializesWithOwnerTransfer(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,is_admin,created_at) VALUES
+		('owner','owner@example.org','Owner',0,'now'),('target','target@example.org','Target',0,'now')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClaimInstanceOwner(context.Background(), db, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	transfer, err := CreateInstanceOwnerTransfer(context.Background(), db, "owner", "target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	active, err := loadOrCreateFederationSigningKey(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorized := make(chan struct{})
+	continueRotation := make(chan struct{})
+	releaseRotation := func() {
+		select {
+		case <-continueRotation:
+		default:
+			close(continueRotation)
+		}
+	}
+	t.Cleanup(releaseRotation)
+	rotationDone := make(chan struct {
+		key federationSigningKey
+		err error
+	}, 1)
+	go func() {
+		key, err := rotateFederationSigningKeyForActor(context.Background(), db, "owner", directory, "stage", func() {
+			close(authorized)
+			<-continueRotation
+		})
+		rotationDone <- struct {
+			key federationSigningKey
+			err error
+		}{key: key, err: err}
+	}()
+	select {
+	case <-authorized:
+	case <-time.After(2 * time.Second):
+		t.Fatal("key rotation did not reach its authorized transaction")
+	}
+	acceptStarted := make(chan struct{})
+	acceptDone := make(chan error, 1)
+	go func() {
+		close(acceptStarted)
+		_, err := AcceptInstanceOwnerTransfer(context.Background(), db, "target", transfer.ID)
+		acceptDone <- err
+	}()
+	<-acceptStarted
+	releaseRotation()
+	var staged federationSigningKey
+	select {
+	case result := <-rotationDone:
+		staged = result.key
+		if result.err != nil || staged.ID == active.ID {
+			t.Fatalf("rotation ordered before transfer failed: key=%s err=%v", staged.ID, result.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("key rotation did not finish after release")
+	}
+	select {
+	case err := <-acceptDone:
+		if err != nil {
+			t.Fatalf("transfer after key rotation: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("owner transfer did not finish after key rotation")
+	}
+	current, err := loadOrCreateFederationSigningKey(directory)
+	if err != nil || current.ID != active.ID {
+		t.Fatalf("staging changed active key: key=%s err=%v", current.ID, err)
+	}
+	if pending, err := readFederationSigningKey(federationPendingKeyPath(directory)); err != nil || pending.ID != staged.ID {
+		t.Fatalf("authorized in-flight stage was not preserved: pending=%s err=%v", pending.ID, err)
+	}
+
+	api := apiHandler{db: db, federationKeyDir: directory}
+	request := requestForUser(http.MethodPost, "/api/admin/federation/identity/rotation", "owner")
+	request.Body = io.NopCloser(strings.NewReader(`{"action":"activate"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	api.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("former owner activation status=%d body=%s", response.Code, response.Body)
+	}
+	current, err = loadOrCreateFederationSigningKey(directory)
+	if err != nil || current.ID != active.ID {
+		t.Fatalf("denied former-owner request changed active key: key=%s err=%v", current.ID, err)
+	}
+	if pending, err := readFederationSigningKey(federationPendingKeyPath(directory)); err != nil || pending.ID != staged.ID {
+		t.Fatalf("denied former-owner request changed pending key: pending=%s err=%v", pending.ID, err)
+	}
+}
+
+func TestClaimedInstanceOwnerAloneControlsLocalFederationIdentity(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,is_admin,created_at) VALUES
+		('owner','owner@example.org','Owner',0,'now'),('admin','admin@example.org','Admin',1,'now')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClaimInstanceOwner(context.Background(), db, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	api := apiHandler{db: db, federationKeyDir: directory}
+	adminGet := httptest.NewRecorder()
+	api.ServeHTTP(adminGet, requestForUser(http.MethodGet, "/api/admin/federation/identity", "admin"))
+	if adminGet.Code != http.StatusForbidden {
+		t.Fatalf("ordinary admin read local identity status=%d body=%s", adminGet.Code, adminGet.Body)
+	}
+	adminRotation := requestForUser(http.MethodPost, "/api/admin/federation/identity/rotation", "admin")
+	adminRotation.Body = io.NopCloser(strings.NewReader(`{"action":"stage"}`))
+	adminRotation.Header.Set("Content-Type", "application/json")
+	adminResponse := httptest.NewRecorder()
+	api.ServeHTTP(adminResponse, adminRotation)
+	if adminResponse.Code != http.StatusForbidden {
+		t.Fatalf("ordinary admin rotated local key status=%d body=%s", adminResponse.Code, adminResponse.Body)
+	}
+	ownerGet := httptest.NewRecorder()
+	api.ServeHTTP(ownerGet, requestForUser(http.MethodGet, "/api/admin/federation/identity", "owner"))
+	if ownerGet.Code != http.StatusOK {
+		t.Fatalf("non-admin owner could not read local identity status=%d body=%s", ownerGet.Code, ownerGet.Body)
+	}
+	ownerRotation := requestForUser(http.MethodPost, "/api/admin/federation/identity/rotation", "owner")
+	ownerRotation.Body = io.NopCloser(strings.NewReader(`{"action":"stage"}`))
+	ownerRotation.Header.Set("Content-Type", "application/json")
+	ownerResponse := httptest.NewRecorder()
+	api.ServeHTTP(ownerResponse, ownerRotation)
+	if ownerResponse.Code != http.StatusOK {
+		t.Fatalf("non-admin owner could not stage key rotation status=%d body=%s", ownerResponse.Code, ownerResponse.Body)
+	}
+	peerRequest := requestForUser(http.MethodPost, "/api/admin/federation/peers", "admin")
+	peerRequest.Body = io.NopCloser(strings.NewReader(`{"origin":"https://peer.example.org","enabled":false}`))
+	peerRequest.Header.Set("Content-Type", "application/json")
+	peerResponse := httptest.NewRecorder()
+	api.ServeHTTP(peerResponse, peerRequest)
+	if peerResponse.Code != http.StatusOK {
+		t.Fatalf("ordinary admin lost peer administration after claim status=%d body=%s", peerResponse.Code, peerResponse.Body)
+	}
+}
+
 func federationPeerEnabled(db *sql.DB, origin string) bool {
 	var enabled int
 	return db.QueryRowContext(context.Background(), `SELECT enabled FROM federation_peers WHERE origin=?`, origin).Scan(&enabled) == nil && enabled == 1

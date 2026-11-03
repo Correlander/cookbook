@@ -19,7 +19,28 @@ const (
 	federationPendingPrivateKeyFile = "federation-ed25519.pending.pk8.pem"
 )
 
-var errFederationRotationPending = errors.New("federation key rotation is already pending")
+var (
+	errFederationRotationPending        = errors.New("federation key rotation is already pending")
+	errFederationRotationOutcomeUnknown = errors.New("federation key rotation outcome is unknown")
+)
+
+type federationRotationOutcomeUnknownError struct {
+	cause error
+}
+
+func (err *federationRotationOutcomeUnknownError) Error() string {
+	return fmt.Sprintf("%v: %v", errFederationRotationOutcomeUnknown, err.cause)
+}
+
+func (err *federationRotationOutcomeUnknownError) Unwrap() error { return err.cause }
+
+func (err *federationRotationOutcomeUnknownError) Is(target error) bool {
+	return target == errFederationRotationOutcomeUnknown
+}
+
+func unknownFederationRotationOutcome(cause error) error {
+	return &federationRotationOutcomeUnknownError{cause: cause}
+}
 
 func federationPendingKeyPath(directory string) string {
 	return filepath.Join(directory, federationPendingPrivateKeyFile)
@@ -125,6 +146,11 @@ func federationKeyFromPrivate(privateKey ed25519.PrivateKey) federationSigningKe
 	return federationSigningKey{ID: "cookbook-ed25519-" + hex.EncodeToString(digest[:16]), PrivateKey: privateKey, PublicKey: publicKey}
 }
 
+func federationKeyFingerprint(key federationSigningKey) string {
+	digest := sha256.Sum256(key.PublicKey)
+	return "SHA-256:" + hex.EncodeToString(digest[:])
+}
+
 func stageFederationKeyRotation(directory string) (federationSigningKey, error) {
 	if _, err := loadOrCreateFederationSigningKey(directory); err != nil {
 		return federationSigningKey{}, err
@@ -143,6 +169,10 @@ func stageFederationKeyRotation(directory string) (federationSigningKey, error) 
 }
 
 func activateFederationKeyRotation(directory string) (federationSigningKey, error) {
+	return activateFederationKeyRotationWithSync(directory, syncFederationKeyDirectory)
+}
+
+func activateFederationKeyRotationWithSync(directory string, syncDirectory func(string) error) (federationSigningKey, error) {
 	if _, err := loadOrCreateFederationSigningKey(directory); err != nil {
 		return federationSigningKey{}, err
 	}
@@ -154,8 +184,8 @@ func activateFederationKeyRotation(directory string) (federationSigningKey, erro
 	if err := os.Rename(pendingPath, filepath.Join(directory, federationPrivateKeyFile)); err != nil {
 		return federationSigningKey{}, fmt.Errorf("activate federation signing key: %w", err)
 	}
-	if err := syncFederationKeyDirectory(directory); err != nil {
-		return federationSigningKey{}, err
+	if err := syncDirectory(directory); err != nil {
+		return key, unknownFederationRotationOutcome(fmt.Errorf("sync federation key directory after activation: %w", err))
 	}
 	return key, nil
 }

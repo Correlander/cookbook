@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const instanceOwnerSchemaDDL = `CREATE TABLE IF NOT EXISTS instance_authority (
@@ -131,6 +132,72 @@ func InstanceOwnerCapabilitiesFor(ctx context.Context, db *sql.DB, accountID str
 // local account. It never changes that account's administrator bit.
 func ClaimInstanceOwner(ctx context.Context, db *sql.DB, accountID string) (InstanceAuthority, error) {
 	return claimInstanceOwnerWithClock(ctx, db, accountID, time.Now)
+}
+
+// RecoverInstanceOwner is the explicit offline host-operator recovery path.
+// The caller must hold the exclusive maintenance lock and obtain confirmation.
+func RecoverInstanceOwner(ctx context.Context, db *sql.DB, accountID, reason string) (authority InstanceAuthority, err error) {
+	reason = strings.TrimSpace(reason)
+	if len(reason) == 0 || len(reason) > 500 || strings.IndexFunc(reason, unicode.IsControl) >= 0 {
+		return InstanceAuthority{}, errors.New("owner recovery reason must contain 1 to 500 bytes")
+	}
+	err = withInstanceOwnerWriteTx(ctx, db, func(tx migrationExecutor) error {
+		now := time.Now().UTC()
+		if err := requireOwnerAccount(ctx, tx, accountID); err != nil {
+			return err
+		}
+		current, err := readInstanceAuthority(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if current.OwnerUserID == accountID {
+			return errors.New("recovery target is already the instance owner")
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM instance_owner_transfers WHERE state='pending' ORDER BY id`)
+		if err != nil {
+			return fmt.Errorf("list pending owner transfers for recovery: %w", err)
+		}
+		var pending []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return fmt.Errorf("read pending owner transfer for recovery: %w", err)
+			}
+			pending = append(pending, id)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("read pending owner transfers for recovery: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close pending owner transfers for recovery: %w", err)
+		}
+		for _, id := range pending {
+			if err := setOwnerTransferTerminal(ctx, tx, id, OwnerTransferCancelled, now); err != nil {
+				return err
+			}
+			if err := insertInstanceOwnerAudit(ctx, tx, "", "instance_owner.transfer.recovery_cancel", "instance_owner_transfer", id, http.StatusConflict, now); err != nil {
+				return err
+			}
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE instance_authority SET owner_user_id=?,owner_claimed_at=?,generation=generation+1 WHERE singleton_id=1 AND generation=?`, accountID, formatOwnerTime(now), current.Generation)
+		if err != nil {
+			return fmt.Errorf("recover instance owner: %w", err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil || changed != 1 {
+			return ErrOwnerTransferStale
+		}
+		previous := current.OwnerUserID
+		detail := fmt.Sprintf("previous=%s; target=%s; reason=%s", previous, accountID, reason)
+		if err := insertInstanceOwnerAudit(ctx, tx, "", "instance_owner.recover", "instance_authority", detail, http.StatusOK, now); err != nil {
+			return err
+		}
+		authority, err = readInstanceAuthority(ctx, tx)
+		return err
+	})
+	return authority, err
 }
 
 func claimInstanceOwnerAt(ctx context.Context, db *sql.DB, accountID string, now time.Time) (authority InstanceAuthority, err error) {

@@ -27,7 +27,35 @@ Run backend checks with `go test ./...` and `go vet ./...` from `cookbook_back-e
 1. Copy `.env.example` to `.env`, then set `COOKBOOK_PUBLIC_URL`, `COOKBOOK_RP_ID`, `COOKBOOK_RP_ORIGIN`, and the SMTP host/from values. SMTP delivery requires STARTTLS; credentials are optional for relays that do not require authentication. Alternatively, configure `COOKBOOK_EMAIL_COMMAND` with an executable in the container that accepts the documented JSON payload on stdin. SMTP connections and mail commands have a 30-second deadline.
 2. Set `COOKBOOK_ADMIN_EMAIL` and optionally `COOKBOOK_ADMIN_NAME` for the first startup. This creates the first administrator account. Leave the email challenge/sign-in flow configured before making the instance reachable.
 3. Run `docker compose up --build -d`. Compose binds the service to `127.0.0.1:8000`; put a trusted HTTPS reverse proxy in front. The `cookbook-data` volume stores SQLite data at `/data/cookbook.db` and recipe images under `/data/media`.
-4. After setup, remove `COOKBOOK_ADMIN_EMAIL` from `.env`. It has no effect once an administrator already exists.
+4. After setup, remove `COOKBOOK_ADMIN_EMAIL` from `.env`. It provisions an account only when the instance has no users; it will not recreate or promote an account on an existing instance, including one with no administrators.
+
+## Instance owner operations
+
+The first instance owner is selected explicitly from an existing account. While the API is running, an administrator can obtain account IDs from the admin user list. Stop the backend before an offline owner command; the service and CLI coordinate through a persistent Linux advisory lock, and the CLI fails without opening the database if the service still holds its lock.
+
+For Compose, stop the backend and run the one-shot command against the same data volume:
+
+```sh
+podman compose stop cookbook
+podman compose run --rm --no-deps cookbook instance owner claim --account-id <account-id>
+podman compose up -d cookbook
+```
+
+The command prompts for an exact confirmation. Claiming changes no administrator role, account credentials, content ownership or private-content access. After claim, only the instance owner can grant or revoke administrator roles or stage/activate the local federation signing-key rotation. Existing administrators retain ordinary admin features and peer management, but lose those instance-identity controls. Before the first claim, existing administrators retain their current role and federation identity controls. The canonical federation origin remains a host-operator startup setting (`COOKBOOK_FEDERATION_ORIGIN`); it is not changed through admin settings.
+
+Role changes and signing-key rotations serialize with owner-transfer acceptance. A mutation that already holds the database writer lock finishes before the transfer; a request that acquires the lock after acceptance rechecks the new authority and is denied if the caller no longer controls instance identity. This does not cancel requests or sessions; the gate applies to these protected writes.
+
+Signing-key rotation uses atomic files for staging and activation. If a rotation request returns `federation_key_rotation_outcome_unknown`, do not retry immediately: read the authorized `GET /api/admin/federation/identity` status and compare its `key_fingerprint` and optional `pending_key_fingerprint` with fingerprints recorded before activation. If the active fingerprint now matches the previously staged fingerprint and no pending fingerprint remains, activation took effect; if the old active fingerprint and pending fingerprint remain, activation did not take effect and may be retried after review. For an unknown result from staging, inspect the returned state and pending-key fingerprint before deciding whether to continue; do not blindly stage again. If the observed state does not match the expected pre- or post-activation state, stop and inspect the protected key files before acting. The status response exposes SHA-256 fingerprints of public keys only, never private-key material. The unknown-outcome response records an attempted/unknown audit event on a best-effort basis; a database commit failure can prevent that event and cannot be reported as a successful rotation audit. The API performs no automatic retry.
+
+To recover instance ownership, choose an existing account ID, stop the backend, and run:
+
+```sh
+podman compose stop cookbook
+podman compose run --rm --no-deps cookbook instance owner recover --account-id <account-id> --reason "document the operator recovery context"
+podman compose up -d cookbook
+```
+
+Recovery requires an exact interactive confirmation and records the prior/target account IDs and reason in the audit log. It cancels any pending owner transfer and advances the authority generation. It does not sign in as the target, reset credentials, grant administrator role or bypass content permissions. These offline commands are supported on Linux; other operating systems fail closed because the shared/exclusive advisory lock is unavailable.
 
 Run `./scripts/backup-compose.sh [private-directory]` to create a versioned full-instance archive. The helper stops the Compose service, archives the SQLite database and sidecars, `/data/media`, the active federation signing key and any pending rotation key, then restarts the service if it was running. Without an argument it uses `./backups`; `COOKBOOK_BACKUP_DIR` also selects the default. The destination and archive are restricted to the current user, but the archive is plaintext and contains private user data and signing keys. Store backups only in an explicitly agreed private, encrypted destination. See [Backup and recovery](docs/backup-and-recovery.md) for the format, limits and legacy archive behavior.
 

@@ -56,6 +56,12 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func main() {
+	if handled, err := runInstanceOwnerCLI(os.Args[1:], os.Stdin, os.Stdout); handled {
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		log.Fatal(err)
 	}
@@ -69,6 +75,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	maintenance, err := acquireMaintenanceLock(cfg.database, maintenanceLockShared)
+	if err != nil {
+		return fmt.Errorf("acquire server maintenance lock: %w", err)
+	}
+	defer maintenance.Close()
 	if err := os.MkdirAll(cfg.mediaDir, 0700); err != nil {
 		return fmt.Errorf("create media directory: %w", err)
 	}
@@ -103,7 +114,9 @@ func run() error {
 	}
 	startFederationOutboxWorker(ctx, db, cfg.federationKeyDir)
 	log.Printf("Cookbook API listening on %s", cfg.address)
-	return runHTTPServer(ctx, server, listener, 20*time.Second)
+	serverErr := runHTTPServer(ctx, server, listener, 20*time.Second)
+	stop()
+	return serverErr
 }
 
 func requireSession(db *sql.DB, next http.Handler) http.Handler {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -15,9 +16,15 @@ type adminUser struct {
 }
 
 var errLastAdministrator = errors.New("cannot remove the last administrator")
+var errCannotChangeOwnRole = errors.New("cannot change own role")
 
 func (h apiHandler) adminUsers(w http.ResponseWriter, r *http.Request) {
-	if !isAdministrator(h.db, authenticatedUser(r)) {
+	canView, err := canViewAdminUsers(r.Context(), h.db, authenticatedUser(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	if !canView {
 		writeError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -55,10 +62,6 @@ func (h apiHandler) adminUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h apiHandler) adminUserByID(w http.ResponseWriter, r *http.Request, id string) {
-	if !isAdministrator(h.db, authenticatedUser(r)) {
-		writeError(w, http.StatusForbidden, "forbidden")
-		return
-	}
 	if r.Method != http.MethodPatch {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
@@ -73,34 +76,74 @@ func (h apiHandler) adminUserByID(w http.ResponseWriter, r *http.Request, id str
 		writeError(w, http.StatusBadRequest, "empty_user_update")
 		return
 	}
-	actorID := authenticatedUser(r)
-	if id == actorID {
-		writeError(w, http.StatusConflict, "cannot_change_own_role")
-		return
-	}
-	var current adminUser
-	var isAdmin int
-	if err := h.db.QueryRow(`SELECT id,email,display_name,is_admin,created_at FROM users WHERE id=?`, id).Scan(&current.ID, &current.Email, &current.DisplayName, &isAdmin, &current.CreatedAt); err != nil {
-		writeError(w, http.StatusNotFound, "not_found")
-		return
-	}
-	if err := setUserAdministrator(h.db, id, *input.IsAdmin); errors.Is(err, errLastAdministrator) {
+	current, err := updateUserAdministratorForActor(r.Context(), h.db, authenticatedUser(r), id, *input.IsAdmin)
+	switch {
+	case errors.Is(err, errLastAdministrator):
 		writeError(w, http.StatusConflict, "last_administrator_required")
 		return
-	} else if err != nil {
+	case errors.Is(err, errCannotChangeOwnRole):
+		writeError(w, http.StatusConflict, "cannot_change_own_role")
+		return
+	case errors.Is(err, ErrOwnerAccountNotFound):
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	case errors.Is(err, ErrInstanceOwnerUnauthorized):
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	case err != nil:
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
-	current.IsAdmin = *input.IsAdmin
 	writeJSON(w, http.StatusOK, current)
 }
 
+func updateUserAdministratorForActor(ctx context.Context, db *sql.DB, actorID, userID string, isAdmin bool) (adminUser, error) {
+	return updateUserAdministratorForActorWithHook(ctx, db, actorID, userID, isAdmin, nil)
+}
+
+func updateUserAdministratorForActorWithHook(ctx context.Context, db *sql.DB, actorID, userID string, isAdmin bool, afterAuthorization func()) (current adminUser, err error) {
+	err = withInstanceOwnerWriteTx(ctx, db, func(tx migrationExecutor) error {
+		canManage, err := canManageInstanceRolesExec(ctx, tx, actorID)
+		if err != nil {
+			return err
+		}
+		if !canManage {
+			return ErrInstanceOwnerUnauthorized
+		}
+		if afterAuthorization != nil {
+			afterAuthorization()
+		}
+		if userID == actorID {
+			return errCannotChangeOwnRole
+		}
+		var isAdminValue int
+		if err := tx.QueryRowContext(ctx, `SELECT id,email,display_name,is_admin,created_at FROM users WHERE id=?`, userID).Scan(&current.ID, &current.Email, &current.DisplayName, &isAdminValue, &current.CreatedAt); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrOwnerAccountNotFound
+			}
+			return err
+		}
+		if err := setUserAdministratorTx(ctx, tx, userID, isAdmin); err != nil {
+			return err
+		}
+		current.IsAdmin = isAdmin
+		return nil
+	})
+	return current, err
+}
+
 func setUserAdministrator(db *sql.DB, userID string, isAdmin bool) error {
+	return withInstanceOwnerWriteTx(context.Background(), db, func(tx migrationExecutor) error {
+		return setUserAdministratorTx(context.Background(), tx, userID, isAdmin)
+	})
+}
+
+func setUserAdministratorTx(ctx context.Context, tx migrationExecutor, userID string, isAdmin bool) error {
 	if isAdmin {
-		_, err := db.Exec(`UPDATE users SET is_admin=1 WHERE id=?`, userID)
+		_, err := tx.ExecContext(ctx, `UPDATE users SET is_admin=1 WHERE id=?`, userID)
 		return err
 	}
-	result, err := db.Exec(`UPDATE users SET is_admin=0 WHERE id=? AND is_admin=1 AND (SELECT COUNT(*) FROM users WHERE is_admin=1)>1`, userID)
+	result, err := tx.ExecContext(ctx, `UPDATE users SET is_admin=0 WHERE id=? AND is_admin=1 AND (SELECT COUNT(*) FROM users WHERE is_admin=1)>1`, userID)
 	if err != nil {
 		return err
 	}
@@ -109,7 +152,7 @@ func setUserAdministrator(db *sql.DB, userID string, isAdmin bool) error {
 		return err
 	}
 	var current int
-	if err := db.QueryRow(`SELECT is_admin FROM users WHERE id=?`, userID).Scan(&current); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT is_admin FROM users WHERE id=?`, userID).Scan(&current); err != nil {
 		return err
 	}
 	if current == 1 {

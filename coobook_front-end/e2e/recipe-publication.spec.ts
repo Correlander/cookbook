@@ -116,12 +116,46 @@ test("owners can publish and withdraw a public recipe without losing owner acces
       expect(unpublishedRows.some((recipe) => recipe.id === recipeId)).toBe(false);
     });
 
-    await test.step("Open owner dialog and load publication settings", async () => {
-      await page.getByRole("button", { name: `Open ${title}` }).click();
-      await page.getByRole("button", { name: "Manage publication" }).click();
+    await test.step("Open owner recipe dialog", async () => {
+      const recipeCard = page.getByRole("button", { name: `Open ${title}` });
+      await expect(recipeCard).toBeVisible();
+      await recipeCard.click();
+      await expect(page.getByRole("dialog", { name: title })).toBeVisible();
+    });
+
+    const publicationResponsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        new URL(response.url()).pathname ===
+          `/api/recipes/${recipeId}/publication`,
+    );
+    await test.step("Open owner publication settings", async () => {
+      const recipeDialog = page.getByRole("dialog", { name: title });
+      const managePublication = recipeDialog.getByRole("button", {
+        name: "Manage publication",
+      });
+      await expect(managePublication).toBeVisible();
+      await expect(managePublication).toBeEnabled();
+      await managePublication.click();
+    });
+
+    await test.step("Verify owner publication GET and strong ETag", async () => {
+      const publicationResponse = await publicationResponsePromise;
+      expect(publicationResponse.status()).toBe(200);
+      const etag = publicationResponse.headers()["etag"] ?? "";
+      expect(
+        /^"sha256:[a-f0-9]{64}"$/.test(etag),
+        "owner publication GET returns a strong ETag through the same-origin proxy",
+      ).toBe(true);
+    });
+
+    await test.step("Confirm publication controls are ready", async () => {
       await expect(page.getByText("Current status")).toBeVisible();
       await expect(page.getByText("Not published", { exact: true })).toBeVisible();
-      await page.getByLabel("Public browsing status").selectOption("published");
+      const publicationState = page.getByLabel("Public browsing status");
+      await expect(publicationState).toBeVisible();
+      await expect(publicationState).toBeEnabled();
+      await publicationState.selectOption("published");
     });
 
     await test.step("Save publication and verify owner access", async () => {

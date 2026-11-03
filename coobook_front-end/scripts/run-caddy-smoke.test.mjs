@@ -5,8 +5,28 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile, chmod, stat, symlink 
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parseArgs } from './run-caddy-smoke.mjs'
 
 const runner = fileURLToPath(new URL('./run-caddy-smoke.mjs', import.meta.url))
+
+const imageArgs = ['--frontend-image', 'frontend:fixture', '--backend-image', 'backend:fixture']
+const httpDefaults = parseArgs(imageArgs)
+assert.equal(httpDefaults.timeoutMs, 90000)
+assert.equal(httpDefaults.commandTimeoutMs, 15000)
+
+const browserDefaults = parseArgs([...imageArgs, '--browser'])
+assert.equal(browserDefaults.timeoutMs, 240000)
+assert.equal(browserDefaults.commandTimeoutMs, 120000)
+
+for (const timeoutArgs of [
+  ['--timeout-ms', '45000', '--command-timeout-ms', '30000', '--browser'],
+  ['--browser', '--timeout-ms', '45000', '--command-timeout-ms', '30000'],
+  ['--timeout-ms', '45000', '--browser', '--command-timeout-ms', '30000'],
+]) {
+  const options = parseArgs([...imageArgs, ...timeoutArgs])
+  assert.equal(options.timeoutMs, 45000)
+  assert.equal(options.commandTimeoutMs, 30000)
+}
 const fakeEngineSource = `#!/usr/bin/env node
 import { readFile, writeFile } from 'node:fs/promises'
 const [command, ...args] = process.argv.slice(2)

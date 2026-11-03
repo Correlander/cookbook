@@ -4,12 +4,13 @@ import { existsSync } from 'node:fs'
 import { chmod, mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const labelKey = 'io.cookbook.caddy-smoke'
 const requestTimeoutMs = 2500
 const activeChildren = new Set()
 
-function parseArgs(args) {
+export function parseArgs(args) {
   const options = { engine: 'podman', timeoutMs: 90000, commandTimeoutMs: 15000 }
   const seen = new Set()
   const fields = {
@@ -29,6 +30,8 @@ function parseArgs(args) {
     seen.add(flag)
     if (flag === '--browser') {
       options.browser = true
+      if (!seen.has('--timeout-ms')) options.timeoutMs = 240000
+      if (!seen.has('--command-timeout-ms')) options.commandTimeoutMs = 120000
       continue
     }
     const value = args[++index]
@@ -504,7 +507,7 @@ function formatPlaywrightSummary(summary) {
   return parts.join('\n')
 }
 
-const usage = `Usage: node scripts/run-caddy-smoke.mjs --frontend-image IMAGE --backend-image IMAGE [--engine podman] [--browser] [--browser-grep PATTERN] [--private-report-dir NEW_DIR] [--timeout-ms 90000] [--command-timeout-ms 15000]\n\nUses existing images only. The default container engine is Podman.`
+const usage = `Usage: node scripts/run-caddy-smoke.mjs --frontend-image IMAGE --backend-image IMAGE [--engine podman] [--browser] [--browser-grep PATTERN] [--private-report-dir NEW_DIR] [--timeout-ms MS] [--command-timeout-ms MS]\n\nUses existing images only. The default container engine is Podman. HTTP-only defaults: 90000ms overall and 15000ms per command. Browser defaults: 240000ms overall and 120000ms per command.`
 let cleanupPromise
 let selectedEngine = 'podman'
 let selectedCommandTimeoutMs = 15000
@@ -761,7 +764,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof AggregateError ? `${error.message}\n${error.errors.map((cause) => cause.message).join('\n')}` : error.message)
-  process.exitCode = 1
-})
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error instanceof AggregateError ? `${error.message}\n${error.errors.map((cause) => cause.message).join('\n')}` : error.message)
+    process.exitCode = 1
+  })
+}

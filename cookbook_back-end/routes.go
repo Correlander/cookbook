@@ -49,6 +49,7 @@ func handlerWithAuthConfig(db *sql.DB, auth authHandler, cfg config) http.Handle
 	mux.Handle("GET /api/public/recipes/{id}", publicRecipeDetailHandler{db: db})
 	mux.Handle("GET /api/public/remote-recipes", publicFederationRecipesHandler{db: db})
 	mux.Handle("/api/public/cookbooks", publicCookbooksHandler{db: db})
+	mux.Handle("GET /api/public/cookbooks/{id}", publicCookbookByIDHandler{db: db})
 	mux.Handle("/api/public/cookbooks/{id}/recipes", publicCookbookRecipesHandler{db: db})
 	api := apiHandler{db: db, mediaDir: cfg.mediaDir, federationKeyDir: cfg.federationKeyDir}
 	mux.Handle("GET /api/admin/federation/peers", requireSession(db, api))

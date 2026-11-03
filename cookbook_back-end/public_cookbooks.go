@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 )
@@ -18,12 +19,17 @@ type publicCookbook struct {
 
 type publicCookbooksHandler struct{ db *sql.DB }
 
-const publicCookbookRowsQuery = `SELECT c.id,c.title,c.description,
+const publicCookbookProjectionQuery = `SELECT c.id,c.title,c.description,
 	(SELECT COUNT(*) FROM cookbook_recipes cr JOIN recipes r ON r.id=cr.recipe_id JOIN recipe_publication_policy p ON p.recipe_id=r.id JOIN instance_settings s2 ON s2.id=1 WHERE cr.cookbook_id=c.id AND s2.public_instance=1 AND r.deleted_at IS NULL AND r.visibility='public' AND p.publication_state='published'),
 	c.created_at,c.updated_at
-	FROM cookbooks c JOIN instance_settings s ON s.id=1
+	FROM cookbooks c JOIN instance_settings s ON s.id=1`
+
+const publicCookbookRowsQuery = publicCookbookProjectionQuery + `
 	WHERE s.public_instance=1 AND c.visibility='public' AND (?='' OR instr(lower(c.title||' '||c.description),lower(?))>0)
 	ORDER BY c.updated_at DESC,c.id LIMIT ? OFFSET ?`
+
+const publicCookbookByIDQuery = publicCookbookProjectionQuery + `
+	WHERE s.public_instance=1 AND c.visibility='public' AND c.id=?`
 
 const publicCookbookRecipeRowsQuery = `SELECT r.id,r.owner_id,r.creator_name,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,r.image_path
 	FROM cookbook_recipes cr JOIN cookbooks c ON c.id=cr.cookbook_id AND c.visibility='public' JOIN recipes r ON r.id=cr.recipe_id JOIN recipe_publication_policy p ON p.recipe_id=r.id JOIN instance_settings s ON s.id=1
@@ -67,6 +73,22 @@ func (h publicCookbooksHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+type publicCookbookByIDHandler struct{ db *sql.DB }
+
+func (h publicCookbookByIDHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var item publicCookbook
+	err := h.db.QueryRow(publicCookbookByIDQuery, r.PathValue("id")).Scan(&item.ID, &item.Title, &item.Description, &item.RecipeCount, &item.CreatedAt, &item.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 type publicCookbookRecipesHandler struct{ db *sql.DB }

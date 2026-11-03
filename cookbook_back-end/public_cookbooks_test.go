@@ -69,6 +69,98 @@ func TestPublicCookbooksExposeOnlyPublicResources(t *testing.T) {
 	}
 }
 
+func TestPublicCookbookMetadataByIDUsesAnonymousProjectionAndPublicCount(t *testing.T) {
+	db := testDatabase(t)
+	_, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1;
+		INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now');
+		INSERT INTO cookbooks(id,owner_id,title,description,visibility,created_at,updated_at) VALUES
+		('public-book','owner','Public book','A public collection','public','created','updated'),
+		('private-book','owner','Private book','Secret collection','private','created-private','updated-private');
+		INSERT INTO recipes(id,owner_id,creator_name,title,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at) VALUES
+		('eligible','owner','Owner','Eligible','[]','[]','[]','public','owner_only','created','updated'),
+		('unpublished','owner','Owner','Unpublished','[]','[]','[]','public','owner_only','created','updated'),
+		('private','owner','Owner','Private','[]','[]','[]','private','owner_only','created','updated'),
+		('deleted','owner','Owner','Deleted','[]','[]','[]','public','owner_only','created','updated');
+		INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at) VALUES
+		('eligible','published','off',0,'now'),('unpublished','unpublished','off',0,'now'),('private','published','off',0,'now'),('deleted','published','off',0,'now');
+		UPDATE recipes SET deleted_at='deleted' WHERE id='deleted';
+		INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES
+		('public-book','eligible','owner','now'),('public-book','unpublished','owner','now'),('public-book','private','owner','now'),('public-book','deleted','owner','now')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := handlerWithAuth(db, testAuth(db))
+
+	list := httptest.NewRecorder()
+	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/public/cookbooks", nil))
+	var listed []publicCookbook
+	if list.Code != http.StatusOK || json.Unmarshal(list.Body.Bytes(), &listed) != nil || len(listed) != 1 || listed[0].RecipeCount != 1 {
+		t.Fatalf("public cookbook list status=%d body=%s", list.Code, list.Body)
+	}
+
+	detail := httptest.NewRecorder()
+	handler.ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/api/public/cookbooks/public-book", nil))
+	var item publicCookbook
+	if detail.Code != http.StatusOK || json.Unmarshal(detail.Body.Bytes(), &item) != nil {
+		t.Fatalf("public cookbook metadata status=%d body=%s", detail.Code, detail.Body)
+	}
+	if item != listed[0] || item.ID != "public-book" || item.Title != "Public book" || item.Description != "A public collection" || item.RecipeCount != 1 || item.CreatedAt != "created" || item.UpdatedAt != "updated" {
+		t.Fatalf("detail projection differs from public list: detail=%+v list=%+v", item, listed[0])
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(detail.Body.Bytes(), &fields); err != nil {
+		t.Fatal(err)
+	}
+	if len(fields) != 6 || containsJSONField(detail.Body.String(), "owner_id") || containsJSONField(detail.Body.String(), "email") || containsJSONField(detail.Body.String(), "creator_name") || containsJSONField(detail.Body.String(), "member") {
+		t.Fatalf("public cookbook metadata exposed fields outside its anonymous projection: %s", detail.Body)
+	}
+
+	var genericNotFound string
+	for _, id := range []string{"private-book", "missing-book"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/public/cookbooks/"+id, nil))
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("%s metadata status=%d body=%s", id, response.Code, response.Body)
+		}
+		if genericNotFound == "" {
+			genericNotFound = response.Body.String()
+		} else if response.Body.String() != genericNotFound {
+			t.Fatalf("private and missing cookbook responses differ: %q / %q", genericNotFound, response.Body.String())
+		}
+	}
+	privateInstance, err := db.Exec(`UPDATE instance_settings SET public_instance=0 WHERE id=1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := privateInstance.RowsAffected(); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/public/cookbooks/public-book", nil))
+	if response.Code != http.StatusNotFound || response.Body.String() != genericNotFound {
+		t.Fatalf("private-instance cookbook response=%d %q, want generic 404 %q", response.Code, response.Body.String(), genericNotFound)
+	}
+
+	wrongMethod := httptest.NewRecorder()
+	handler.ServeHTTP(wrongMethod, httptest.NewRequest(http.MethodPost, "/api/public/cookbooks/public-book", nil))
+	if wrongMethod.Code != http.StatusForbidden || wrongMethod.Body.String() != "{\"error\":\"csrf_origin_required\"}\n" {
+		t.Fatalf("public cookbook metadata POST status=%d body=%s", wrongMethod.Code, wrongMethod.Body)
+	}
+}
+
+func TestPublicCookbookMetadataByIDStorageError(t *testing.T) {
+	db := testDatabase(t)
+	handler := handlerWithAuth(db, testAuth(db))
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/public/cookbooks/public-book", nil))
+	if response.Code != http.StatusInternalServerError || response.Body.String() != "{\"error\":\"storage_error\"}\n" {
+		t.Fatalf("closed database response=%d body=%s", response.Code, response.Body)
+	}
+}
+
 func TestPublicCookbookRecipeQueryRechecksVisibilityAfterAuthorization(t *testing.T) {
 	db := testDatabase(t)
 	_, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1;

@@ -26,7 +26,7 @@ func TestInstanceOwnerCLIClaimRequiresExplicitTargetConfirmationAndExclusiveLock
 	t.Setenv("COOKBOOK_FEDERATION_ORIGIN", "")
 	args := []string{"instance", "owner", "claim", "--account-id", "target"}
 	var output bytes.Buffer
-	if handled, err := runInstanceOwnerCLI(args, strings.NewReader("NO\n"), &output); !handled || err == nil {
+	if handled, err := runInstanceCLI(args, strings.NewReader("NO\n"), &output); !handled || err == nil {
 		t.Fatalf("unconfirmed command handled=%v err=%v", handled, err)
 	}
 	lockPath, err := maintenanceLockPath(database)
@@ -40,13 +40,13 @@ func TestInstanceOwnerCLIClaimRequiresExplicitTargetConfirmationAndExclusiveLock
 	if err != nil {
 		t.Fatal(err)
 	}
-	if handled, err := runInstanceOwnerCLI(args, strings.NewReader("CLAIM target\n"), &output); !handled || !errors.Is(err, ErrMaintenanceLockHeld) {
+	if handled, err := runInstanceCLI(args, strings.NewReader("CLAIM target\n"), &output); !handled || !errors.Is(err, ErrMaintenanceLockHeld) {
 		t.Fatalf("claim with running server lock handled=%v err=%v", handled, err)
 	}
 	if err := shared.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if handled, err := runInstanceOwnerCLI(args, strings.NewReader("CLAIM target\n"), &output); !handled || err != nil {
+	if handled, err := runInstanceCLI(args, strings.NewReader("CLAIM target\n"), &output); !handled || err != nil {
 		t.Fatalf("confirmed claim handled=%v err=%v output=%s", handled, err, output.String())
 	}
 	check := openOwnerCLITestDatabase(t, database)
@@ -56,7 +56,7 @@ func TestInstanceOwnerCLIClaimRequiresExplicitTargetConfirmationAndExclusiveLock
 	if err := check.QueryRow(`SELECT a.owner_user_id,u.is_admin FROM instance_authority a JOIN users u ON u.id=a.owner_user_id`).Scan(&owner, &admin); err != nil || owner != "target" || admin != 0 {
 		t.Fatalf("owner=%q admin=%d err=%v; claim must not grant admin", owner, admin, err)
 	}
-	if handled, err := runInstanceOwnerCLI(args, strings.NewReader("CLAIM target\n"), &output); !handled || err == nil || !strings.Contains(err.Error(), "already claimed") {
+	if handled, err := runInstanceCLI(args, strings.NewReader("CLAIM target\n"), &output); !handled || err == nil || !strings.Contains(err.Error(), "already claimed") {
 		t.Fatalf("duplicate claim handled=%v err=%v", handled, err)
 	}
 }
@@ -82,7 +82,7 @@ func TestInstanceOwnerCLIRecoverAuditsReasonAndInvalidatesPendingTransfer(t *tes
 	t.Setenv("COOKBOOK_FEDERATION_ORIGIN", "")
 	args := []string{"instance", "owner", "recover", "--account-id", "target", "--reason", "lost-owner-credential"}
 	var output bytes.Buffer
-	if handled, err := runInstanceOwnerCLI(args, strings.NewReader("RECOVER target\n"), &output); !handled || err != nil {
+	if handled, err := runInstanceCLI(args, strings.NewReader("RECOVER target\n"), &output); !handled || err != nil {
 		t.Fatalf("confirmed recovery handled=%v err=%v output=%s", handled, err, output.String())
 	}
 	check := openOwnerCLITestDatabase(t, database)
@@ -113,7 +113,7 @@ func TestInstanceOwnerCLIRequiresRecoveryReasonAndRejectsImplicitTarget(t *testi
 		{[]string{"instance", "owner", "recover", "--account-id", "target"}, "reason"},
 		{[]string{"instance", "owner", "claim", "--account-id", "target", "--reason", "wrong"}, "only valid for recovery"},
 	} {
-		if handled, err := runInstanceOwnerCLI(tc.args, strings.NewReader("CLAIM target\n"), &bytes.Buffer{}); !handled || err == nil || !strings.Contains(err.Error(), tc.want) {
+		if handled, err := runInstanceCLI(tc.args, strings.NewReader("CLAIM target\n"), &bytes.Buffer{}); !handled || err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("args=%v handled=%v err=%v, want error containing %q", tc.args, handled, err, tc.want)
 		}
 	}
@@ -132,7 +132,7 @@ func TestPasskeyEnrollmentCLIIssuesHashOnlyTokenAndRevokesIt(t *testing.T) {
 	t.Setenv("COOKBOOK_FEDERATION_ORIGIN", "")
 	args := []string{"instance", "passkey-enrollment", "issue", "--account-id", "target"}
 	var output bytes.Buffer
-	if handled, err := runInstanceOwnerCLI(args, strings.NewReader("ISSUE PASSKEY ENROLLMENT target\n"), &output); !handled || err != nil {
+	if handled, err := runInstanceCLI(args, strings.NewReader("ISSUE PASSKEY ENROLLMENT target\n"), &output); !handled || err != nil {
 		t.Fatalf("issue handled=%v err=%v output=%q", handled, err, output.String())
 	}
 	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
@@ -156,7 +156,7 @@ func TestPasskeyEnrollmentCLIIssuesHashOnlyTokenAndRevokesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	var revokeOutput bytes.Buffer
-	if handled, err := runInstanceOwnerCLI([]string{"instance", "passkey-enrollment", "revoke", "--account-id", "target"}, strings.NewReader("REVOKE PASSKEY ENROLLMENT target\n"), &revokeOutput); !handled || err != nil {
+	if handled, err := runInstanceCLI([]string{"instance", "passkey-enrollment", "revoke", "--account-id", "target"}, strings.NewReader("REVOKE PASSKEY ENROLLMENT target\n"), &revokeOutput); !handled || err != nil {
 		t.Fatalf("revoke handled=%v err=%v output=%q", handled, err, revokeOutput.String())
 	}
 	check = openOwnerCLITestDatabase(t, database)
@@ -211,14 +211,14 @@ func TestNoMailBootstrapAccountLookupAndFirstPasskeyGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	var blockedLookup bytes.Buffer
-	if handled, err := runInstanceOwnerCLI([]string{"instance", "account", "lookup", "--email", "bootstrap@example.test"}, strings.NewReader(""), &blockedLookup); !handled || !errors.Is(err, ErrMaintenanceLockHeld) {
+	if handled, err := runInstanceCLI([]string{"instance", "account", "lookup", "--email", "bootstrap@example.test"}, strings.NewReader(""), &blockedLookup); !handled || !errors.Is(err, ErrMaintenanceLockHeld) {
 		t.Fatalf("lookup while server lock is held handled=%v err=%v", handled, err)
 	}
 	if err := shared.Close(); err != nil {
 		t.Fatal(err)
 	}
 	var lookupOutput bytes.Buffer
-	if handled, err := runInstanceOwnerCLI([]string{"instance", "account", "lookup", "--email", " BOOTSTRAP@example.test "}, strings.NewReader(""), &lookupOutput); !handled || err != nil {
+	if handled, err := runInstanceCLI([]string{"instance", "account", "lookup", "--email", " BOOTSTRAP@example.test "}, strings.NewReader(""), &lookupOutput); !handled || err != nil {
 		t.Fatalf("account lookup handled=%v err=%v output=%q", handled, err, lookupOutput.String())
 	}
 	if want := formatInstanceAccountIdentity(instanceAccountIdentity{ID: bootstrappedID, Email: "bootstrap@example.test", DisplayName: "Bootstrap Admin"}) + "\n"; lookupOutput.String() != want {
@@ -228,7 +228,7 @@ func TestNoMailBootstrapAccountLookupAndFirstPasskeyGrant(t *testing.T) {
 	var grantOutput bytes.Buffer
 	confirm := "ISSUE PASSKEY ENROLLMENT " + bootstrappedID + "\n"
 	args := []string{"instance", "passkey-enrollment", "issue", "--account-id", bootstrappedID}
-	if handled, err := runInstanceOwnerCLI(args, strings.NewReader(confirm), &grantOutput); !handled || err != nil {
+	if handled, err := runInstanceCLI(args, strings.NewReader(confirm), &grantOutput); !handled || err != nil {
 		t.Fatalf("initial passkey grant handled=%v err=%v", handled, err)
 	}
 	fields := strings.Fields(grantOutput.String())
@@ -257,7 +257,7 @@ func TestInstanceOwnerCLIDispatchesExplicitRecoveryDescribe(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	handled, err := runInstanceOwnerCLI([]string{"instance", "recovery", "describe", "--database", database}, strings.NewReader(""), &output)
+	handled, err := runInstanceCLI([]string{"instance", "recovery", "describe", "--database", database}, strings.NewReader(""), &output)
 	if !handled || err != nil {
 		t.Fatalf("recovery describe handled=%v err=%v", handled, err)
 	}
@@ -286,7 +286,7 @@ func TestNoMailAccountCreateLookupAndSeparatePasskeyGrant(t *testing.T) {
 
 	var createOutput bytes.Buffer
 	createArgs := []string{"instance", "account", "create", "--email", " MEMBER@EXAMPLE.TEST ", "--display-name", "  Household Member  "}
-	if handled, err := runInstanceOwnerCLI(createArgs, strings.NewReader("CREATE ACCOUNT\n"), &createOutput); !handled || err != nil {
+	if handled, err := runInstanceCLI(createArgs, strings.NewReader("CREATE ACCOUNT\n"), &createOutput); !handled || err != nil {
 		t.Fatalf("account create handled=%v err=%v output=%q", handled, err, createOutput.String())
 	}
 	if !strings.Contains(createOutput.String(), "ordinary local account") || !strings.Contains(createOutput.String(), "Account created:") || !strings.Contains(createOutput.String(), `"email":"member@example.test"`) || !strings.Contains(createOutput.String(), `"display_name":"Household Member"`) {
@@ -307,7 +307,7 @@ func TestNoMailAccountCreateLookupAndSeparatePasskeyGrant(t *testing.T) {
 	}
 
 	var lookupOutput bytes.Buffer
-	if handled, err := runInstanceOwnerCLI([]string{"instance", "account", "lookup", "--email", "MEMBER@example.test"}, strings.NewReader(""), &lookupOutput); !handled || err != nil {
+	if handled, err := runInstanceCLI([]string{"instance", "account", "lookup", "--email", "MEMBER@example.test"}, strings.NewReader(""), &lookupOutput); !handled || err != nil {
 		t.Fatalf("created account lookup handled=%v err=%v output=%q", handled, err, lookupOutput.String())
 	}
 	if want := formatInstanceAccountIdentity(instanceAccountIdentity{ID: accountID, Email: "member@example.test", DisplayName: "Household Member"}) + "\n"; !strings.HasSuffix(lookupOutput.String(), want) {
@@ -347,7 +347,7 @@ func TestNoMailAccountCreateLookupAndSeparatePasskeyGrant(t *testing.T) {
 
 	var grantOutput bytes.Buffer
 	confirm := "ISSUE PASSKEY ENROLLMENT " + accountID + "\n"
-	if handled, err := runInstanceOwnerCLI([]string{"instance", "passkey-enrollment", "issue", "--account-id", accountID}, strings.NewReader(confirm), &grantOutput); !handled || err != nil {
+	if handled, err := runInstanceCLI([]string{"instance", "passkey-enrollment", "issue", "--account-id", accountID}, strings.NewReader(confirm), &grantOutput); !handled || err != nil {
 		t.Fatalf("separate passkey grant handled=%v err=%v output=%q", handled, err, grantOutput.String())
 	}
 	grantCheck := openOwnerCLITestDatabase(t, database)
@@ -385,7 +385,7 @@ func TestInstanceAccountCreateRequiresExclusiveLockAndDoesNotCreateMissingDataba
 	if err != nil {
 		t.Fatal(err)
 	}
-	if handled, err := runInstanceOwnerCLI(args, strings.NewReader("CREATE ACCOUNT\n"), &output); !handled || !errors.Is(err, ErrMaintenanceLockHeld) {
+	if handled, err := runInstanceCLI(args, strings.NewReader("CREATE ACCOUNT\n"), &output); !handled || !errors.Is(err, ErrMaintenanceLockHeld) {
 		t.Fatalf("create while server lock held handled=%v err=%v output=%q", handled, err, output.String())
 	}
 	lockInfoAfter, err := os.Stat(lockPath)
@@ -416,7 +416,7 @@ func TestInstanceAccountCreateRequiresExclusiveLockAndDoesNotCreateMissingDataba
 
 	missing := filepath.Join(t.TempDir(), "missing.db")
 	t.Setenv("COOKBOOK_DATABASE", missing)
-	if handled, err := runInstanceOwnerCLI(args, strings.NewReader("CREATE ACCOUNT\n"), &output); !handled || err == nil {
+	if handled, err := runInstanceCLI(args, strings.NewReader("CREATE ACCOUNT\n"), &output); !handled || err == nil {
 		t.Fatalf("missing database create handled=%v err=%v", handled, err)
 	}
 	if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
@@ -432,7 +432,7 @@ func TestInstanceAccountCreateRequiresExclusiveLockAndDoesNotCreateMissingDataba
 		t.Fatal(err)
 	}
 	t.Setenv("COOKBOOK_DATABASE", emptyDatabase)
-	if handled, err := runInstanceOwnerCLI(args, strings.NewReader("CREATE ACCOUNT\n"), &output); !handled || !errors.Is(err, ErrInstanceAccountBootstrapFirst) {
+	if handled, err := runInstanceCLI(args, strings.NewReader("CREATE ACCOUNT\n"), &output); !handled || !errors.Is(err, ErrInstanceAccountBootstrapFirst) {
 		t.Fatalf("initialized empty database create handled=%v err=%v", handled, err)
 	}
 	if _, err := os.Stat(emptyDatabase + ".maintenance.lock"); !errors.Is(err, os.ErrNotExist) {
@@ -444,7 +444,7 @@ func TestInstanceAccountCreateRequiresExclusiveLockAndDoesNotCreateMissingDataba
 		t.Fatal(err)
 	}
 	t.Setenv("COOKBOOK_DATABASE", uninitializedDatabase)
-	if handled, err := runInstanceOwnerCLI(args, strings.NewReader("CREATE ACCOUNT\n"), &output); !handled || err == nil {
+	if handled, err := runInstanceCLI(args, strings.NewReader("CREATE ACCOUNT\n"), &output); !handled || err == nil {
 		t.Fatalf("uninitialized database create handled=%v err=%v", handled, err)
 	}
 	if _, err := os.Stat(uninitializedDatabase + ".maintenance.lock"); !errors.Is(err, os.ErrNotExist) {
@@ -467,7 +467,7 @@ func TestInstanceAccountCreateRequiresExclusiveLockAndDoesNotCreateMissingDataba
 		t.Fatal(err)
 	}
 	t.Setenv("COOKBOOK_DATABASE", malformedDatabase)
-	if handled, err := runInstanceOwnerCLI(args, strings.NewReader("CREATE ACCOUNT\n"), &output); !handled || !errors.Is(err, ErrInstanceAccountDatabaseSchema) {
+	if handled, err := runInstanceCLI(args, strings.NewReader("CREATE ACCOUNT\n"), &output); !handled || !errors.Is(err, ErrInstanceAccountDatabaseSchema) {
 		t.Fatalf("malformed schema create handled=%v err=%v", handled, err)
 	}
 	if _, err := os.Stat(malformedDatabase + ".maintenance.lock"); !errors.Is(err, os.ErrNotExist) {
@@ -487,7 +487,7 @@ func TestInstanceAccountCLIJSONEscapesTerminalSensitiveIdentityText(t *testing.T
 	}
 	t.Setenv("COOKBOOK_DATABASE", database)
 	var lookupOutput bytes.Buffer
-	if handled, err := runInstanceOwnerCLI([]string{"instance", "account", "lookup", "--email", "unsafe@example.test"}, strings.NewReader(""), &lookupOutput); !handled || err != nil {
+	if handled, err := runInstanceCLI([]string{"instance", "account", "lookup", "--email", "unsafe@example.test"}, strings.NewReader(""), &lookupOutput); !handled || err != nil {
 		t.Fatalf("unsafe-name lookup handled=%v err=%v output=%q", handled, err, lookupOutput.String())
 	}
 	if strings.Contains(lookupOutput.String(), "\x1b") || strings.Contains(lookupOutput.String(), "Lookup Member\n") {
@@ -505,7 +505,7 @@ func TestInstanceAccountCLIJSONEscapesTerminalSensitiveIdentityText(t *testing.T
 	unsafeCreateName := "Created Member\n\x1b[2J"
 	var createOutput bytes.Buffer
 	args := []string{"instance", "account", "create", "--email", "created@example.test", "--display-name", unsafeCreateName}
-	if handled, err := runInstanceOwnerCLI(args, strings.NewReader("CREATE ACCOUNT\n"), &createOutput); !handled || err != nil {
+	if handled, err := runInstanceCLI(args, strings.NewReader("CREATE ACCOUNT\n"), &createOutput); !handled || err != nil {
 		t.Fatalf("unsafe-name create handled=%v err=%v output=%q", handled, err, createOutput.String())
 	}
 	if strings.Contains(createOutput.String(), "\x1b") || strings.Contains(createOutput.String(), "Created Member\n") {

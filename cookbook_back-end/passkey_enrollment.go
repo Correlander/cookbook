@@ -51,7 +51,7 @@ CREATE UNIQUE INDEX idx_webauthn_ceremonies_enrollment_grant ON webauthn_ceremon
   WHERE enrollment_grant_id IS NOT NULL;
 `
 
-func ApplyPasskeyEnrollmentMigration(ctx context.Context, exec migrationExecutor) error {
+func ApplyPasskeyEnrollmentMigration(ctx context.Context, exec sqliteExecutor) error {
 	for _, statement := range strings.Split(passkeyEnrollmentSchemaDDL, ";") {
 		statement = strings.TrimSpace(statement)
 		if statement == "" {
@@ -103,7 +103,7 @@ func parseEnrollmentToken(token string) (id string, digest []byte, ok bool) {
 	return parts[0], sum[:], true
 }
 
-func validEnrollmentGrant(ctx context.Context, exec migrationExecutor, token string, now time.Time) (enrollmentGrant, bool, error) {
+func validEnrollmentGrant(ctx context.Context, exec sqliteExecutor, token string, now time.Time) (enrollmentGrant, bool, error) {
 	id, digest, ok := parseEnrollmentToken(token)
 	if !ok {
 		return enrollmentGrant{}, false, nil
@@ -145,7 +145,7 @@ func (h passkeyHandler) enrollmentBegin(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var response any
-	err := withInstanceOwnerWriteTx(r.Context(), h.db, func(exec migrationExecutor) error {
+	err := withImmediateSQLiteWriteTx(r.Context(), h.db, func(exec sqliteExecutor) error {
 		grant, valid, err := validEnrollmentGrant(r.Context(), exec, input.Token, time.Now().UTC())
 		if err != nil {
 			return err
@@ -222,7 +222,7 @@ func (h passkeyHandler) enrollmentFinish(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	status := http.StatusBadRequest
-	err = withInstanceOwnerWriteTx(r.Context(), h.db, func(exec migrationExecutor) error {
+	err = withImmediateSQLiteWriteTx(r.Context(), h.db, func(exec sqliteExecutor) error {
 		grant, valid, err := validEnrollmentGrant(r.Context(), exec, input.Token, time.Now().UTC())
 		if err != nil {
 			return err
@@ -296,7 +296,7 @@ func (h passkeyHandler) enrollmentFinish(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, status, map[string]string{"status": "passkey_registered"})
 }
 
-func (h passkeyHandler) consumeBadEnrollmentAttempt(ctx context.Context, exec migrationExecutor, token, ceremonyID string) error {
+func (h passkeyHandler) consumeBadEnrollmentAttempt(ctx context.Context, exec sqliteExecutor, token, ceremonyID string) error {
 	id, _, ok := parseEnrollmentToken(token)
 	if ok {
 		if _, err := exec.ExecContext(ctx, `UPDATE passkey_enrollment_grants SET failed_attempts=MIN(failed_attempts+1,8) WHERE id=? AND consumed_at IS NULL AND revoked_at IS NULL`, id); err != nil {

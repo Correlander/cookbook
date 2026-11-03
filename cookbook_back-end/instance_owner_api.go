@@ -34,7 +34,7 @@ func canManageInstanceRoles(ctx context.Context, db *sql.DB, actorID string) (bo
 	return capabilities.IsAdmin, nil
 }
 
-func canManageInstanceRolesExec(ctx context.Context, exec migrationExecutor, actorID string) (bool, error) {
+func canManageInstanceRolesExec(ctx context.Context, exec sqliteExecutor, actorID string) (bool, error) {
 	capabilities, err := instanceOwnerCapabilitiesForExec(ctx, exec, actorID)
 	if err != nil {
 		return false, err
@@ -45,7 +45,7 @@ func canManageInstanceRolesExec(ctx context.Context, exec migrationExecutor, act
 	return capabilities.IsAdmin, nil
 }
 
-func instanceOwnerCapabilitiesForExec(ctx context.Context, exec migrationExecutor, accountID string) (InstanceOwnerCapabilities, error) {
+func instanceOwnerCapabilitiesForExec(ctx context.Context, exec sqliteExecutor, accountID string) (InstanceOwnerCapabilities, error) {
 	if strings.TrimSpace(accountID) == "" {
 		return InstanceOwnerCapabilities{}, ErrOwnerAccountNotFound
 	}

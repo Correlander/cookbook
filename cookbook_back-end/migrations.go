@@ -24,11 +24,7 @@ const migrationLedgerDDL = `CREATE TABLE schema_migrations (
 // migration rather than changing the baseline for already-versioned databases.
 const legacyBaselineFingerprint = "baseline-v1/current-schema-and-conditional-compatibility-repairs"
 
-type migrationExecutor interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}
+type migrationExecutor = sqliteExecutor
 
 type schemaMigration struct {
 	version  int

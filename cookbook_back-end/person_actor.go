@@ -85,7 +85,7 @@ type personActorKey struct {
 
 // ApplyPersonActorMigration is the additive v5 schema body. Its caller owns
 // the transaction that applies the DDL and records the migration ledger row.
-func ApplyPersonActorMigration(ctx context.Context, exec migrationExecutor) error {
+func ApplyPersonActorMigration(ctx context.Context, exec sqliteExecutor) error {
 	if _, err := exec.ExecContext(ctx, personActorSchemaDDL); err != nil {
 		return fmt.Errorf("apply Person actor schema: %w", err)
 	}
@@ -101,7 +101,7 @@ func CreatePersonActor(ctx context.Context, db *sql.DB, accountID string) (Perso
 	}
 
 	var actor PersonActor
-	err := withInstanceOwnerWriteTx(ctx, db, func(tx migrationExecutor) error {
+	err := withImmediateSQLiteWriteTx(ctx, db, func(tx sqliteExecutor) error {
 		var origin string
 		if err := tx.QueryRowContext(ctx, `SELECT federation_origin FROM instance_settings WHERE id=1`).Scan(&origin); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -164,7 +164,7 @@ func RetirePersonActor(ctx context.Context, db *sql.DB, accountID string) error 
 	if strings.TrimSpace(accountID) == "" {
 		return ErrPersonActorNotActive
 	}
-	return withInstanceOwnerWriteTx(ctx, db, func(tx migrationExecutor) error {
+	return withImmediateSQLiteWriteTx(ctx, db, func(tx sqliteExecutor) error {
 		var actorID string
 		err := tx.QueryRowContext(ctx, `SELECT actor_id FROM person_actors WHERE user_id=?`, accountID).Scan(&actorID)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -245,7 +245,7 @@ func validPersonActorURI(raw, actorID string) bool {
 	return raw == origin+"/actors/"+actorID
 }
 
-func requirePersonActorAccount(ctx context.Context, exec migrationExecutor, accountID string) error {
+func requirePersonActorAccount(ctx context.Context, exec sqliteExecutor, accountID string) error {
 	var exists int
 	if err := exec.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=?)`, accountID).Scan(&exists); err != nil {
 		return fmt.Errorf("check local Person actor account: %w", err)

@@ -90,7 +90,7 @@ const recipePublicationPolicyBackfillSQL = `INSERT INTO recipe_publication_polic
 
 // ApplyRecipePublicationPolicyMigration is migration 3's local-only DDL and
 // compatibility backfill. Call it inside the migration ledger transaction.
-func ApplyRecipePublicationPolicyMigration(ctx context.Context, exec migrationExecutor) error {
+func ApplyRecipePublicationPolicyMigration(ctx context.Context, exec sqliteExecutor) error {
 	if _, err := exec.ExecContext(ctx, recipePublicationPolicyDDL); err != nil {
 		return fmt.Errorf("create recipe publication policy: %w", err)
 	}

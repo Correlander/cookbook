@@ -101,12 +101,12 @@ func (h apiHandler) federationIdentityRotation(w http.ResponseWriter, r *http.Re
 }
 
 func rotateFederationSigningKeyForActor(ctx context.Context, db *sql.DB, actorID, directory, action string, afterAuthorization func()) (key federationSigningKey, err error) {
-	return rotateFederationSigningKeyForActorWithTransaction(ctx, db, actorID, directory, action, afterAuthorization, withInstanceOwnerWriteTx)
+	return rotateFederationSigningKeyForActorWithTransaction(ctx, db, actorID, directory, action, afterAuthorization, withImmediateSQLiteWriteTx)
 }
 
-func rotateFederationSigningKeyForActorWithTransaction(ctx context.Context, db *sql.DB, actorID, directory, action string, afterAuthorization func(), transaction func(context.Context, *sql.DB, func(migrationExecutor) error) error) (key federationSigningKey, err error) {
+func rotateFederationSigningKeyForActorWithTransaction(ctx context.Context, db *sql.DB, actorID, directory, action string, afterAuthorization func(), transaction func(context.Context, *sql.DB, func(sqliteExecutor) error) error) (key federationSigningKey, err error) {
 	fileActionCompleted := false
-	err = transaction(ctx, db, func(tx migrationExecutor) error {
+	err = transaction(ctx, db, func(tx sqliteExecutor) error {
 		allowed, err := canManageInstanceRolesExec(ctx, tx, actorID)
 		if err != nil {
 			return err

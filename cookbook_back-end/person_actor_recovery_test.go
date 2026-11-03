@@ -505,14 +505,14 @@ func TestPersonActorRecoveryCLIRequiresExplicitDatabaseAndRoundTripsManifest(t *
 	}
 	t.Setenv("COOKBOOK_DATABASE", filepath.Join(t.TempDir(), "configured-live.db"))
 	var output bytes.Buffer
-	if handled, err := runInstanceOwnerCLI([]string{"instance", "recovery", "describe"}, strings.NewReader(""), &output); !handled || err == nil {
+	if handled, err := runInstanceCLI([]string{"instance", "recovery", "describe"}, strings.NewReader(""), &output); !handled || err == nil {
 		t.Fatalf("describe without explicit DB handled=%v err=%v", handled, err)
 	}
 	if _, err := os.Stat(os.Getenv("COOKBOOK_DATABASE")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("recovery CLI created or opened implicit configured DB: stat error=%v", err)
 	}
 
-	if handled, err := runInstanceOwnerCLI([]string{"instance", "recovery", "describe", "--database", path}, strings.NewReader(""), &output); !handled || err != nil {
+	if handled, err := runInstanceCLI([]string{"instance", "recovery", "describe", "--database", path}, strings.NewReader(""), &output); !handled || err != nil {
 		t.Fatalf("describe handled=%v err=%v", handled, err)
 	}
 	if bytes.Contains(output.Bytes(), privateDER) || strings.Contains(output.String(), hex.EncodeToString(privateDER)) {
@@ -525,7 +525,7 @@ func TestPersonActorRecoveryCLIRequiresExplicitDatabaseAndRoundTripsManifest(t *
 
 	var verifyOutput bytes.Buffer
 	args := []string{"instance", "recovery", "verify", "--database", path, "--manifest", "-"}
-	if handled, err := runInstanceOwnerCLI(args, bytes.NewReader(output.Bytes()), &verifyOutput); !handled || err != nil {
+	if handled, err := runInstanceCLI(args, bytes.NewReader(output.Bytes()), &verifyOutput); !handled || err != nil {
 		t.Fatalf("verify handled=%v err=%v output=%q", handled, err, verifyOutput.String())
 	}
 	want := "Verified Person actor recovery manifest v1 (1 actors).\n"
@@ -538,7 +538,7 @@ func TestPersonActorRecoveryCLIRequiresExplicitDatabaseAndRoundTripsManifest(t *
 	}
 	var fileVerifyOutput bytes.Buffer
 	fileArgs := []string{"instance", "recovery", "verify", "--database", path, "--manifest", manifestPath}
-	if handled, err := runInstanceOwnerCLI(fileArgs, strings.NewReader(""), &fileVerifyOutput); !handled || err != nil || fileVerifyOutput.String() != want {
+	if handled, err := runInstanceCLI(fileArgs, strings.NewReader(""), &fileVerifyOutput); !handled || err != nil || fileVerifyOutput.String() != want {
 		t.Fatalf("file manifest verify handled=%v err=%v output=%q", handled, err, fileVerifyOutput.String())
 	}
 }

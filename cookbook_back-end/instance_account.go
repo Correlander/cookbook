@@ -58,7 +58,7 @@ func createInstanceAccount(ctx context.Context, db *sql.DB, rawEmail, rawDisplay
 		return instanceAccountIdentity{}, err
 	}
 	account = instanceAccountIdentity{ID: newID(), Email: email, DisplayName: displayName}
-	err = withInstanceOwnerWriteTx(ctx, db, func(tx migrationExecutor) error {
+	err = withImmediateSQLiteWriteTx(ctx, db, func(tx sqliteExecutor) error {
 		if err := validateInstanceAccountCreateEligibility(ctx, tx); err != nil {
 			return err
 		}
@@ -88,7 +88,7 @@ func createInstanceAccount(ctx context.Context, db *sql.DB, rawEmail, rawDisplay
 	return account, nil
 }
 
-func validateInstanceAccountCreateEligibility(ctx context.Context, queryer migrationExecutor) error {
+func validateInstanceAccountCreateEligibility(ctx context.Context, queryer sqliteExecutor) error {
 	requiredTables := []struct {
 		table   string
 		columns []string

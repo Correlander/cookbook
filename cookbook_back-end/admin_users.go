@@ -102,7 +102,7 @@ func updateUserAdministratorForActor(ctx context.Context, db *sql.DB, actorID, u
 }
 
 func updateUserAdministratorForActorWithHook(ctx context.Context, db *sql.DB, actorID, userID string, isAdmin bool, afterAuthorization func()) (current adminUser, err error) {
-	err = withInstanceOwnerWriteTx(ctx, db, func(tx migrationExecutor) error {
+	err = withImmediateSQLiteWriteTx(ctx, db, func(tx sqliteExecutor) error {
 		canManage, err := canManageInstanceRolesExec(ctx, tx, actorID)
 		if err != nil {
 			return err
@@ -133,12 +133,12 @@ func updateUserAdministratorForActorWithHook(ctx context.Context, db *sql.DB, ac
 }
 
 func setUserAdministrator(db *sql.DB, userID string, isAdmin bool) error {
-	return withInstanceOwnerWriteTx(context.Background(), db, func(tx migrationExecutor) error {
+	return withImmediateSQLiteWriteTx(context.Background(), db, func(tx sqliteExecutor) error {
 		return setUserAdministratorTx(context.Background(), tx, userID, isAdmin)
 	})
 }
 
-func setUserAdministratorTx(ctx context.Context, tx migrationExecutor, userID string, isAdmin bool) error {
+func setUserAdministratorTx(ctx context.Context, tx sqliteExecutor, userID string, isAdmin bool) error {
 	if isAdmin {
 		_, err := tx.ExecContext(ctx, `UPDATE users SET is_admin=1 WHERE id=?`, userID)
 		return err

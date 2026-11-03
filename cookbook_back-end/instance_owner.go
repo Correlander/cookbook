@@ -88,7 +88,7 @@ type InstanceOwnerTransfer struct {
 // ApplyInstanceOwnerDDL is the reusable version-2 migration body. The caller
 // must run it inside the migration transaction so the schema and ledger commit
 // atomically.
-func ApplyInstanceOwnerDDL(ctx context.Context, exec migrationExecutor) error {
+func ApplyInstanceOwnerDDL(ctx context.Context, exec sqliteExecutor) error {
 	if _, err := exec.ExecContext(ctx, instanceOwnerSchemaDDL); err != nil {
 		return fmt.Errorf("apply instance owner schema: %w", err)
 	}
@@ -141,7 +141,7 @@ func RecoverInstanceOwner(ctx context.Context, db *sql.DB, accountID, reason str
 	if len(reason) == 0 || len(reason) > 500 || strings.IndexFunc(reason, unicode.IsControl) >= 0 {
 		return InstanceAuthority{}, errors.New("owner recovery reason must contain 1 to 500 bytes")
 	}
-	err = withInstanceOwnerWriteTx(ctx, db, func(tx migrationExecutor) error {
+	err = withImmediateSQLiteWriteTx(ctx, db, func(tx sqliteExecutor) error {
 		now := time.Now().UTC()
 		if err := requireOwnerAccount(ctx, tx, accountID); err != nil {
 			return err
@@ -208,7 +208,7 @@ func claimInstanceOwnerWithClock(ctx context.Context, db *sql.DB, accountID stri
 	if strings.TrimSpace(accountID) == "" {
 		return InstanceAuthority{}, ErrOwnerAccountNotFound
 	}
-	err = withInstanceOwnerWriteTx(ctx, db, func(tx migrationExecutor) error {
+	err = withImmediateSQLiteWriteTx(ctx, db, func(tx sqliteExecutor) error {
 		now := clock().UTC()
 		if err := requireOwnerAccount(ctx, tx, accountID); err != nil {
 			return err
@@ -254,7 +254,7 @@ func createInstanceOwnerTransferWithClock(ctx context.Context, db *sql.DB, actor
 	if strings.TrimSpace(actorID) == "" || strings.TrimSpace(targetID) == "" {
 		return InstanceOwnerTransfer{}, ErrOwnerAccountNotFound
 	}
-	err = withInstanceOwnerWriteTx(ctx, db, func(tx migrationExecutor) error {
+	err = withImmediateSQLiteWriteTx(ctx, db, func(tx sqliteExecutor) error {
 		now := clock().UTC()
 		authority, err := readInstanceAuthority(ctx, tx)
 		if err != nil {
@@ -305,7 +305,7 @@ func acceptInstanceOwnerTransferAt(ctx context.Context, db *sql.DB, actorID, tra
 
 func acceptInstanceOwnerTransferWithClock(ctx context.Context, db *sql.DB, actorID, transferID string, clock func() time.Time) (authority InstanceAuthority, err error) {
 	expired := false
-	err = withInstanceOwnerWriteTx(ctx, db, func(tx migrationExecutor) error {
+	err = withImmediateSQLiteWriteTx(ctx, db, func(tx sqliteExecutor) error {
 		now := clock().UTC()
 		transfer, err := readInstanceOwnerTransfer(ctx, tx, transferID)
 		if err != nil {
@@ -372,7 +372,7 @@ func cancelInstanceOwnerTransferAt(ctx context.Context, db *sql.DB, actorID, tra
 
 func cancelInstanceOwnerTransferWithClock(ctx context.Context, db *sql.DB, actorID, transferID string, clock func() time.Time) error {
 	expired := false
-	err := withInstanceOwnerWriteTx(ctx, db, func(tx migrationExecutor) error {
+	err := withImmediateSQLiteWriteTx(ctx, db, func(tx sqliteExecutor) error {
 		now := clock().UTC()
 		transfer, err := readInstanceOwnerTransfer(ctx, tx, transferID)
 		if err != nil {
@@ -424,7 +424,7 @@ func expireInstanceOwnerTransfersAt(ctx context.Context, db *sql.DB, now time.Ti
 
 func expireInstanceOwnerTransfersWithClock(ctx context.Context, db *sql.DB, clock func() time.Time) (int64, error) {
 	var expired int64
-	err := withInstanceOwnerWriteTx(ctx, db, func(tx migrationExecutor) error {
+	err := withImmediateSQLiteWriteTx(ctx, db, func(tx sqliteExecutor) error {
 		var err error
 		expired, err = expireInstanceOwnerTransfersTx(ctx, tx, clock().UTC())
 		return err
@@ -432,7 +432,7 @@ func expireInstanceOwnerTransfersWithClock(ctx context.Context, db *sql.DB, cloc
 	return expired, err
 }
 
-func expireInstanceOwnerTransfersTx(ctx context.Context, tx migrationExecutor, now time.Time) (int64, error) {
+func expireInstanceOwnerTransfersTx(ctx context.Context, tx sqliteExecutor, now time.Time) (int64, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT id,expires_at FROM instance_owner_transfers WHERE state='pending' ORDER BY id`)
 	if err != nil {
 		return 0, fmt.Errorf("list expired owner transfers: %w", err)
@@ -473,7 +473,7 @@ func expireInstanceOwnerTransfersTx(ctx context.Context, tx migrationExecutor, n
 	return count, nil
 }
 
-func readInstanceAuthority(ctx context.Context, exec migrationExecutor) (InstanceAuthority, error) {
+func readInstanceAuthority(ctx context.Context, exec sqliteExecutor) (InstanceAuthority, error) {
 	var ownerID, claimedAt sql.NullString
 	var generation int64
 	err := exec.QueryRowContext(ctx, `SELECT owner_user_id,owner_claimed_at,generation FROM instance_authority WHERE singleton_id=1`).Scan(&ownerID, &claimedAt, &generation)
@@ -497,7 +497,7 @@ func readInstanceAuthority(ctx context.Context, exec migrationExecutor) (Instanc
 	return authority, nil
 }
 
-func readInstanceOwnerTransfer(ctx context.Context, exec migrationExecutor, id string) (InstanceOwnerTransfer, error) {
+func readInstanceOwnerTransfer(ctx context.Context, exec sqliteExecutor, id string) (InstanceOwnerTransfer, error) {
 	var transfer InstanceOwnerTransfer
 	var state, createdAt, expiresAt string
 	var completedAt sql.NullString
@@ -526,7 +526,7 @@ func readInstanceOwnerTransfer(ctx context.Context, exec migrationExecutor, id s
 	return transfer, nil
 }
 
-func requireOwnerAccount(ctx context.Context, exec migrationExecutor, accountID string) error {
+func requireOwnerAccount(ctx context.Context, exec sqliteExecutor, accountID string) error {
 	var exists int
 	if err := exec.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE id=?`, accountID).Scan(&exists); err != nil {
 		return fmt.Errorf("check owner account: %w", err)
@@ -537,7 +537,7 @@ func requireOwnerAccount(ctx context.Context, exec migrationExecutor, accountID 
 	return nil
 }
 
-func setOwnerTransferTerminal(ctx context.Context, exec migrationExecutor, id string, state OwnerTransferState, now time.Time) error {
+func setOwnerTransferTerminal(ctx context.Context, exec sqliteExecutor, id string, state OwnerTransferState, now time.Time) error {
 	result, err := exec.ExecContext(ctx, `UPDATE instance_owner_transfers SET state=?,completed_at=? WHERE id=? AND state='pending'`, string(state), formatOwnerTime(now), id)
 	if err != nil {
 		return fmt.Errorf("finish owner transfer: %w", err)
@@ -552,7 +552,7 @@ func setOwnerTransferTerminal(ctx context.Context, exec migrationExecutor, id st
 	return nil
 }
 
-func insertInstanceOwnerAudit(ctx context.Context, exec migrationExecutor, actorID, action, resourceType, resourceID string, status int, at time.Time) error {
+func insertInstanceOwnerAudit(ctx context.Context, exec sqliteExecutor, actorID, action, resourceType, resourceID string, status int, at time.Time) error {
 	var actor any
 	if actorID != "" {
 		actor = actorID
@@ -565,33 +565,3 @@ func insertInstanceOwnerAudit(ctx context.Context, exec migrationExecutor, actor
 
 // Use fixed-width UTC precision so persisted owner times also sort safely as text.
 func formatOwnerTime(at time.Time) string { return at.UTC().Format("2006-01-02T15:04:05.000000000Z") }
-
-func withInstanceOwnerWriteTx(ctx context.Context, db *sql.DB, apply func(migrationExecutor) error) (err error) {
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		return fmt.Errorf("acquire instance owner connection: %w", err)
-	}
-	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
-		return fmt.Errorf("begin instance owner transaction: %w", err)
-	}
-	committed := false
-	defer func() {
-		if committed {
-			return
-		}
-		rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if _, rollbackErr := conn.ExecContext(rollbackCtx, `ROLLBACK`); rollbackErr != nil && err == nil {
-			err = fmt.Errorf("rollback instance owner transaction: %w", rollbackErr)
-		}
-	}()
-	if err := apply(conn); err != nil {
-		return err
-	}
-	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
-		return fmt.Errorf("commit instance owner transaction: %w", err)
-	}
-	committed = true
-	return nil
-}

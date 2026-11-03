@@ -63,8 +63,8 @@ func TestFederationKeyRotationCommitFailureReturnsStableUnknownAndFingerprint(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	transaction := func(ctx context.Context, db *sql.DB, apply func(migrationExecutor) error) error {
-		return withInstanceOwnerWriteTx(ctx, db, func(tx migrationExecutor) error {
+	transaction := func(ctx context.Context, db *sql.DB, apply func(sqliteExecutor) error) error {
+		return withImmediateSQLiteWriteTx(ctx, db, func(tx sqliteExecutor) error {
 			if err := apply(tx); err != nil {
 				return err
 			}

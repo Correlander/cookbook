@@ -251,7 +251,7 @@ func (h passkeyHandler) loadUser(id string) (webAuthnUser, bool) {
 	return user, ok
 }
 
-func (h passkeyHandler) loadUserFrom(ctx context.Context, exec migrationExecutor, id string) (webAuthnUser, bool, error) {
+func (h passkeyHandler) loadUserFrom(ctx context.Context, exec sqliteExecutor, id string) (webAuthnUser, bool, error) {
 	var user webAuthnUser
 	if id == "" {
 		return webAuthnUser{}, false, nil
@@ -361,7 +361,7 @@ func (h passkeyHandler) storeCredential(userID string, credential webauthn.Crede
 	return storeCredentialWithExecutor(context.Background(), h.db, userID, credential, name)
 }
 
-func storeCredentialWithExecutor(ctx context.Context, exec migrationExecutor, userID string, credential webauthn.Credential, name string) error {
+func storeCredentialWithExecutor(ctx context.Context, exec sqliteExecutor, userID string, credential webauthn.Credential, name string) error {
 	name, err := normalizePasskeyName(name)
 	if err != nil {
 		return err

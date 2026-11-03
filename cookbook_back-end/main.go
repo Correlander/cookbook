@@ -56,7 +56,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func main() {
-	if handled, err := runInstanceOwnerCLI(os.Args[1:], os.Stdin, os.Stdout); handled {
+	if handled, err := runInstanceCLI(os.Args[1:], os.Stdin, os.Stdout); handled {
 		if err != nil {
 			log.Fatal(err)
 		}

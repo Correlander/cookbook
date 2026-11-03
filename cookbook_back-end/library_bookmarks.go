@@ -63,7 +63,7 @@ BEGIN SELECT RAISE(ABORT, 'recipe bookmark limit reached'); END`
 
 // ApplyRecipeBookmarkMigration is migration 6's additive, local-only schema.
 // Its caller applies the DDL and ledger row in the migration transaction.
-func ApplyRecipeBookmarkMigration(ctx context.Context, exec migrationExecutor) error {
+func ApplyRecipeBookmarkMigration(ctx context.Context, exec sqliteExecutor) error {
 	for _, statement := range strings.Split(recipeBookmarkSchemaDDL, ";") {
 		statement = strings.TrimSpace(statement)
 		if statement == "" {

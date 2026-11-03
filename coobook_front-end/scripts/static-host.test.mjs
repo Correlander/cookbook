@@ -52,6 +52,7 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
     await writeFile(join(dist, 'auth/confirm.html'), '<!doctype html><html><head><meta name="robots" content="noindex,follow"><title>Confirm</title></head></html>')
     await writeFile(join(dist, 'auth/enroll.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Passkey enrollment</title></head></html>')
     await writeFile(join(dist, 'account/security.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Account security</title></head></html>')
+    await writeFile(join(dist, 'admin.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Instance workbench</title></head></html>')
     await writeFile(join(dist, 'admin/settings.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Admin settings</title></head></html>')
     await writeFile(join(dist, 'library.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Library</title></head></html>')
     await writeFile(join(dist, 'recipe.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Recipe</title></head></html>')
@@ -62,6 +63,7 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
       { route: '/auth/confirm', policy: "default-src 'self'; style-src 'self'" },
       { route: '/auth/enroll', policy: "default-src 'self'; script-src 'self'" },
       { route: '/account/security', policy: "default-src 'self'; img-src 'self'" },
+      { route: '/admin', policy: "default-src 'self'; script-src 'self'" },
       { route: '/admin/settings', policy: "default-src 'self'; connect-src 'self'" },
       { route: '/library', policy: "default-src 'self'; script-src 'self'" },
       { route: '/recipe', policy: "default-src 'self'; img-src 'self'" },
@@ -102,6 +104,7 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
     assert.equal(rootPage.headers.get('content-security-policy'), "default-src 'self'; script-src 'self'")
     for (const page of [
       { path: '/account/security', title: /Account security/, policy: "default-src 'self'; img-src 'self'" },
+      { path: '/admin', title: /Instance workbench/, policy: "default-src 'self'; script-src 'self'" },
       { path: '/admin/settings', title: /Admin settings/, policy: "default-src 'self'; connect-src 'self'" },
     ]) {
       for (const alias of [page.path, `${page.path}.html`]) {

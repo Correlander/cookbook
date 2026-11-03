@@ -21,6 +21,25 @@ export interface InstanceAuthority {
   can_manage_instance_roles: boolean;
 }
 
+export type OwnerTransferDirection = "incoming" | "outgoing";
+
+export interface OwnerTransfer {
+  id: string;
+  direction: OwnerTransferDirection;
+  state: "pending";
+  created_at: string;
+  expires_at: string;
+  counterparty_display_name: string;
+}
+
+export interface OwnerTransferReadResponse {
+  transfers: OwnerTransfer[];
+}
+
+export interface OwnerTransferCreatePayload {
+  target_user_id: string;
+}
+
 export interface Passkey {
   id: string;
   name: string;

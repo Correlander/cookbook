@@ -6,6 +6,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import type { AdminUser } from "./apiModels";
 import AdminUsers from "./AdminUsers.tsx";
 import type { InstanceAuthorityState } from "./features/auth/useInstanceAuthority";
 
@@ -27,6 +28,7 @@ function renderUsers(
     currentUserID?: string;
     onRetryAuthority?: () => void;
     onRoleChanged?: () => void;
+    onTransferTarget?: (account: AdminUser) => void;
   } = {},
 ) {
   return render(
@@ -39,6 +41,7 @@ function renderUsers(
       authorityState={authorityState}
       onRetryAuthority={options.onRetryAuthority ?? vi.fn()}
       onRoleChanged={options.onRoleChanged ?? vi.fn()}
+      onTransferTarget={options.onTransferTarget}
     />,
   );
 }
@@ -84,6 +87,47 @@ it("shows role controls for a non-admin owner when the server grants the capabil
   await waitFor(() => expect(onRoleChanged).toHaveBeenCalledTimes(1));
 });
 
+it.each([
+  [
+    "last_administrator_required",
+    "At least one administrator must remain assigned. Ask another eligible account to make this change.",
+  ],
+  ["cannot_change_own_role", "You cannot change your own administrator role."],
+  [
+    "unexpected_conflict",
+    "This account role could not be changed because the current instance state conflicts with the request. Refresh the account list and try again.",
+  ],
+])("explains role update conflict %s accurately", async (errorCode, message) => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith("/api/admin/users?") && !init?.method)
+        return Promise.resolve(response([account]));
+      return Promise.resolve(response({ error: errorCode }, 409));
+    }),
+  );
+  vi.stubGlobal(
+    "confirm",
+    vi.fn(() => true),
+  );
+  renderUsers({
+    status: "ready",
+    userID: "owner-1",
+    authority: {
+      is_instance_owner: true,
+      is_admin: false,
+      owner_claimed: true,
+      can_manage_instance_roles: true,
+    },
+  });
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Make administrator" }),
+  );
+
+  expect((await screen.findByRole("alert")).textContent).toContain(message);
+});
+
 it("hides controls for an administrator without owner role-management permission", async () => {
   vi.stubGlobal(
     "fetch",
@@ -107,6 +151,67 @@ it("hides controls for an administrator without owner role-management permission
   expect(
     screen.getByText(/this account cannot change roles/i),
   ).toBeTruthy();
+});
+
+it("offers owner transfer targets from the paginated account list and disables self-role changes", async () => {
+  const owner = {
+    id: "owner-1",
+    email: "owner@example.test",
+    display_name: "Owner",
+    is_admin: false,
+    created_at: "2026-01-01T00:00:00Z",
+  };
+  const fetchMock = vi.fn(() => Promise.resolve(response([account, owner])));
+  vi.stubGlobal("fetch", fetchMock);
+  const onTransferTarget = vi.fn();
+  renderUsers(
+    {
+      status: "ready",
+      userID: "owner-1",
+      authority: {
+        is_instance_owner: true,
+        is_admin: false,
+        owner_claimed: true,
+        can_manage_instance_roles: true,
+      },
+    },
+    { onTransferTarget },
+  );
+
+  const selfRole = await screen.findByRole("button", {
+    name: "Your own administrator role cannot be changed",
+  });
+  expect(selfRole.hasAttribute("disabled")).toBe(true);
+  expect(screen.getByText("Self role changes are unavailable.")).toBeTruthy();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Transfer ownership to Member" }),
+  );
+  expect(onTransferTarget).toHaveBeenCalledWith(account);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock).toHaveBeenCalledWith("/api/admin/users?limit=100&offset=0");
+  expect(
+    screen.queryByRole("button", { name: "Transfer ownership to Owner" }),
+  ).toBeNull();
+});
+
+it("does not offer owner-transfer targets to a non-owner administrator", async () => {
+  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(response([account]))));
+  renderUsers(
+    {
+      status: "ready",
+      userID: "admin-1",
+      authority: {
+        is_instance_owner: false,
+        is_admin: true,
+        owner_claimed: true,
+        can_manage_instance_roles: false,
+      },
+    },
+    { onTransferTarget: vi.fn() },
+  );
+
+  expect(await screen.findByText("Member")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /Transfer ownership/ })).toBeNull();
 });
 
 it("does not use a ready capability state belonging to a different account", async () => {

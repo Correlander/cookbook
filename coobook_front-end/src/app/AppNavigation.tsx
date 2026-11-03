@@ -1,5 +1,8 @@
+import { useEffect, useRef } from "react";
 import type { AuthenticatedUser } from "../apiModels";
 import type { AppSessionStatus } from "./AppSession.tsx";
+import useInstanceAuthority from "../features/auth/useInstanceAuthority.ts";
+import useOwnerTransfers from "../features/instance/useOwnerTransfers.ts";
 
 interface AppNavigationProps {
   currentUser: AuthenticatedUser | null;
@@ -42,6 +45,47 @@ export default function AppNavigation({
   onAction,
 }: AppNavigationProps) {
   const home = pathname === "/" || pathname === "/auth/confirm";
+  const authenticated = sessionStatus === "authenticated" && Boolean(currentUser);
+  const authority = useInstanceAuthority(
+    authenticated ? currentUser?.id ?? null : null,
+    authenticated,
+  );
+  const ownerTransfers = useOwnerTransfers(
+    authenticated ? currentUser?.id ?? null : null,
+    authenticated,
+    true,
+  );
+  const authorityForCurrentUser = authority.state.status === "ready" &&
+    authority.state.userID === currentUser?.id
+    ? authority.state.authority
+    : null;
+  const hasIncomingTransfer = ownerTransfers.state.status === "ready" &&
+    ownerTransfers.state.userID === currentUser?.id &&
+    ownerTransfers.state.transfers.some((transfer) => transfer.direction === "incoming");
+  const canVisitInstance = Boolean(
+    authenticated && currentUser &&
+      (authorityForCurrentUser?.is_admin ||
+        authorityForCurrentUser?.is_instance_owner ||
+        authorityForCurrentUser?.can_manage_instance_roles ||
+        hasIncomingTransfer),
+  );
+  const instanceCheckFailed = authenticated &&
+    ((authority.state.status === "error" && authority.state.userID === currentUser?.id) ||
+      (ownerTransfers.state.status === "error" && ownerTransfers.state.userID === currentUser?.id));
+  const retryAuthorityRef = useRef(authority.retry);
+  retryAuthorityRef.current = authority.retry;
+
+  useEffect(() => {
+    if (!authenticated) return;
+    const checkAuthorityOnFocus = () => retryAuthorityRef.current();
+    window.addEventListener("focus", checkAuthorityOnFocus);
+    return () => window.removeEventListener("focus", checkAuthorityOnFocus);
+  }, [authenticated]);
+
+  function retryInstanceChecks() {
+    authority.retry();
+    void ownerTransfers.refresh();
+  }
   return (
     <header className="topbar">
       <a href="/#home" className="brand" aria-label="Cookbook home">
@@ -75,15 +119,20 @@ export default function AppNavigation({
             Account
           </a>
         )}
-        {currentUser?.is_admin && (
+        {canVisitInstance && (
           <a
-            className={pathname === "/admin/settings" ? "main-nav__active" : undefined}
-            href="/admin/settings"
+            className={pathname === "/admin" || pathname === "/admin/settings" ? "main-nav__active" : undefined}
+            href="/admin"
           >
-            Administration
+            Instance
           </a>
         )}
       </nav>
+      {instanceCheckFailed && (
+        <button className="text-link" type="button" onClick={retryInstanceChecks}>
+          Retry Instance check
+        </button>
+      )}
       {onQueryChange ? (
         <label className="top-search">
           <svg

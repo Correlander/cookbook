@@ -9,6 +9,7 @@ interface AdminUsersProps {
   authorityState: InstanceAuthorityState;
   onRetryAuthority: () => void;
   onRoleChanged: () => void;
+  onTransferTarget?: (account: AdminUser) => void;
 }
 
 export default function AdminUsers({
@@ -16,6 +17,7 @@ export default function AdminUsers({
   authorityState,
   onRetryAuthority,
   onRoleChanged,
+  onTransferTarget,
 }: AdminUsersProps) {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [authorized, setAuthorized] = useState<boolean | null>(null);
@@ -24,6 +26,7 @@ export default function AdminUsers({
   const [savingID, setSavingID] = useState("");
   const [error, setError] = useState("");
   const [usersForUserID, setUsersForUserID] = useState("");
+  const [reloadVersion, setReloadVersion] = useState(0);
   const listRequestID = useRef(0);
   const userID = currentUser?.id ?? "";
   const currentListReady = usersForUserID === userID;
@@ -33,6 +36,12 @@ export default function AdminUsers({
       authorityState.status === "ready" &&
       authorityState.userID === currentUser.id &&
       authorityState.authority.can_manage_instance_roles,
+  );
+  const canTransferOwnership = Boolean(
+    currentUser &&
+      authorityState.status === "ready" &&
+      authorityState.userID === currentUser.id &&
+      authorityState.authority.is_instance_owner,
   );
 
   useEffect(() => {
@@ -74,7 +83,7 @@ export default function AdminUsers({
       if (listRequestID.current === requestID)
         listRequestID.current += 1;
     };
-  }, [userID]);
+  }, [reloadVersion, userID]);
 
   async function loadMore() {
     if (loadingMore || !currentListReady || !userID) return;
@@ -121,23 +130,37 @@ export default function AdminUsers({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ is_admin: isAdmin }),
       });
+      let errorCode: string | null = null;
+      if (!response.ok) {
+        const failure: unknown = await response.json().catch(() => null);
+        if (
+          failure &&
+          typeof failure === "object" &&
+          "error" in failure &&
+          typeof failure.error === "string"
+        )
+          errorCode = failure.error;
+      }
       if (response.status === 409) {
+        if (errorCode === "last_administrator_required")
+          throw new Error(
+            "At least one administrator must remain assigned. Ask another eligible account to make this change.",
+          );
+        if (errorCode === "cannot_change_own_role")
+          throw new Error("You cannot change your own administrator role.");
         throw new Error(
-          "At least one administrator must remain assigned. Ask another eligible account to make this change.",
+          "This account role could not be changed because the current instance state conflicts with the request. Refresh the account list and try again.",
         );
       }
       if (!response.ok) {
-        const failure = await response.json().catch(() => null);
         throw new Error(
-          failure?.error === "reauthentication_required"
+          errorCode === "reauthentication_required"
             ? "Sign in again before changing administrator access."
             : "Could not update this account role.",
         );
       }
-      const updated = (await response.json()) as AdminUser;
-      setUsers((current) =>
-        current.map((item) => (item.id === updated.id ? updated : item)),
-      );
+      await response.json();
+      setReloadVersion((current) => current + 1);
       onRoleChanged();
     } catch (saveError) {
       setError(
@@ -207,8 +230,21 @@ export default function AdminUsers({
               · joined {new Date(account.created_at).toLocaleDateString()}
             </small>
           </span>
-          {account.id !== currentUser?.id &&
-            canManageRoles && (
+          <div>
+            {account.id === currentUser?.id && canManageRoles ? (
+              <>
+                <button
+                  className="text-link"
+                  type="button"
+                  disabled
+                  aria-label="Your own administrator role cannot be changed"
+                  title="The server does not allow changing your own role."
+                >
+                  Your role
+                </button>
+                <small>Self role changes are unavailable.</small>
+              </>
+            ) : account.id !== currentUser?.id && canManageRoles ? (
               <button
                 className="text-link"
                 type="button"
@@ -221,7 +257,19 @@ export default function AdminUsers({
                     ? "Remove administrator"
                     : "Make administrator"}
               </button>
-            )}
+            ) : null}
+            {account.id !== currentUser?.id &&
+              canTransferOwnership &&
+              onTransferTarget && (
+                <button
+                  className="text-link"
+                  type="button"
+                  onClick={() => onTransferTarget(account)}
+                >
+                  Transfer ownership to {account.display_name}
+                </button>
+              )}
+          </div>
         </div>
       ))}
       {currentListReady && hasMore && (

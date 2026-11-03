@@ -1,0 +1,11 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro'
+import InstanceWorkbenchRoot from '../app/InstanceWorkbenchRoot.tsx'
+
+const title = 'Instance — Cookbook'
+const description = 'Manage access and ownership for this Cookbook instance.'
+---
+
+<BaseLayout title={title} description={description} robots="noindex,nofollow">
+  <InstanceWorkbenchRoot client:load />
+</BaseLayout>

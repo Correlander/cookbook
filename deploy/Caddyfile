@@ -7,9 +7,7 @@
 	encode zstd gzip
 	@api path /api/* /healthz
 	handle @api {
-		reverse_proxy cookbook:8000 {
-			header_up Host {http.request.host}
-		}
+		reverse_proxy cookbook:8000
 	}
 
 	import /etc/caddy/static-csp.caddy

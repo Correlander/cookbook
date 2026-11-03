@@ -4,6 +4,7 @@
 !.env.example
 **/node_modules
 **/dist
+coobook_front-end/.cookbook-e2e-build-*/
 !cookbook_back-end/web/dist/
 !cookbook_back-end/web/dist/index.html
 **/*.db

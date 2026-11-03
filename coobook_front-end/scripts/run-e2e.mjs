@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { cp, lstat, mkdtemp, mkdir, readdir, rm, writeFile, chmod } from 'node:fs/promises'
+import { cp, lstat, mkdtemp, mkdir, readdir, rm, writeFile, chmod, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createServer } from 'node:net'
@@ -18,6 +18,7 @@ const capture = join(runDir, 'mail.json')
 const emailCommand = join(runDir, 'capture-email')
 await writeFile(emailCommand, `#!/bin/sh\ncat > '${capture}'\nchmod 600 '${capture}'\n`, { mode: 0o700 })
 const children = []
+let buildScratch
 let shutdownPromise
 
 async function makeWritableTree(path) {
@@ -32,6 +33,14 @@ async function makeWritableTree(path) {
       await chmod(child, mode | 0o200).catch(() => {})
     }
   }
+}
+
+async function removeBuildScratch() {
+  if (!buildScratch) return
+  await makeWritableTree(buildScratch)
+  await chmod(buildScratch, 0o700).catch(() => {})
+  await rm(buildScratch, { recursive: true, force: true })
+  buildScratch = undefined
 }
 
 function start(command, args, options) {
@@ -76,9 +85,13 @@ function stopAll() {
         await waitForExit(child)
       }
     }
-    await makeWritableTree(runDir)
-    await chmod(runDir, 0o700).catch(() => {})
-    await rm(runDir, { recursive: true, force: true })
+    try {
+      await makeWritableTree(runDir)
+      await chmod(runDir, 0o700).catch(() => {})
+      await rm(runDir, { recursive: true, force: true })
+    } finally {
+      await removeBuildScratch()
+    }
   })()
   return shutdownPromise
 }
@@ -121,7 +134,13 @@ try {
   const retainedBrowserCache = resolve(root, '..', 'engineering-local/tools/playwright/browsers')
   if (!env.PLAYWRIGHT_BROWSERS_PATH && existsSync(retainedBrowserCache)) env.PLAYWRIGHT_BROWSERS_PATH = retainedBrowserCache
   await mkdir(env.COOKBOOK_MEDIA_DIR, { recursive: true, mode: 0o700 })
-  if (process.env.E2E_SKIP_BUILD !== '1') await run('npm', ['run', 'build'], { cwd: frontend, env })
+  if (process.env.E2E_SKIP_BUILD !== '1') {
+    buildScratch = await mkdtemp(join(frontend, '.cookbook-e2e-build-'))
+    await chmod(buildScratch, 0o700)
+    const [frontendInfo, scratchInfo] = await Promise.all([stat(frontend), stat(buildScratch)])
+    if (scratchInfo.dev !== frontendInfo.dev) throw new Error('E2E build scratch must share the frontend filesystem')
+    await run('npm', ['run', 'build'], { cwd: frontend, env: { ...env, TMPDIR: buildScratch } })
+  }
   await cp(join(frontend, 'dist'), env.PLAYWRIGHT_DIST, { recursive: true, errorOnExist: true })
   const apiBinary = join(runDir, 'cookbook-api')
   await run('go', ['build', '-mod=mod', '-o', apiBinary, '.'], {

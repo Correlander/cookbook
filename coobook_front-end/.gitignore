@@ -11,6 +11,7 @@ node_modules
 dist
 dist-ssr
 .astro
+.cookbook-e2e-build-*/
 *.local
 
 # Editor directories and files

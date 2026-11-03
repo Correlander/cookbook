@@ -47,9 +47,8 @@ func normalizeInstanceAccountEmail(raw string) (string, error) {
 	return email, nil
 }
 
-// openAccountLookupDatabase opens an existing database using SQLite read-only
-// mode. In particular, this path never creates a database or applies schema
-// migrations as a side effect of an account lookup.
+// openAccountLookupDatabase opens an existing SQLite file in read-only mode for
+// offline local inspection. It never creates a database or applies migrations.
 func openAccountLookupDatabase(path string) (*sql.DB, error) {
 	path = strings.TrimSpace(path)
 	if path == "" || path == ":memory:" || strings.HasPrefix(path, "file:") {

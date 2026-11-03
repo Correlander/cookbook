@@ -68,6 +68,15 @@ Recovery requires an exact interactive confirmation and records the prior/target
 
 Run `./scripts/backup-compose.sh [private-directory]` to create a versioned full-instance archive. The helper stops the Compose service, archives the SQLite database and sidecars, `/data/media`, the active federation signing key and any pending rotation key, then restarts the service if it was running. Without an argument it uses `./backups`; `COOKBOOK_BACKUP_DIR` also selects the default. The destination and archive are restricted to the current user, but the archive is plaintext and contains private user data and signing keys. Store backups only in an explicitly agreed private, encrypted destination. See [Backup and recovery](docs/backup-and-recovery.md) for the format, limits and legacy archive behavior.
 
+The offline Person actor recovery verifier reads an explicit database file without applying migrations or changing account state. Use `describe` to emit the sorted version-1 actor manifest, then `verify` to compare that manifest against a database copy. The manifest contains only actor IDs, canonical URIs, lifecycle state, and active public-key fingerprints; retired actors have a null fingerprint. Verification accepts a manifest file or `-` for stdin and never uses `COOKBOOK_DATABASE` as a fallback:
+
+```sh
+cookbook-backend instance recovery describe --database /path/to/extracted/cookbook.db > actor-manifest.json
+cookbook-backend instance recovery verify --database /path/to/extracted/cookbook.db --manifest actor-manifest.json
+```
+
+For a database with uncheckpointed WAL commits, keep its matching `-wal` and `-shm` sidecars alongside the database during verification. The verifier reads through SQLite's read-only snapshot and fails closed if required WAL state is unavailable; it never treats the main database file alone as the complete snapshot.
+
 Restore with `./scripts/restore-compose.sh /path/to/cookbook-....tar.gz` using Podman Compose or Docker Compose and Python 3.9+. The archive and its directory must be accessible only by the current user. The script validates archive paths, file types, permissions, sizes, checksums and federation key files, then replaces the database, media and `/data/secrets`. It does not create an automatic pre-restore backup. If you need a separate backup, choose an explicitly agreed private destination and create it separately before restoring. Legacy database/media archives require `--accept-federation-key-loss`; see [Backup and recovery](docs/backup-and-recovery.md). If applying a restore fails after shutdown, the service remains stopped for inspection. Database schema upgrades run when the service starts.
 
 ## Personal data export and import

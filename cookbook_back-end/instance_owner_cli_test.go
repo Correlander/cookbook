@@ -248,3 +248,19 @@ func TestNoMailBootstrapAccountLookupAndFirstPasskeyGrant(t *testing.T) {
 		t.Fatalf("no-mail bootstrap state admin=%d active grants=%d", admin, grants)
 	}
 }
+
+func TestInstanceOwnerCLIDispatchesExplicitRecoveryDescribe(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "recovery-dispatch.db")
+	db := openOwnerCLITestDatabase(t, database)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	handled, err := runInstanceOwnerCLI([]string{"instance", "recovery", "describe", "--database", database}, strings.NewReader(""), &output)
+	if !handled || err != nil {
+		t.Fatalf("recovery describe handled=%v err=%v", handled, err)
+	}
+	if !strings.Contains(output.String(), `"version": 1`) || !strings.Contains(output.String(), `"actors": []`) {
+		t.Fatalf("recovery describe output=%q", output.String())
+	}
+}

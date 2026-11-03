@@ -119,7 +119,7 @@ test("owners can publish and withdraw a public recipe without losing owner acces
     await test.step("Open owner recipe dialog", async () => {
       const recipeCard = page.getByRole("button", { name: `Open ${title}` });
       await expect(recipeCard).toBeVisible();
-      await recipeCard.click();
+      await recipeCard.click({ timeout: 5_000 });
       await expect(page.getByRole("dialog", { name: title })).toBeVisible();
     });
 

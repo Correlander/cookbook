@@ -43,6 +43,11 @@ func registeredSchemaMigrations() []schemaMigration {
 		name:     "legacy-baseline",
 		checksum: migrationChecksum("legacy-baseline", legacyBaselineDefinition()),
 		apply:    applyLegacyBaseline,
+	}, {
+		version:  2,
+		name:     "instance-owner-authority",
+		checksum: migrationChecksum("instance-owner-authority", instanceOwnerSchemaDDL),
+		apply:    ApplyInstanceOwnerDDL,
 	}}
 }
 

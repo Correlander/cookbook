@@ -52,19 +52,29 @@ func rawMigrationDB(t *testing.T, path string) *sql.DB {
 	return db
 }
 
-func TestFreshDatabaseRecordsBaselineMigration(t *testing.T) {
+func TestFreshDatabaseRecordsBaselineAndOwnerMigrations(t *testing.T) {
 	db, err := openDatabase(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if got := migrationVersion(t, db); got != 1 {
-		t.Fatalf("migration version=%d, want 1", got)
+	if got := migrationVersion(t, db); got != 2 {
+		t.Fatalf("migration version=%d, want 2", got)
 	}
-	var name string
 	var count int
-	if err := db.QueryRow(`SELECT name,COUNT(*) FROM schema_migrations GROUP BY name`).Scan(&name, &count); err != nil || name != "legacy-baseline" || count != 1 {
-		t.Fatalf("baseline ledger name=%q rows=%d err=%v", name, count, err)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("migration ledger rows=%d err=%v, want 2", count, err)
+	}
+	for version, name := range map[int]string{1: "legacy-baseline", 2: "instance-owner-authority"} {
+		var got string
+		if err := db.QueryRow(`SELECT name FROM schema_migrations WHERE version=?`, version).Scan(&got); err != nil || got != name {
+			t.Fatalf("migration %d name=%q err=%v, want %q", version, got, err, name)
+		}
+	}
+	var owner sql.NullString
+	var generation int64
+	if err := db.QueryRow(`SELECT owner_user_id,generation FROM instance_authority WHERE singleton_id=1`).Scan(&owner, &generation); err != nil || owner.Valid || generation != 0 {
+		t.Fatalf("fresh owner state=%v generation=%d err=%v, want unclaimed", owner, generation, err)
 	}
 }
 
@@ -108,8 +118,61 @@ INSERT INTO sessions(id,token_hash,user_id,expires_at,created_at,user_agent) VAL
 	if public != 1 || admin != 1 || creator != "Claimed Creator" || title != "Preserve me" || version != 4 || sessionID != "stable-session" || revisionCount != beforeRevisions {
 		t.Fatalf("adopted data changed: public=%d admin=%d creator=%q title=%q version=%d session=%q revisions=%d", public, admin, creator, title, version, sessionID, revisionCount)
 	}
-	if got := migrationVersion(t, db); got != 1 {
-		t.Fatalf("adopted migration version=%d, want 1", got)
+	if got := migrationVersion(t, db); got != 2 {
+		t.Fatalf("adopted migration version=%d, want 2", got)
+	}
+	var owner sql.NullString
+	var generation int64
+	if err := db.QueryRow(`SELECT owner_user_id,generation FROM instance_authority WHERE singleton_id=1`).Scan(&owner, &generation); err != nil || owner.Valid || generation != 0 {
+		t.Fatalf("legacy authority mapping owner=%v generation=%d err=%v", owner, generation, err)
+	}
+}
+
+func TestInstanceOwnerMigrationPreservesV1RowsAndLeavesAuthorityUnclaimed(t *testing.T) {
+	db := rawMigrationDB(t, ":memory:")
+	ctx := context.Background()
+	if err := runSchemaMigrations(ctx, db, registeredSchemaMigrations()[:1]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,is_admin,created_at) VALUES
+		('legacy-admin','legacy-admin@example.test','Legacy Admin',1,'user-a'),
+		('legacy-member','legacy-member@example.test','Legacy Member',0,'user-b');
+		INSERT INTO recipes(id,owner_id,creator_name,title,version,created_at,updated_at) VALUES
+		('legacy-recipe','legacy-admin','Unverified Creator','Keep me',4,'recipe-created','recipe-updated');
+		INSERT INTO recipe_revisions(id,recipe_id,version,editor_id,title,description,ingredients_json,steps_json,visibility,created_at)
+		VALUES('legacy-revision','legacy-recipe',4,'legacy-admin','Keep me','','[]','[]','private','revision-created');
+		INSERT INTO cookbooks(id,owner_id,title,created_at,updated_at) VALUES
+		('legacy-book','legacy-admin','Legacy book','book-created','book-updated');
+		INSERT INTO cookbook_memberships(cookbook_id,user_id,role,created_at)
+		VALUES('legacy-book','legacy-member','viewer','membership-created');`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runSchemaMigrations(ctx, db, registeredSchemaMigrations()); err != nil {
+		t.Fatal(err)
+	}
+	if got := migrationVersion(t, db); got != 2 {
+		t.Fatalf("migration version=%d, want 2", got)
+	}
+	var owner sql.NullString
+	var claimedAt sql.NullString
+	var generation int64
+	if err := db.QueryRow(`SELECT owner_user_id,owner_claimed_at,generation FROM instance_authority WHERE singleton_id=1`).Scan(&owner, &claimedAt, &generation); err != nil || owner.Valid || claimedAt.Valid || generation != 0 {
+		t.Fatalf("v1 authority mapping owner=%v claimed_at=%v generation=%d err=%v", owner, claimedAt, generation, err)
+	}
+	var adminFlag, memberFlag, recipeVersion int
+	var recipeOwner, creator, title, bookOwner, memberRole string
+	err := db.QueryRow(`SELECT admin.is_admin,member.is_admin,r.owner_id,r.creator_name,r.title,b.owner_id,m.role,r.version
+		FROM users admin JOIN users member ON member.id='legacy-member'
+		JOIN recipes r ON r.id='legacy-recipe'
+		JOIN cookbooks b ON b.id='legacy-book'
+		JOIN cookbook_memberships m ON m.cookbook_id=b.id AND m.user_id=member.id
+		WHERE admin.id='legacy-admin'`).Scan(&adminFlag, &memberFlag, &recipeOwner, &creator, &title, &bookOwner, &memberRole, &recipeVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adminFlag != 1 || memberFlag != 0 || recipeOwner != "legacy-admin" || creator != "Unverified Creator" || title != "Keep me" || bookOwner != "legacy-admin" || memberRole != "viewer" || recipeVersion != 4 {
+		t.Fatalf("owner migration changed legacy rows: admin=%d member=%d recipe=%s/%s/%s v%d book=%s membership=%s", adminFlag, memberFlag, recipeOwner, creator, title, recipeVersion, bookOwner, memberRole)
 	}
 }
 
@@ -158,7 +221,7 @@ func TestFutureMigrationRunsOnceAndFailureRollsBackStepAndLedger(t *testing.T) {
 	defer db.Close()
 	fail := true
 	runs := 0
-	step := migrationTestStep(2, "test-marker", func(ctx context.Context, exec migrationExecutor) error {
+	step := migrationTestStep(3, "test-marker", func(ctx context.Context, exec migrationExecutor) error {
 		runs++
 		if _, err := exec.ExecContext(ctx, `CREATE TABLE migration_marker(value TEXT NOT NULL); INSERT INTO migration_marker(value) VALUES('applied')`); err != nil {
 			return err
@@ -172,14 +235,14 @@ func TestFutureMigrationRunsOnceAndFailureRollsBackStepAndLedger(t *testing.T) {
 	if err := runSchemaMigrations(context.Background(), db, migrations); err == nil || !strings.Contains(err.Error(), "injected migration failure") {
 		t.Fatalf("failed migration error=%v", err)
 	}
-	if migrationObjectExists(t, db, "table", "migration_marker") || migrationVersion(t, db) != 1 {
+	if migrationObjectExists(t, db, "table", "migration_marker") || migrationVersion(t, db) != 2 {
 		t.Fatal("failed migration left partial DDL/data or advanced the ledger")
 	}
 	fail = false
 	if err := runSchemaMigrations(context.Background(), db, migrations); err != nil {
 		t.Fatal(err)
 	}
-	if migrationVersion(t, db) != 2 || !migrationObjectExists(t, db, "table", "migration_marker") {
+	if migrationVersion(t, db) != 3 || !migrationObjectExists(t, db, "table", "migration_marker") {
 		t.Fatal("pending migration did not apply")
 	}
 	if err := runSchemaMigrations(context.Background(), db, migrations); err != nil {
@@ -239,9 +302,9 @@ func TestMigrationNameChecksumAndNewerVersionAreValidated(t *testing.T) {
 		update     string
 		wantErrSub string
 	}{
-		{name: "name", update: `UPDATE schema_migrations SET name='other'`, wantErrSub: `name`},
-		{name: "checksum", update: `UPDATE schema_migrations SET checksum=lower(hex(randomblob(32)))`, wantErrSub: `checksum mismatch`},
-		{name: "newer version", update: `UPDATE schema_migrations SET version=999`, wantErrSub: `newer than this binary`},
+		{name: "name", update: `UPDATE schema_migrations SET name='other' WHERE version=2`, wantErrSub: `name`},
+		{name: "checksum", update: `UPDATE schema_migrations SET checksum=lower(hex(randomblob(32))) WHERE version=2`, wantErrSub: `checksum mismatch`},
+		{name: "newer version", update: `UPDATE schema_migrations SET version=999 WHERE version=2`, wantErrSub: `newer than this binary`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "ledger.db")
@@ -351,8 +414,8 @@ func TestConcurrentStartupSerializesBaselineMigration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := migrationVersion(t, first); got != 1 {
-		t.Fatalf("concurrent migration version=%d, want 1", got)
+	if got := migrationVersion(t, first); got != 2 {
+		t.Fatalf("concurrent migration version=%d, want 2", got)
 	}
 }
 

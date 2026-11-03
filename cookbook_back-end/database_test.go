@@ -280,8 +280,13 @@ INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,
 	if version != 4 || title != "Old title" {
 		t.Fatalf("backfilled revision = version %d, title %q", version, title)
 	}
-	if got := migrationVersion(t, db); got != 1 {
-		t.Fatalf("legacy baseline migration version=%d, want 1", got)
+	if got := migrationVersion(t, db); got != 2 {
+		t.Fatalf("legacy migration version=%d, want 2", got)
+	}
+	var owner sql.NullString
+	var generation int64
+	if err := db.QueryRow(`SELECT owner_user_id,generation FROM instance_authority WHERE singleton_id=1`).Scan(&owner, &generation); err != nil || owner.Valid || generation != 0 {
+		t.Fatalf("legacy owner mapping owner=%v generation=%d err=%v", owner, generation, err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)

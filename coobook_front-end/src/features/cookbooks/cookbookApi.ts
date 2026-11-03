@@ -50,6 +50,22 @@ export function listCookbooks(offset: number, failure: string) {
   );
 }
 
+export function getCookbook(cookbookID: string, failure: string) {
+  return readJson<Cookbook>(
+    `/api/cookbooks/${encodeURIComponent(cookbookID)}`,
+    failure,
+    { cache: "no-store" },
+  );
+}
+
+export function getPublicCookbook(cookbookID: string, failure: string) {
+  return readJson<PublicCookbook>(
+    `/api/public/cookbooks/${encodeURIComponent(cookbookID)}`,
+    failure,
+    { cache: "no-store" },
+  );
+}
+
 export function listPublicCookbooks(
   query: string,
   offset: number,

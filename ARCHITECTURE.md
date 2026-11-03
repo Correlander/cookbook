@@ -4,7 +4,7 @@ This document separates shipped behavior from the approved, dependency-gated tar
 
 ## Current implementation
 
-Cookbook is an independently served Go API with SQLite and local media. Astro builds the frontend as static output; Caddy serves it and proxies same-origin `/api/*` and `/healthz` to Go. There is no Astro server runtime. The shared React application owns current authenticated and interactive browser state. The separate `marketing-site/` is outside the application build. Static standalone delivery remains the default; a request-time public renderer is not part of the shipped deployment.
+Cookbook is an independently served Go API with SQLite and local media. Astro builds the frontend as static output; Caddy serves it and proxies same-origin `/api/*` and `/healthz` to Go. There is no Astro server runtime. The shared React application owns current authenticated and interactive browser state, while `/cookbooks` and `/cookbook?id=…` use independent route roots and hydrate only their page-specific cookbook UI. Those static shells contain no account or cookbook data and use the authenticated or public APIs after session resolution. The separate `marketing-site/` is outside the application build. Static standalone delivery remains the default; a request-time public renderer is not part of the shipped deployment.
 
 SQLite uses WAL, foreign keys, one application connection, and an ordered, checksummed migration ledger. Migrations through v5 provide the legacy baseline, instance-owner authority, recipe publication policy, offline passkey enrollment, and optional Person-actor identity persistence. Migration definitions are immutable after application; new schema belongs in later ordered migrations.
 

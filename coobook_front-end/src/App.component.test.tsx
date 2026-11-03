@@ -828,7 +828,9 @@ it("keeps role controls unavailable on authority errors without signing out", as
 
   renderApp();
 
-  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(
+    await screen.findByText("Could not load role permissions. Try again."),
+  ).toBeTruthy();
   expect(await screen.findByText("Welcome back, Admin.")).toBeTruthy();
   expect(
     screen.queryByRole("heading", { name: "Sign in to continue" }),
@@ -1301,7 +1303,67 @@ it("shows cookbook edit and member controls only to the owner", async () => {
   );
 
   fireEvent.click(screen.getByRole("button", { name: "Close members" }));
-  fireEvent.click(screen.getAllByRole("button", { name: "Open cookbook" })[0]!);
-  fireEvent.click(await screen.findByRole("button", { name: "Open Garden soup" }));
-  expect(await screen.findByRole("dialog", { name: "Garden soup" })).toBeTruthy();
+  const cookbookLink = screen.getAllByRole("link", { name: "Open cookbook" })[0];
+  expect(cookbookLink?.getAttribute("href")).toBe("/cookbook?id=owned-book");
+});
+
+it("keeps both legacy cookbook anchors on the same useful section through session hydration", async () => {
+  const session = deferred<Response>();
+  const calls: string[] = [];
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    calls.push(url);
+    if (url === "/api/auth/me") return session.promise;
+    if (url === "/api/auth/config") return Promise.resolve(jsonResponse(publicConfig(true, true)));
+    if (url === "/api/cookbooks?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([
+        {
+          id: "home-book",
+          owner_id: "owner-1",
+          title: "My kitchen book",
+          description: "",
+          visibility: "private",
+        },
+      ]));
+    if (url.startsWith("/api/recipes?")) return Promise.resolve(jsonResponse([]));
+    if (url === "/api/instance/authority")
+      return Promise.resolve(jsonResponse({
+        is_instance_owner: false,
+        is_admin: false,
+        owner_claimed: false,
+        can_manage_instance_roles: false,
+      }));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+  const cookbookSection = document.getElementById("cookbooks");
+  const myCookbooksAnchor = document.getElementById("my-cookbooks");
+  expect(cookbookSection).toBeTruthy();
+  expect(myCookbooksAnchor).toBeTruthy();
+  expect(cookbookSection?.textContent).toContain("Browse public cookbooks");
+  expect(myCookbooksAnchor?.textContent).toContain("Browse public cookbooks");
+  expect(cookbookSection?.querySelector('a[href="/cookbooks"]')?.textContent)
+    .toContain("Open cookbooks");
+  expect(calls.some((url) => url.startsWith("/api/public/cookbooks"))).toBe(false);
+
+  await act(async () => {
+    session.resolve(jsonResponse({
+      id: "owner-1",
+      email: "owner@example.test",
+      display_name: "Owner",
+      is_admin: false,
+    }));
+    await session.promise;
+  });
+
+  expect(await screen.findByRole("link", { name: "Open cookbook" })).toBeTruthy();
+  expect(screen.getByText("My kitchen book")).toBeTruthy();
+  expect(document.getElementById("cookbooks")).toBe(cookbookSection);
+  expect(document.getElementById("my-cookbooks")).toBe(myCookbooksAnchor);
+  expect(cookbookSection?.textContent).toContain("Cookbooks you can access");
+  expect(myCookbooksAnchor?.textContent).toContain("Cookbooks you can access");
+  expect(calls).toContain("/api/cookbooks?limit=24&offset=0");
+  expect(calls.some((url) => url.startsWith("/api/public/cookbooks"))).toBe(false);
 });

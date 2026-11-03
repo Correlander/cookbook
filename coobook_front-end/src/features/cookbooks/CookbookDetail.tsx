@@ -1,53 +1,95 @@
 import { useEffect, useRef, useState } from "react";
-import type { Cookbook, Recipe } from "../../apiModels";
+import type { Cookbook, PublicCookbook, PublicCookbookRecipe, Recipe } from "../../apiModels";
 import { errorMessage } from "../../apiModels";
-import useModalFocus from "../../useModalFocus.ts";
-import Icon from "../recipes/RecipeIcon.tsx";
 import RecipeCardContents from "../recipes/RecipeCardContents.tsx";
-import { COOKBOOK_PAGE_SIZE, listCookbookRecipes } from "./cookbookApi.ts";
+import CookbookForm from "./CookbookForm.tsx";
+import CookbookMembers from "./CookbookMembers.tsx";
+import {
+  COOKBOOK_PAGE_SIZE,
+  listCookbookRecipes,
+  listPublicCookbookRecipes,
+} from "./cookbookApi.ts";
 
-interface CookbookDetailProps {
-  book: Cookbook;
-  onClose: () => void;
-  onOpenRecipe: (recipe: Recipe) => void;
+type CookbookView = Cookbook | PublicCookbook;
+type CookbookRecipe = Recipe | PublicCookbookRecipe;
+type CookbookViewMode = "public" | "authenticated";
+
+function isPublicCookbook(book: CookbookView): book is PublicCookbook {
+  return !("owner_id" in book);
 }
 
-export default function CookbookDetail({ book, onClose, onOpenRecipe }: CookbookDetailProps) {
-  const dialogRef = useRef<HTMLElement>(null);
-  useModalFocus(dialogRef, onClose);
-  const [query, setQuery] = useState(""),
-    [sort, setSort] = useState<"recent" | "oldest" | "title">("recent"),
-    [tag, setTag] = useState(""),
-    [recipes, setRecipes] = useState<Recipe[]>([]),
-    [offset, setOffset] = useState(0),
-    [hasMore, setHasMore] = useState(false),
-    [loading, setLoading] = useState(true),
-    [loadingMore, setLoadingMore] = useState(false),
-    [error, setError] = useState("");
+interface CookbookDetailProps {
+  initialBook: CookbookView;
+  mode: CookbookViewMode;
+  currentUserID: string | null;
+  returnQuery?: string;
+}
+
+function backHref(query: string) {
+  const params = new URLSearchParams();
+  if (query.trim()) params.set("q", query.trim());
+  return `/cookbooks${params.size ? `?${params}` : ""}`;
+}
+
+export default function CookbookDetail({
+  initialBook,
+  mode,
+  currentUserID,
+  returnQuery = "",
+}: CookbookDetailProps) {
+  const isPublic = mode === "public";
+  const [book, setBook] = useState<CookbookView>(initialBook);
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<"recent" | "oldest" | "title">("recent");
+  const [tag, setTag] = useState("");
+  const [recipes, setRecipes] = useState<CookbookRecipe[]>([]);
+  const [offset, setOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState("");
+  const [editOpen, setEditOpen] = useState(false);
+  const [membersOpen, setMembersOpen] = useState(false);
   const filterKeyRef = useRef("");
   const filterKey = query.trim() + ":" + sort + ":" + tag.trim();
   filterKeyRef.current = filterKey;
+  const publicBook = isPublicCookbook(book) ? book : null;
+  const ownerID = "owner_id" in book ? book.owner_id : null;
+
   useEffect(() => {
     let active = true;
     setLoading(true);
     setError("");
-    listCookbookRecipes(
-      book.id,
-      { offset: 0, sort, query, tag },
-      (response) =>
-        response.status === 404
-          ? "You no longer have access to this cookbook."
-          : "Could not load this cookbook.",
-    ).then((data) => {
-        if (active) {
-          setRecipes(data);
-          setOffset(data.length);
-          setHasMore(data.length === COOKBOOK_PAGE_SIZE);
-        }
+    const failure = (response: Response) =>
+      response.status === 404
+        ? "This cookbook is unavailable."
+        : "Could not load recipes in this cookbook.";
+    const request = isPublic
+      ? listPublicCookbookRecipes(
+          book.id,
+          { offset: 0, sort, query, tag },
+          "Could not load recipes in this cookbook.",
+        )
+      : listCookbookRecipes(
+          book.id,
+          { offset: 0, sort, query, tag },
+          failure,
+        );
+    request
+      .then((data) => {
+        if (!active) return;
+        setRecipes(data);
+        setOffset(data.length);
+        setHasMore(data.length === COOKBOOK_PAGE_SIZE);
       })
-      .catch((err: unknown) => {
+      .catch((loadError: unknown) => {
         if (active) {
-          setError(errorMessage(err, "Could not load this cookbook."));
+          setError(
+            errorMessage(
+              loadError,
+              "Could not load recipes in this cookbook.",
+            ),
+          );
           setRecipes([]);
           setHasMore(false);
         }
@@ -58,130 +100,163 @@ export default function CookbookDetail({ book, onClose, onOpenRecipe }: Cookbook
     return () => {
       active = false;
     };
-  }, [book.id, query, sort, tag]);
-  async function more() {
+  }, [book.id, isPublic, query, sort, tag]);
+
+  async function loadMore() {
     if (loadingMore) return;
     const requestedFilterKey = filterKey;
     setLoadingMore(true);
     setError("");
     try {
-      const data = await listCookbookRecipes(
-        book.id,
-        { offset, sort, query, tag },
-        "Could not load more recipes.",
-      );
+      const filters = { offset, sort, query, tag };
+      const data = isPublic
+        ? await listPublicCookbookRecipes(
+            book.id,
+            filters,
+            "Could not load more recipes.",
+          )
+        : await listCookbookRecipes(
+            book.id,
+            filters,
+            "Could not load more recipes.",
+          );
       if (filterKeyRef.current !== requestedFilterKey) return;
       setRecipes((current) => [...current, ...data]);
-      setOffset((value) => value + data.length);
+      setOffset((current) => current + data.length);
       setHasMore(data.length === COOKBOOK_PAGE_SIZE);
-    } catch (err: unknown) {
-      setError(errorMessage(err, "Could not load more recipes."));
+    } catch (loadError: unknown) {
+      setError(errorMessage(loadError, "Could not load more recipes."));
     } finally {
       setLoadingMore(false);
     }
   }
+
   return (
-    <div
-      className="dialog-backdrop"
-      role="presentation"
-      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
-    >
-      <section
-        className="cookbook-detail"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="cookbook-detail-title"
-        ref={dialogRef}
-        tabIndex={-1}
-      >
-        <button
-          className="icon-button dialog-close"
-          aria-label="Close cookbook"
-          onClick={onClose}
-        >
-          <Icon name="close" />
-        </button>
-        <span className="eyebrow">{book.visibility} cookbook</span>
-        <h2 id="cookbook-detail-title">{book.title}</h2>
-        {book.description && <p>{book.description}</p>}
-        <div className="cookbook-filters">
-          <label className="cookbook-search">
-            <span>Search recipes</span>
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search this cookbook…"
-            />
-          </label>
-          <label>
-            <span>Filter by tag</span>
-            <input
-              value={tag}
-              onChange={(event) => setTag(event.target.value)}
-              placeholder="e.g. vegetarian"
-              maxLength={40}
-            />
-          </label>
-          <label>
-            <span>Sort by</span>
-            <select
-              value={sort}
-              onChange={(event) =>
-                setSort(event.target.value as "recent" | "oldest" | "title")
-              }
-            >
-              <option value="recent">Recently updated</option>
-              <option value="oldest">Oldest updated</option>
-              <option value="title">Title</option>
-            </select>
-          </label>
+    <section className="cookbook-dashboard" aria-labelledby="cookbook-detail-title">
+      <div className="section-heading">
+        <div>
+          <span className="eyebrow">
+            {isPublic && publicBook
+              ? `${publicBook.recipe_count} public ${publicBook.recipe_count === 1 ? "recipe" : "recipes"}`
+              : "visibility" in book
+                ? `${book.visibility} cookbook`
+                : "Public cookbook"}
+          </span>
+          <h1 id="cookbook-detail-title">{book.title}</h1>
         </div>
-        {loading ? (
-          <p className="cookbook-empty">Loading recipes…</p>
-        ) : error && !recipes.length ? (
-          <p className="form-message" role="alert">
-            {error}
-          </p>
-        ) : recipes.length ? (
-          <div className="recipe-grid">
-            {recipes.map((recipe) => (
-              <button
-                className="recipe-card"
-                key={recipe.id}
-                onClick={() => onOpenRecipe(recipe)}
-                aria-label={`Open ${recipe.title}`}
-              >
-                <RecipeCardContents
-                  title={recipe.title}
-                  creatorName={recipe.creator_name}
-                  image={recipe.image}
-                  stepCount={recipe.steps?.length ?? 0}
-                  relationshipLabel={`In ${book.title}`}
-                />
-              </button>
-            ))}
+        {!isPublic && ownerID === currentUserID && (
+          <div>
+            <button
+              className="text-link"
+              type="button"
+              onClick={() => setEditOpen(true)}
+            >
+              Edit cookbook
+            </button>
+            <button
+              className="text-link"
+              type="button"
+              onClick={() => setMembersOpen(true)}
+            >
+              Share and manage members
+            </button>
           </div>
-        ) : (
-          <p className="cookbook-empty">
-            No recipes are available in this cookbook.
-          </p>
         )}
-        {error && recipes.length > 0 && (
-          <p className="form-message" role="alert">
-            {error}
-          </p>
-        )}
-        {hasMore && (
-          <button
-            className="button button--green"
-            type="button"
-            disabled={loadingMore}
-            onClick={more}
+      </div>
+      {book.description && <p>{book.description}</p>}
+      <p className="cookbook-detail__navigation">
+        <a className="text-link" href={backHref(returnQuery)}>
+          Back to cookbooks
+        </a>
+      </p>
+      <div className="cookbook-filters">
+        <label className="cookbook-search">
+          <span>Search recipes</span>
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search this cookbook…"
+          />
+        </label>
+        <label>
+          <span>Filter by tag</span>
+          <input
+            value={tag}
+            onChange={(event) => setTag(event.target.value)}
+            placeholder="e.g. vegetarian"
+            maxLength={40}
+          />
+        </label>
+        <label>
+          <span>Sort by</span>
+          <select
+            value={sort}
+            onChange={(event) =>
+              setSort(event.target.value as "recent" | "oldest" | "title")
+            }
           >
-            {loadingMore ? "Loading…" : "Load more recipes"}
-          </button>
-        )}
-      </section>
-    </div>
+            <option value="recent">Recently updated</option>
+            <option value="oldest">Oldest updated</option>
+            <option value="title">Title</option>
+          </select>
+        </label>
+      </div>
+      {loading ? (
+        <p className="cookbook-empty" role="status">Loading recipes…</p>
+      ) : error && recipes.length === 0 ? (
+        <p className="form-message" role="alert">{error}</p>
+      ) : recipes.length ? (
+        <div className="recipe-grid">
+          {recipes.map((recipe) => (
+            <a
+              className="recipe-card block"
+              href={`/recipe?id=${encodeURIComponent(recipe.id)}`}
+              aria-label={`Open ${recipe.title}`}
+              key={recipe.id}
+            >
+              <RecipeCardContents
+                title={recipe.title}
+                creatorName={recipe.creator_name}
+                image={recipe.image}
+                stepCount={recipe.steps.length}
+                relationshipLabel={`In ${book.title}`}
+              />
+            </a>
+          ))}
+        </div>
+      ) : (
+        <p className="cookbook-empty">
+          {isPublic
+            ? "No public recipes are available in this cookbook."
+            : "No recipes are currently available in this cookbook."}
+        </p>
+      )}
+      {error && recipes.length > 0 && (
+        <p className="form-message" role="alert">{error}</p>
+      )}
+      {hasMore && (
+        <button
+          className="button button--green"
+          type="button"
+          disabled={loadingMore}
+          onClick={loadMore}
+        >
+          {loadingMore ? "Loading…" : "Load more recipes"}
+        </button>
+      )}
+      {editOpen && "owner_id" in book && (
+        <CookbookForm
+          book={book}
+          onClose={() => setEditOpen(false)}
+          onSaved={(updated) => {
+            setBook(updated);
+            setEditOpen(false);
+          }}
+        />
+      )}
+      {membersOpen && "owner_id" in book && (
+        <CookbookMembers book={book} onClose={() => setMembersOpen(false)} />
+      )}
+    </section>
   );
 }

@@ -60,7 +60,12 @@ export default function AppNavigation({
         >
           Library
         </a>
-        <a href="/#cookbooks">Cookbooks</a>
+        <a
+          className={pathname === "/cookbooks" || pathname === "/cookbook" ? "main-nav__active" : undefined}
+          href="/cookbooks"
+        >
+          Cookbooks
+        </a>
         <a href="/#recipes">Recipes</a>
         {currentUser && (
           <a

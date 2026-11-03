@@ -1,0 +1,11 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro'
+import CookbookDetailRoot from '../app/CookbookDetailRoot.tsx'
+
+const title = 'Cookbook — Cookbook'
+const description = 'View a cookbook available on this Cookbook instance.'
+---
+
+<BaseLayout title={title} description={description} robots="noindex,nofollow">
+  <CookbookDetailRoot client:load />
+</BaseLayout>

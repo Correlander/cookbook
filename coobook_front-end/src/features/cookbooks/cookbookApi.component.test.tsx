@@ -1,5 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import {
+  getCookbook,
+  getPublicCookbook,
   getCookbookMembers,
   listCookbookRecipes,
   listPublicCookbookRecipes,
@@ -14,6 +16,34 @@ function jsonResponse(value: unknown, status = 200) {
 }
 
 afterEach(() => vi.unstubAllGlobals());
+
+it("uses distinct no-store metadata endpoints for authenticated and public cookbooks", async () => {
+  const fetchMock = vi.fn<typeof fetch>()
+    .mockResolvedValueOnce(jsonResponse({ id: "book-1" }))
+    .mockResolvedValueOnce(jsonResponse({ id: "book-2" }));
+  vi.stubGlobal("fetch", fetchMock);
+
+  await getCookbook("private/book", "Could not load cookbook.");
+  await getPublicCookbook("public book", "Could not load cookbook.");
+
+  expect(fetchMock.mock.calls).toEqual([
+    ["/api/cookbooks/private%2Fbook", { cache: "no-store" }],
+    ["/api/public/cookbooks/public%20book", { cache: "no-store" }],
+  ]);
+});
+
+it("does not retry a denied authenticated metadata read through the public API", async () => {
+  const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({}, 404));
+  vi.stubGlobal("fetch", fetchMock);
+
+  await expect(getCookbook("private-book", "Cookbook unavailable.")).rejects.toThrow(
+    "Cookbook unavailable.",
+  );
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock).toHaveBeenCalledWith("/api/cookbooks/private-book", {
+    cache: "no-store",
+  });
+});
 
 it("builds the public cookbook recipe query through the shared API boundary", async () => {
   const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(

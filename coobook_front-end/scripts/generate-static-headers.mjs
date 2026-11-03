@@ -10,6 +10,8 @@ const pages = [
   { file: 'admin/settings.html', route: '/admin/settings' },
   { file: 'library.html', route: '/library' },
   { file: 'recipe.html', route: '/recipe' },
+  { file: 'cookbooks.html', route: '/cookbooks' },
+  { file: 'cookbook.html', route: '/cookbook' },
 ]
 const defaults = {
   'default-src': ["'self'"],

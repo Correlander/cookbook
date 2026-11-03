@@ -3,8 +3,7 @@ import RecipeCollection from "./features/recipes/RecipeCollection.tsx";
 import useRecipeFeed from "./features/recipes/useRecipeFeed.ts";
 import { signInWithPasskey } from "./passkeys.ts";
 import FeatureIsland from "./components/FeatureIsland.tsx";
-import PublicCookbooks from "./PublicCookbooks.tsx";
-import CookbookDashboard from "./features/cookbooks/CookbookDashboard.tsx";
+import CookbookCollection from "./features/cookbooks/CookbookCollection.tsx";
 import PublicCourses from "./PublicCourses.tsx";
 import useModalFocus from "./useModalFocus.ts";
 import { useAppSession } from "./app/AppSession.tsx";
@@ -369,15 +368,17 @@ function HomeApp({ pathname }: { pathname: string }) {
         )}
         {signedIn && <AdminInvitations />}
         {signedIn && <AdminAuditLog />}
-        {signedIn && (
-          <CookbookDashboard
-            user={currentUser}
-            onOpenRecipe={setSelected}
-          >
+        <CookbookCollection
+          mode={sessionState.status === "authenticated" ? "accessible" : "public"}
+          surface="home"
+          user={currentUser}
+          enabled={sessionState.status === "authenticated" || sessionState.status === "anonymous"}
+          pending={sessionState.status === "loading"}
+        >
+          {sessionState.status === "authenticated" && (
             <RecipeTrash onRestored={(recipe) => feed.restoreRecipe(recipe)} />
-          </CookbookDashboard>
-        )}
-        <PublicCookbooks />
+          )}
+        </CookbookCollection>
         <FeatureIsland name="Public courses" loading="public courses">
           <PublicCourses />
         </FeatureIsland>

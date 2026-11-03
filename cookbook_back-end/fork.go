@@ -102,10 +102,15 @@ func (h apiHandler) forkRecipe(w http.ResponseWriter, r *http.Request, recipeID 
 			return
 		}
 	}
+	created, err := readRecipeDetail(r.Context(), tx, ContentActor{AccountID: userID}, id)
+	if err != nil {
+		writeError(w, 500, "storage_error")
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, 500, "storage_error")
 		return
 	}
 	recordAuditBestEffort(h.db, userID, "fork", "recipe", sourceID, http.StatusCreated)
-	writeJSON(w, http.StatusCreated, source)
+	writeJSON(w, http.StatusCreated, created)
 }

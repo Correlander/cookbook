@@ -1,6 +1,39 @@
 import { test, expect } from '@playwright/test'
 import { readFile, stat, unlink } from 'node:fs/promises'
 
+async function signInWithSyntheticEmail(
+  page: import('@playwright/test').Page,
+  request: import('@playwright/test').APIRequestContext,
+  email: string,
+  displayName: string,
+) {
+  const origin = process.env.PLAYWRIGHT_BASE_URL ?? 'http://127.0.0.1:4178'
+  const response = await request.post('/api/auth/email', {
+    headers: { Origin: origin },
+    data: { email, display_name: displayName },
+  })
+  expect(response.status()).toBe(200)
+
+  const capturePath = process.env.E2E_EMAIL_CAPTURE
+  if (!capturePath) throw new Error('E2E_EMAIL_CAPTURE is missing')
+  let payload: { sign_in_url: string } | undefined
+  for (let attempt = 0; attempt < 50; attempt++) {
+    try {
+      await stat(capturePath)
+      payload = JSON.parse(await readFile(capturePath, 'utf8')) as { sign_in_url: string }
+      break
+    } catch {
+      await page.waitForTimeout(50)
+    }
+  }
+  if (!payload?.sign_in_url) throw new Error('synthetic sign-in link was not captured')
+  await unlink(capturePath)
+  await page.goto(payload.sign_in_url)
+  await page.getByRole('button', { name: /continue to cookbook/i }).click()
+  await expect.poll(async () => (await page.request.get('/api/auth/me')).status()).toBe(200)
+  return await page.request.get('/api/auth/me').then((result) => result.json()) as { is_admin: boolean }
+}
+
 test('serves built Astro root with its generated CSP and static metadata', async ({ page }) => {
   const violations: string[] = []
   page.on('console', (message) => { if (/content security policy|refused to execute/i.test(message.text())) violations.push(message.text()) })
@@ -60,6 +93,68 @@ test('preserves invite query on the static root without caching the token URL', 
   expect(new URL(page.url()).searchParams.get('invite')).toBe('synthetic-unused-invite')
   expect(response?.headers()['cache-control']).toBe('no-store')
   expect((await page.request.get('/api/auth/me')).status()).toBe(401)
+})
+
+test('serves direct account and admin route aliases with private CSP and anonymous guards', async ({ page }) => {
+  const policies = JSON.parse(await readFile(`${process.env.PLAYWRIGHT_DIST}/static-csp.json`, 'utf8')) as Array<{ route: string; policy: string }>
+  const routes = [
+    { route: '/account/security', title: /Account security/ },
+    { route: '/admin/settings', title: /Instance settings/ },
+  ]
+
+  for (const route of routes) {
+    const policy = policies.find((item) => item.route === route.route)?.policy
+    expect(policy, `generated CSP for ${route.route}`).toBeTruthy()
+    expect(policy).toContain("script-src 'self'")
+    expect(policy).not.toMatch(/unsafe-inline|unsafe-eval/)
+
+    for (const path of [route.route, `${route.route}.html`]) {
+      const response = await page.goto(path)
+      expect(response?.status(), path).toBe(200)
+      expect(response?.headers()['cache-control'], path).toBe('no-store')
+      expect(response?.headers()['content-security-policy'], path).toBe(policy)
+      await expect(page).toHaveURL(new RegExp(`${path.replaceAll('/', '\\/')}$`))
+      await expect(page).toHaveTitle(route.title)
+      await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', 'noindex,nofollow')
+      await expect(page.getByRole('heading', { name: 'Sign in to continue' })).toBeVisible()
+    }
+  }
+})
+
+test('signed-in account users can open Account Security and cannot open instance settings', async ({ page, request }) => {
+  const user = await signInWithSyntheticEmail(page, request, 'route-user@example.test', 'Route User')
+  expect(user.is_admin).toBe(false)
+
+  for (const path of ['/account/security', '/account/security.html']) {
+    await page.goto(path)
+    await expect(page.getByRole('heading', { name: 'Account security', level: 2 })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Browser sessions' })).toBeVisible()
+    await expect(page.getByRole('link', { name: 'Account' })).toBeVisible()
+  }
+
+  const adminSettingsRequests: string[] = []
+  page.on('request', (browserRequest) => {
+    const url = new URL(browserRequest.url())
+    if (url.pathname === '/api/admin/settings') adminSettingsRequests.push(url.pathname)
+  })
+  await page.goto('/admin/settings')
+  await expect(page.getByRole('heading', { name: 'Administrator access required' })).toBeVisible()
+  expect(adminSettingsRequests).toEqual([])
+})
+
+test('signed-in instance administrators can open settings directly and through the HTML alias', async ({ page, request }) => {
+  const user = await signInWithSyntheticEmail(page, request, 'admin@example.test', 'E2E Admin')
+  expect(user.is_admin).toBe(true)
+
+  for (const path of ['/admin/settings', '/admin/settings.html']) {
+    const response = await page.goto(path)
+    expect(response?.status()).toBe(200)
+    expect(response?.headers()['cache-control']).toBe('no-store')
+    await expect(page).toHaveTitle(/Instance settings/)
+    await expect(page.getByRole('heading', { name: 'Instance administration', level: 1 })).toBeVisible()
+    await expect(page.getByText('Enable public browsing')).toBeVisible()
+    await expect(page.getByRole('link', { name: 'Administration' })).toBeVisible()
+  }
 })
 
 test('email sign-in remains explicit, establishes a session, and rejects replay', async ({ page, request }) => {

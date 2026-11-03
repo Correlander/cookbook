@@ -48,6 +48,11 @@ func registeredSchemaMigrations() []schemaMigration {
 		name:     "instance-owner-authority",
 		checksum: migrationChecksum("instance-owner-authority", instanceOwnerSchemaDDL),
 		apply:    ApplyInstanceOwnerDDL,
+	}, {
+		version:  3,
+		name:     "recipe-publication-policy",
+		checksum: migrationChecksum("recipe-publication-policy", recipePublicationPolicyDDL+"\x00"+recipePublicationPolicyBackfillSQL),
+		apply:    ApplyRecipePublicationPolicyMigration,
 	}}
 }
 

@@ -260,7 +260,9 @@ func TestLegacySchemaBackfillsCurrentRecipeRevision(t *testing.T) {
 	_, err = legacy.Exec(`CREATE TABLE users(id TEXT PRIMARY KEY,email TEXT NOT NULL UNIQUE,display_name TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE recipes(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),creator_name TEXT NOT NULL,title TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',ingredients_json TEXT NOT NULL DEFAULT '[]',steps_json TEXT NOT NULL DEFAULT '[]',visibility TEXT NOT NULL DEFAULT 'private',edit_policy TEXT NOT NULL DEFAULT 'owner_only',version INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
 INSERT INTO users(id,email,display_name,created_at) VALUES('legacy-owner','legacy@example.test','Legacy','now');
-INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,version,created_at,updated_at) VALUES('legacy-recipe','legacy-owner','Legacy','Old title','','[]','[]','private','owner_only',4,'old','updated');`)
+INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,version,created_at,updated_at) VALUES
+ ('legacy-recipe','legacy-owner','Legacy','Old title','','[]','[]','private','owner_only',4,'old','updated'),
+ ('legacy-public-recipe','legacy-owner','Legacy','Old public title','','[]','[]','public','owner_only',2,'public-old','public-updated');`)
 	if err != nil {
 		legacy.Close()
 		t.Fatal(err)
@@ -280,8 +282,20 @@ INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,
 	if version != 4 || title != "Old title" {
 		t.Fatalf("backfilled revision = version %d, title %q", version, title)
 	}
-	if got := migrationVersion(t, db); got != 2 {
-		t.Fatalf("legacy migration version=%d, want 2", got)
+	if got := migrationVersion(t, db); got != 3 {
+		t.Fatalf("legacy migration version=%d, want 3", got)
+	}
+	var privateState, publicState string
+	var federation string
+	var indexEligible int
+	if err := db.QueryRow(`SELECT publication_state FROM recipe_publication_policy WHERE recipe_id='legacy-recipe'`).Scan(&privateState); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT publication_state,federation_mode,index_eligible FROM recipe_publication_policy WHERE recipe_id='legacy-public-recipe'`).Scan(&publicState, &federation, &indexEligible); err != nil {
+		t.Fatal(err)
+	}
+	if privateState != string(RecipePublicationUnpublished) || publicState != string(RecipePublicationPublished) || federation != string(RecipeFederationOff) || indexEligible != 0 {
+		t.Fatalf("legacy publication policies private=%q public=%q federation=%q index=%d", privateState, publicState, federation, indexEligible)
 	}
 	var owner sql.NullString
 	var generation int64

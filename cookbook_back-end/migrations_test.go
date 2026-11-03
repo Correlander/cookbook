@@ -52,20 +52,20 @@ func rawMigrationDB(t *testing.T, path string) *sql.DB {
 	return db
 }
 
-func TestFreshDatabaseRecordsBaselineAndOwnerMigrations(t *testing.T) {
+func TestFreshDatabaseRecordsAllRegisteredMigrations(t *testing.T) {
 	db, err := openDatabase(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if got := migrationVersion(t, db); got != 2 {
-		t.Fatalf("migration version=%d, want 2", got)
+	if got := migrationVersion(t, db); got != 3 {
+		t.Fatalf("migration version=%d, want 3", got)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != 2 {
-		t.Fatalf("migration ledger rows=%d err=%v, want 2", count, err)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != 3 {
+		t.Fatalf("migration ledger rows=%d err=%v, want 3", count, err)
 	}
-	for version, name := range map[int]string{1: "legacy-baseline", 2: "instance-owner-authority"} {
+	for version, name := range map[int]string{1: "legacy-baseline", 2: "instance-owner-authority", 3: "recipe-publication-policy"} {
 		var got string
 		if err := db.QueryRow(`SELECT name FROM schema_migrations WHERE version=?`, version).Scan(&got); err != nil || got != name {
 			t.Fatalf("migration %d name=%q err=%v, want %q", version, got, err, name)
@@ -75,6 +75,22 @@ func TestFreshDatabaseRecordsBaselineAndOwnerMigrations(t *testing.T) {
 	var generation int64
 	if err := db.QueryRow(`SELECT owner_user_id,generation FROM instance_authority WHERE singleton_id=1`).Scan(&owner, &generation); err != nil || owner.Valid || generation != 0 {
 		t.Fatalf("fresh owner state=%v generation=%d err=%v, want unclaimed", owner, generation, err)
+	}
+}
+
+func TestMigrationV1AndV2ChecksumsRemainImmutable(t *testing.T) {
+	migrations := registeredSchemaMigrations()
+	want := []string{
+		"c77f29249dfa71f9c86b38cf6a3db05331f790156314647230d80868342f11ba",
+		"4b2409dfd518076b3f4819fb1b010743acf2e8ab4febe4989e252569894e04f0",
+	}
+	if len(migrations) < len(want) {
+		t.Fatalf("registered migrations=%d, want at least %d", len(migrations), len(want))
+	}
+	for index, checksum := range want {
+		if migrations[index].checksum != checksum {
+			t.Errorf("migration %d checksum changed: got %s want %s", index+1, migrations[index].checksum, checksum)
+		}
 	}
 }
 
@@ -101,6 +117,10 @@ INSERT INTO sessions(id,token_hash,user_id,expires_at,created_at,user_agent) VAL
 		db.Close()
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`DROP TABLE recipe_publication_policy`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -118,8 +138,8 @@ INSERT INTO sessions(id,token_hash,user_id,expires_at,created_at,user_agent) VAL
 	if public != 1 || admin != 1 || creator != "Claimed Creator" || title != "Preserve me" || version != 4 || sessionID != "stable-session" || revisionCount != beforeRevisions {
 		t.Fatalf("adopted data changed: public=%d admin=%d creator=%q title=%q version=%d session=%q revisions=%d", public, admin, creator, title, version, sessionID, revisionCount)
 	}
-	if got := migrationVersion(t, db); got != 2 {
-		t.Fatalf("adopted migration version=%d, want 2", got)
+	if got := migrationVersion(t, db); got != 3 {
+		t.Fatalf("adopted migration version=%d, want 3", got)
 	}
 	var owner sql.NullString
 	var generation int64
@@ -151,8 +171,8 @@ func TestInstanceOwnerMigrationPreservesV1RowsAndLeavesAuthorityUnclaimed(t *tes
 	if err := runSchemaMigrations(ctx, db, registeredSchemaMigrations()); err != nil {
 		t.Fatal(err)
 	}
-	if got := migrationVersion(t, db); got != 2 {
-		t.Fatalf("migration version=%d, want 2", got)
+	if got := migrationVersion(t, db); got != 3 {
+		t.Fatalf("migration version=%d, want 3", got)
 	}
 	var owner sql.NullString
 	var claimedAt sql.NullString
@@ -221,7 +241,7 @@ func TestFutureMigrationRunsOnceAndFailureRollsBackStepAndLedger(t *testing.T) {
 	defer db.Close()
 	fail := true
 	runs := 0
-	step := migrationTestStep(3, "test-marker", func(ctx context.Context, exec migrationExecutor) error {
+	step := migrationTestStep(4, "test-marker", func(ctx context.Context, exec migrationExecutor) error {
 		runs++
 		if _, err := exec.ExecContext(ctx, `CREATE TABLE migration_marker(value TEXT NOT NULL); INSERT INTO migration_marker(value) VALUES('applied')`); err != nil {
 			return err
@@ -235,14 +255,14 @@ func TestFutureMigrationRunsOnceAndFailureRollsBackStepAndLedger(t *testing.T) {
 	if err := runSchemaMigrations(context.Background(), db, migrations); err == nil || !strings.Contains(err.Error(), "injected migration failure") {
 		t.Fatalf("failed migration error=%v", err)
 	}
-	if migrationObjectExists(t, db, "table", "migration_marker") || migrationVersion(t, db) != 2 {
+	if migrationObjectExists(t, db, "table", "migration_marker") || migrationVersion(t, db) != 3 {
 		t.Fatal("failed migration left partial DDL/data or advanced the ledger")
 	}
 	fail = false
 	if err := runSchemaMigrations(context.Background(), db, migrations); err != nil {
 		t.Fatal(err)
 	}
-	if migrationVersion(t, db) != 3 || !migrationObjectExists(t, db, "table", "migration_marker") {
+	if migrationVersion(t, db) != 4 || !migrationObjectExists(t, db, "table", "migration_marker") {
 		t.Fatal("pending migration did not apply")
 	}
 	if err := runSchemaMigrations(context.Background(), db, migrations); err != nil {
@@ -304,7 +324,7 @@ func TestMigrationNameChecksumAndNewerVersionAreValidated(t *testing.T) {
 	}{
 		{name: "name", update: `UPDATE schema_migrations SET name='other' WHERE version=2`, wantErrSub: `name`},
 		{name: "checksum", update: `UPDATE schema_migrations SET checksum=lower(hex(randomblob(32))) WHERE version=2`, wantErrSub: `checksum mismatch`},
-		{name: "newer version", update: `UPDATE schema_migrations SET version=999 WHERE version=2`, wantErrSub: `newer than this binary`},
+		{name: "newer version", update: `UPDATE schema_migrations SET version=999 WHERE version=3`, wantErrSub: `newer than this binary`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "ledger.db")
@@ -414,8 +434,8 @@ func TestConcurrentStartupSerializesBaselineMigration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := migrationVersion(t, first); got != 2 {
-		t.Fatalf("concurrent migration version=%d, want 2", got)
+	if got := migrationVersion(t, first); got != 3 {
+		t.Fatalf("concurrent migration version=%d, want 3", got)
 	}
 }
 

@@ -1,25 +1,63 @@
+import base64
 import io
 import os
+import sqlite3
+import sys
 import subprocess
 import tarfile
 import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from validate_backup import finalize_backup
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def create_valid_archive(path):
-    with tarfile.open(path, mode="w:gz") as archive:
-        database = tarfile.TarInfo("cookbook.db")
-        payload = b"database snapshot"
-        database.size = len(payload)
-        archive.addfile(database, io.BytesIO(payload))
-        media = tarfile.TarInfo("media/")
-        media.type = tarfile.DIRTYPE
-        archive.addfile(media)
+    seed = bytes.fromhex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
+    key = b"-----BEGIN PRIVATE KEY-----\n" + base64.b64encode(bytes.fromhex("302e020100300506032b657004220420") + seed) + b"\n-----END PRIVATE KEY-----\n"
+    with tempfile.TemporaryDirectory(prefix="cookbook-compose-fixture-") as temporary:
+        database_path = Path(temporary) / "cookbook.db"
+        with sqlite3.connect(database_path) as connection:
+            connection.execute("CREATE TABLE instance_settings (id INTEGER PRIMARY KEY, federation_origin TEXT NOT NULL, federation_enabled INTEGER NOT NULL)")
+            connection.execute("INSERT INTO instance_settings VALUES (1, '', 0)")
+        with tarfile.open(path, mode="w:gz") as archive:
+            database = tarfile.TarInfo("cookbook.db")
+            database.mode = 0o600
+            payload = database_path.read_bytes()
+            database.size = len(payload)
+            archive.addfile(database, io.BytesIO(payload))
+            for name in ("media/", "secrets/"):
+                directory = tarfile.TarInfo(name)
+                directory.type = tarfile.DIRTYPE
+                directory.mode = 0o700
+                archive.addfile(directory)
+            key_info = tarfile.TarInfo("secrets/federation-ed25519.pk8.pem")
+            key_info.mode = 0o600
+            key_info.size = len(key)
+            archive.addfile(key_info, io.BytesIO(key))
     path.chmod(0o600)
+    finalize_backup(path)
+
+
+def create_raw_archive(source_path, raw_path, *, legacy=False):
+    allowed = {"cookbook.db", "media", "media/"} if legacy else None
+    with tarfile.open(source_path, mode="r:gz") as source, tarfile.open(raw_path, mode="w:gz") as target:
+        for member in source.getmembers():
+            if member.name in ("backup-manifest.json", "backup-manifest.sha256"):
+                continue
+            if allowed is not None and member.name not in allowed:
+                continue
+            data = source.extractfile(member).read() if member.isfile() else b""
+            info = tarfile.TarInfo(member.name)
+            info.mode = member.mode
+            info.type = member.type
+            info.size = len(data) if member.isfile() else 0
+            target.addfile(info, io.BytesIO(data) if member.isfile() else None)
+    raw_path.chmod(0o600)
 
 
 class ComposeBackupScriptTests(unittest.TestCase):
@@ -32,8 +70,10 @@ class ComposeBackupScriptTests(unittest.TestCase):
         self.run_count = self.root / "run-count"
         self.backup_dir = self.root / "backups"
         self.archive = self.root / "source.tar.gz"
+        self.raw_archive = self.root / "raw.tar.gz"
         self._create_fake_docker()
         create_valid_archive(self.archive)
+        create_raw_archive(self.archive, self.raw_archive)
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -57,6 +97,14 @@ class ComposeBackupScriptTests(unittest.TestCase):
             "    count=$((count + 1))\n"
             "    echo \"$count\" > \"$MOCK_RUN_COUNT\"\n"
             "    [ \"${MOCK_FAIL_RUN_AT:-0}\" != \"$count\" ] || exit 42\n"
+            "    if [ \"$count\" = 1 ] && [ -n \"${MOCK_ARCHIVE:-}\" ]; then\n"
+            "      volume=\n"
+            "      while [ $# -gt 0 ]; do\n"
+            "        if [ \"$1\" = --volume ]; then volume=${2%%:*}; shift 2; continue; fi\n"
+            "        shift\n"
+            "      done\n"
+            "      for target in \"$volume\"/.cookbook-backup.*; do [ ! -e \"$target\" ] || cp \"$MOCK_ARCHIVE\" \"$target\"; done\n"
+            "    fi\n"
             "    ;;\n"
             "  *) exit 91 ;;\n"
             "esac\n"
@@ -73,6 +121,8 @@ class ComposeBackupScriptTests(unittest.TestCase):
                 "MOCK_FAIL_RUN_AT": str(fail_run_at),
                 "MOCK_RUNNING": running,
                 "COOKBOOK_BACKUP_DIR": str(self.backup_dir),
+                "MOCK_ARCHIVE": str(self.raw_archive),
+                "COOKBOOK_COMPOSE_ENGINE": "docker",
             }
         )
         return subprocess.run([str(ROOT / "scripts" / script), *map(str, args)], cwd=ROOT, env=env, text=True, capture_output=True)
@@ -113,15 +163,15 @@ class ComposeBackupScriptTests(unittest.TestCase):
         self.assertEqual(self._events(), [])
 
     def test_restore_leaves_service_stopped_after_restore_failure(self):
-        result = self._run("restore-compose.sh", self.archive, fail_run_at=2)
+        result = self._run("restore-compose.sh", self.archive, fail_run_at=1)
         self.assertEqual(result.returncode, 42)
         self.assertIn("left stopped", result.stderr)
-        self.assertEqual(self._events(), ["ps", "stop", "run", "start", "ps", "stop", "run"])
+        self.assertEqual(self._events(), ["ps", "stop", "run"])
 
     def test_successful_restore_restarts_service(self):
         result = self._run("restore-compose.sh", self.archive)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self._events(), ["ps", "stop", "run", "start", "ps", "stop", "run", "start"])
+        self.assertEqual(self._events(), ["ps", "stop", "run", "start"])
 
     def test_restore_rejects_a_writable_archive_before_touching_the_service(self):
         self.archive.chmod(0o666)
@@ -136,6 +186,47 @@ class ComposeBackupScriptTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("must not be accessible by group or others", result.stderr)
         self.assertEqual(self._events(), [])
+
+    def test_restore_refuses_legacy_archive_before_touching_the_service(self):
+        legacy = self.root / "legacy.tar.gz"
+        create_raw_archive(self.archive, legacy, legacy=True)
+        result = self._run("restore-compose.sh", legacy)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--accept-federation-key-loss", result.stderr)
+        self.assertEqual(self._events(), [])
+
+    def test_restore_requires_explicit_key_loss_acknowledgement_for_legacy_archive(self):
+        legacy = self.root / "legacy.tar.gz"
+        create_raw_archive(self.archive, legacy, legacy=True)
+        result = self._run("restore-compose.sh", "--accept-federation-key-loss", legacy)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("new identity will be created", result.stderr)
+        self.assertEqual(self._events(), ["ps", "stop", "run", "start"])
+
+    def test_restore_does_not_create_automatic_pre_restore_backup(self):
+        result = self._run("restore-compose.sh", self.archive)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.run_count.read_text().strip(), "1")
+
+    def test_scripts_support_podman_compose_when_selected(self):
+        podman = self.bin_dir / "podman"
+        podman.symlink_to(self.bin_dir / "docker")
+        env = os.environ.copy()
+        env.update(
+            {
+                "PATH": f"{self.bin_dir}:{env['PATH']}",
+                "MOCK_LOG": str(self.log),
+                "MOCK_RUN_COUNT": str(self.run_count),
+                "MOCK_FAIL_RUN_AT": "0",
+                "MOCK_RUNNING": "no",
+                "MOCK_ARCHIVE": str(self.raw_archive),
+                "COOKBOOK_BACKUP_DIR": str(self.backup_dir),
+                "COOKBOOK_COMPOSE_ENGINE": "podman",
+            }
+        )
+        result = subprocess.run([str(ROOT / "scripts" / "backup-compose.sh"), str(self.backup_dir)], cwd=ROOT, env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._events(), ["ps", "stop", "run"])
 
 
 if __name__ == "__main__":

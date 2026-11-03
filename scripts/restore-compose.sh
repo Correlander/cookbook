@@ -1,8 +1,13 @@
 #!/bin/sh
 set -eu
 
+accept_key_loss=no
+if [ "${1:-}" = "--accept-federation-key-loss" ]; then
+	accept_key_loss=yes
+	shift
+fi
 if [ "$#" -ne 1 ]; then
-	echo "usage: $0 backup.tar.gz" >&2
+	echo "usage: $0 [--accept-federation-key-loss] backup.tar.gz" >&2
 	exit 2
 fi
 
@@ -36,30 +41,42 @@ for protected_path in "$archive_dir" "$archive_path"; do
 		exit 1
 	fi
 done
-python3 "$script_dir/validate_backup.py" "$archive_path"
-
-service=${COOKBOOK_COMPOSE_SERVICE:-cookbook}
-backup_dir=${COOKBOOK_BACKUP_DIR:-$repo_root/backups}
-if [ -x "$script_dir/backup-compose.sh" ]; then
-	COOKBOOK_COMPOSE_SERVICE=$service "$script_dir/backup-compose.sh" "$backup_dir"
-else
-	echo "backup helper is missing or not executable" >&2
+archive_format=$(python3 "$script_dir/validate_backup.py" --allow-legacy --print-format "$archive_path")
+if [ "$archive_format" = legacy ] && [ "$accept_key_loss" != yes ]; then
+	echo "legacy backup has no federation keys; refusing restore without --accept-federation-key-loss" >&2
 	exit 1
 fi
+if [ "$archive_format" = legacy ]; then
+	echo "WARNING: federation identity continuity cannot be established; a new identity will be created after restore" >&2
+fi
 
+service=${COOKBOOK_COMPOSE_SERVICE:-cookbook}
+compose_engine=${COOKBOOK_COMPOSE_ENGINE:-}
+if [ -z "$compose_engine" ]; then
+	if command -v podman >/dev/null 2>&1 && podman compose version >/dev/null 2>&1; then
+		compose_engine=podman
+	else
+		compose_engine=docker
+	fi
+fi
+case "$compose_engine" in
+	docker|podman) command -v "$compose_engine" >/dev/null 2>&1 || { echo "Compose engine is unavailable: $compose_engine" >&2; exit 1; } ;;
+	*) echo "COOKBOOK_COMPOSE_ENGINE must be podman or docker" >&2; exit 2 ;;
+esac
+compose() { "$compose_engine" compose "$@"; }
 cd "$repo_root"
 was_running=no
-if docker compose ps --status running --services | grep -Fx "$service" >/dev/null 2>&1; then
+if compose ps --status running --services | grep -Fx "$service" >/dev/null 2>&1; then
 	was_running=yes
 fi
-docker compose stop "$service"
+compose stop "$service"
 
 restore_succeeded=no
 cleanup() {
 	status=$?
 	trap - EXIT
 	if [ "$restore_succeeded" = yes ]; then
-		if [ "$was_running" = yes ] && ! docker compose start "$service"; then
+		if [ "$was_running" = yes ] && ! compose start "$service"; then
 			echo "restore succeeded, but the Cookbook service could not be restarted" >&2
 			status=1
 		fi
@@ -73,14 +90,23 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-docker compose run -T --rm --no-deps --user 0:0 \
+compose run -T --rm --no-deps --user 0:0 \
 	--volume "$archive_dir:/backup:ro" \
 	--entrypoint /bin/sh "$service" \
 	-ec '
 	archive=$1
+	archive_format=$2
 	rm -rf /data/media
+	rm -rf /data/secrets
 	rm -f /data/cookbook.db /data/cookbook.db-wal /data/cookbook.db-shm /data/cookbook.db-journal
 	tar -xzf "/backup/$archive" -C /data
+	cd /data
+	if [ "$archive_format" = 2 ]; then
+		sha256sum -c backup-manifest.sha256
+		rm -f backup-manifest.json backup-manifest.sha256
+	else
+		echo "legacy backup has no federation identity; service start will create a new key" >&2
+	fi
 	chown -R cookbook:cookbook /data
 	chmod 600 /data/cookbook.db
 	for sidecar in /data/cookbook.db-wal /data/cookbook.db-journal; do
@@ -90,7 +116,13 @@ docker compose run -T --rm --no-deps --user 0:0 \
 	for image in /data/media/*; do
 		[ ! -e "$image" ] || chmod 600 "$image"
 	done
-	' sh "$archive_name"
+	if [ -d /data/secrets ]; then
+		chown -R cookbook:cookbook /data/secrets
+		chmod 700 /data/secrets
+		[ ! -e /data/secrets/federation-ed25519.pk8.pem ] || chmod 600 /data/secrets/federation-ed25519.pk8.pem
+		[ ! -e /data/secrets/federation-ed25519.pending.pk8.pem ] || chmod 600 /data/secrets/federation-ed25519.pending.pk8.pem
+	fi
+	' sh "$archive_name" "$archive_format"
 
 restore_succeeded=yes
 echo "Restored $archive_path"

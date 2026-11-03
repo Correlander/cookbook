@@ -3,6 +3,8 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"image"
@@ -19,6 +21,7 @@ const maxImportManifestBytes = 40 << 20
 const maxPortableMediaCount = 50
 const maxPortableMediaBytes = 50 << 20
 const maxPortableRelationships = 100_000
+const portableFormatV3 = "cookbook-export-v3"
 const portableFormat = "cookbook-export-v2"
 const legacyPortableFormat = "cookbook-export-v1"
 
@@ -27,7 +30,24 @@ type portableBundle struct {
 	Exported  string             `json:"exported_at"`
 	Cookbooks []portableCookbook `json:"cookbooks"`
 	Recipes   []portableRecipe   `json:"recipes"`
+	Bookmarks []portableBookmark `json:"bookmarks"`
 }
+
+// portableBookmark contains only the saved source identity and creation time.
+// It never carries source content, media, authorization, or cached projections.
+type portableBookmark struct {
+	TargetKind      string `json:"target_kind"`
+	LocalInstanceID string `json:"local_instance_id,omitempty"`
+	LocalRecipeID   string `json:"local_recipe_id,omitempty"`
+	RemoteObjectURI string `json:"remote_object_uri,omitempty"`
+	CreatedAt       string `json:"created_at"`
+}
+
+type portableBookmarkIdentity struct {
+	kind, instanceID, recipeID, objectURI string
+}
+
+var errPortableBookmarkLimitReached = errors.New("portable bookmark limit reached")
 
 type portableCookbook struct {
 	ID          string   `json:"id"`
@@ -63,7 +83,7 @@ func (h apiHandler) exportData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := authenticatedUser(r)
-	bundle := portableBundle{Format: portableFormat, Exported: time.Now().UTC().Format(time.RFC3339Nano), Cookbooks: []portableCookbook{}, Recipes: []portableRecipe{}}
+	bundle := portableBundle{Format: portableFormatV3, Exported: time.Now().UTC().Format(time.RFC3339Nano), Cookbooks: []portableCookbook{}, Recipes: []portableRecipe{}, Bookmarks: []portableBookmark{}}
 	manifestSize := 128
 	books, err := h.db.Query(`SELECT id,title,description,visibility FROM cookbooks WHERE owner_id=? ORDER BY id`, uid)
 	if err != nil {
@@ -220,6 +240,57 @@ func (h apiHandler) exportData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	links.Close()
+	bookmarkRows, err := h.db.Query(`SELECT target_kind,local_instance_id,local_recipe_id,remote_object_uri,created_at
+		FROM recipe_bookmarks WHERE user_id=? ORDER BY created_at DESC,id`, uid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	for bookmarkRows.Next() {
+		var bookmark portableBookmark
+		var localInstanceID, localRecipeID, remoteObjectURI sql.NullString
+		if err := bookmarkRows.Scan(&bookmark.TargetKind, &localInstanceID, &localRecipeID, &remoteObjectURI, &bookmark.CreatedAt); err != nil {
+			bookmarkRows.Close()
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		if localInstanceID.Valid {
+			bookmark.LocalInstanceID = localInstanceID.String
+		}
+		if localRecipeID.Valid {
+			bookmark.LocalRecipeID = localRecipeID.String
+		}
+		if remoteObjectURI.Valid {
+			bookmark.RemoteObjectURI = remoteObjectURI.String
+		}
+		if len(bundle.Bookmarks) >= maxRecipeBookmarksPerAccount {
+			bookmarkRows.Close()
+			writeError(w, http.StatusRequestEntityTooLarge, "export_too_large")
+			return
+		}
+		if err := validatePortableBookmark(bookmark); err != nil {
+			bookmarkRows.Close()
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		encodedBookmark, err := json.Marshal(bookmark)
+		if err != nil || manifestSize+len(encodedBookmark)+1 > maxImportManifestBytes {
+			bookmarkRows.Close()
+			writeError(w, http.StatusRequestEntityTooLarge, "export_too_large")
+			return
+		}
+		manifestSize += len(encodedBookmark) + 1
+		bundle.Bookmarks = append(bundle.Bookmarks, bookmark)
+	}
+	if err := bookmarkRows.Err(); err != nil {
+		bookmarkRows.Close()
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	if err := bookmarkRows.Close(); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
 	mediaNames := map[string]bool{}
 	for _, recipe := range bundle.Recipes {
 		if recipe.ImageFile != "" {
@@ -350,6 +421,15 @@ func (h apiHandler) importData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
+	bookmarkPlan, err := planPortableBookmarkImport(r.Context(), tx, uid, bundle.Bookmarks)
+	if errors.Is(err, errPortableBookmarkLimitReached) {
+		writeError(w, http.StatusConflict, "bookmark_limit_reached")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
 	bookIDs := map[string]string{}
 	for _, book := range bundle.Cookbooks {
 		id := newID()
@@ -396,6 +476,14 @@ func (h apiHandler) importData(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if err := insertPortableBookmarkImport(r.Context(), tx, uid, bookmarkPlan); err != nil {
+		if errors.Is(err, errPortableBookmarkLimitReached) {
+			writeError(w, http.StatusConflict, "bookmark_limit_reached")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, 500, "storage_error")
 		return
@@ -404,9 +492,110 @@ func (h apiHandler) importData(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]int{"cookbooks": len(bundle.Cookbooks), "recipes": len(bundle.Recipes)})
 }
 
+func portableBookmarkKey(bookmark portableBookmark) portableBookmarkIdentity {
+	return portableBookmarkIdentity{
+		kind: bookmark.TargetKind, instanceID: bookmark.LocalInstanceID,
+		recipeID: bookmark.LocalRecipeID, objectURI: bookmark.RemoteObjectURI,
+	}
+}
+
+func planPortableBookmarkImport(ctx context.Context, tx *sql.Tx, userID string, bookmarks []portableBookmark) ([]portableBookmark, error) {
+	if len(bookmarks) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT target_kind,local_instance_id,local_recipe_id,remote_object_uri
+		FROM recipe_bookmarks WHERE user_id=?`, userID)
+	if err != nil {
+		return nil, err
+	}
+	existing := make(map[portableBookmarkIdentity]struct{})
+	count := 0
+	for rows.Next() {
+		var bookmark portableBookmark
+		var instanceID, recipeID, objectURI sql.NullString
+		if err := rows.Scan(&bookmark.TargetKind, &instanceID, &recipeID, &objectURI); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if instanceID.Valid {
+			bookmark.LocalInstanceID = instanceID.String
+		}
+		if recipeID.Valid {
+			bookmark.LocalRecipeID = recipeID.String
+		}
+		if objectURI.Valid {
+			bookmark.RemoteObjectURI = objectURI.String
+		}
+		existing[portableBookmarkKey(bookmark)] = struct{}{}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if count > maxRecipeBookmarksPerAccount {
+		return nil, errPortableBookmarkLimitReached
+	}
+	planned := make([]portableBookmark, 0, len(bookmarks))
+	for _, bookmark := range bookmarks {
+		if err := validatePortableBookmark(bookmark); err != nil {
+			return nil, err
+		}
+		key := portableBookmarkKey(bookmark)
+		if _, found := existing[key]; found {
+			continue
+		}
+		existing[key] = struct{}{}
+		planned = append(planned, bookmark)
+	}
+	if count+len(planned) > maxRecipeBookmarksPerAccount {
+		return nil, errPortableBookmarkLimitReached
+	}
+	return planned, nil
+}
+
+func insertPortableBookmarkImport(ctx context.Context, tx *sql.Tx, userID string, bookmarks []portableBookmark) error {
+	for _, bookmark := range bookmarks {
+		_, err := tx.ExecContext(ctx, `INSERT INTO recipe_bookmarks
+			(id,user_id,target_kind,local_instance_id,local_recipe_id,remote_object_uri,created_at)
+			VALUES(?,?,?,?,?,?,?)`, newID(), userID, bookmark.TargetKind,
+			portableBookmarkNullable(bookmark.LocalInstanceID), portableBookmarkNullable(bookmark.LocalRecipeID),
+			portableBookmarkNullable(bookmark.RemoteObjectURI), bookmark.CreatedAt)
+		if err != nil {
+			if strings.Contains(err.Error(), "recipe bookmark limit reached") {
+				return errPortableBookmarkLimitReached
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+func portableBookmarkNullable(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
 func validatePortableBundle(bundle portableBundle) error {
-	if (bundle.Format != portableFormat && bundle.Format != legacyPortableFormat) || len(bundle.Cookbooks) > 1000 || len(bundle.Recipes) > 10000 {
+	if (bundle.Format != portableFormatV3 && bundle.Format != portableFormat && bundle.Format != legacyPortableFormat) ||
+		len(bundle.Cookbooks) > 1000 || len(bundle.Recipes) > 10000 || len(bundle.Bookmarks) > maxRecipeBookmarksPerAccount {
 		return errors.New("unsupported or oversized import")
+	}
+	if bundle.Format == portableFormatV3 && bundle.Bookmarks == nil {
+		return errors.New("v3 archive is missing bookmarks")
+	}
+	if bundle.Format != portableFormatV3 && len(bundle.Bookmarks) != 0 {
+		return errors.New("legacy archives cannot carry bookmarks")
+	}
+	for _, bookmark := range bundle.Bookmarks {
+		if err := validatePortableBookmark(bookmark); err != nil {
+			return err
+		}
 	}
 	books, recipes := map[string]bool{}, map[string]bool{}
 	for i := range bundle.Cookbooks {
@@ -485,7 +674,7 @@ func validatePortableBundle(bundle portableBundle) error {
 		}
 		recipeIDsByBook[b.ID] = seenRecipes
 	}
-	if bundle.Format == portableFormat {
+	if bundle.Format == portableFormat || bundle.Format == portableFormatV3 {
 		if relationshipCount != recipeRelationshipCount {
 			return errors.New("inconsistent cookbook relationships")
 		}
@@ -496,6 +685,29 @@ func validatePortableBundle(bundle portableBundle) error {
 				}
 			}
 		}
+	}
+	return nil
+}
+
+func validatePortableBookmark(bookmark portableBookmark) error {
+	if _, err := time.Parse(time.RFC3339Nano, bookmark.CreatedAt); err != nil {
+		return errors.New("invalid bookmark creation time")
+	}
+	switch bookmark.TargetKind {
+	case "local":
+		if !validLibraryInstanceID(bookmark.LocalInstanceID) || bookmark.LocalRecipeID == "" ||
+			bookmark.LocalRecipeID != strings.TrimSpace(bookmark.LocalRecipeID) || len(bookmark.LocalRecipeID) > 200 || bookmark.RemoteObjectURI != "" {
+			return errors.New("invalid local bookmark identity")
+		}
+	case "remote":
+		if bookmark.LocalInstanceID != "" || bookmark.LocalRecipeID != "" {
+			return errors.New("invalid remote bookmark identity")
+		}
+		if _, _, err := parseFederationRecipeObjectURI(bookmark.RemoteObjectURI); err != nil {
+			return errors.New("invalid remote bookmark identity")
+		}
+	default:
+		return errors.New("invalid bookmark target kind")
 	}
 	return nil
 }
@@ -593,7 +805,7 @@ func decodePortableArchive(data []byte) (portableBundle, map[string][]byte, erro
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		return portableBundle{}, nil, errors.New("trailing manifest data")
 	}
-	if bundle.Format != portableFormat {
+	if bundle.Format != portableFormat && bundle.Format != portableFormatV3 {
 		return portableBundle{}, nil, errors.New("unsupported archive version")
 	}
 	refs := map[string]bool{}

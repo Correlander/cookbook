@@ -776,7 +776,7 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 500, "storage_error")
 			return
 		}
-		h.recipeByID(w, requestForUser(http.MethodGet, "/api/recipes/"+id, in.OwnerID), id)
+		h.writeRecipeDetail(w, r.Context(), ContentActor{AccountID: in.OwnerID}, id)
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -986,40 +986,7 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 		return
 	}
 	if r.Method == http.MethodGet {
-		it := recipe{}
-		var public int
-		var ingredients, steps, tags string
-		var imagePath string
-		err := h.db.QueryRow(`SELECT r.id,r.owner_id,r.creator_name,r.source_recipe_id,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,s.public_instance,r.image_path FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.id=? AND r.deleted_at IS NULL`, id).Scan(&it.ID, &it.OwnerID, &it.CreatorName, &it.SourceRecipeID, &it.Title, &it.Description, &ingredients, &steps, &it.Servings, &it.PrepTime, &it.CookTime, &tags, &it.Visibility, &it.EditPolicy, &it.Version, &it.CreatedAt, &it.UpdatedAt, &public, &imagePath)
-		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, 404, "not_found")
-			return
-		}
-		if err != nil {
-			writeError(w, 500, "storage_error")
-			return
-		}
-		if json.Unmarshal([]byte(ingredients), &it.Ingredients) != nil || json.Unmarshal([]byte(steps), &it.Steps) != nil {
-			writeError(w, 500, "storage_error")
-			return
-		}
-		if json.Unmarshal([]byte(tags), &it.Tags) != nil {
-			writeError(w, 500, "storage_error")
-			return
-		}
-		uid := authenticatedUser(r)
-		member := recipeMemberRole(h.db, id, uid)
-		if !canReadResource(uid, access{instancePublic: public == 1, visibility: it.Visibility, ownerID: it.OwnerID, memberRole: member}) {
-			writeError(w, 404, "not_found")
-			return
-		}
-		it.CookbookIDs = h.recipeCookbooks(id, uid)
-		if imagePath != "" {
-			it.Image = "/api/recipes/" + id + "/image"
-		}
-		it.CanEdit = canEditRecipe(uid, access{ownerID: it.OwnerID, memberRole: member}, it.EditPolicy)
-		it.CanDelete = uid != "" && uid == it.OwnerID
-		writeJSON(w, 200, it)
+		h.writeRecipeDetail(w, r.Context(), ContentActor{AccountID: authenticatedUser(r)}, id)
 		return
 	}
 	if r.Method != http.MethodPut {
@@ -1092,7 +1059,7 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
-	h.recipeByID(w, requestForUser(http.MethodGet, "/api/recipes/"+id, in.UserID), id)
+	h.writeRecipeDetail(w, r.Context(), ContentActor{AccountID: in.UserID}, id)
 }
 
 func (h apiHandler) recipeTrash(w http.ResponseWriter, r *http.Request) {
@@ -1175,7 +1142,7 @@ func (h apiHandler) restoreTrashedRecipe(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
-	h.recipeByID(w, requestForUser(http.MethodGet, "/api/recipes/"+id, uid), id)
+	h.writeRecipeDetail(w, r.Context(), ContentActor{AccountID: uid}, id)
 }
 
 func (h apiHandler) recipeRevisions(w http.ResponseWriter, r *http.Request, id string) {
@@ -1370,7 +1337,20 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
-	h.recipeByID(w, requestForUser(http.MethodGet, "/api/recipes/"+recipeID, userID), recipeID)
+	h.writeRecipeDetail(w, r.Context(), ContentActor{AccountID: userID}, recipeID)
+}
+
+func (h apiHandler) writeRecipeDetail(w http.ResponseWriter, ctx context.Context, actor ContentActor, recipeID string) {
+	item, err := readRecipeDetail(ctx, h.db, actor, recipeID)
+	if errors.Is(err, errRecipeDetailNotFound) || errors.Is(err, errRecipeDetailDenied) {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func insertRecipeRevision(tx *sql.Tx, recipeID string, version int, editorID, title, description string, ingredients, steps []byte, servings, prepTime, cookTime int, tags []byte, visibilityValue visibility, imagePath string) error {

@@ -233,9 +233,17 @@ test('email sign-in remains explicit, establishes a session, and rejects replay'
     const beginResponse = passkeyRequests.find((item) => item.path === '/api/auth/passkey/register/begin')
     if (!beginResponse || beginResponse.status !== 200) throw new Error(`passkey register begin failed: ${JSON.stringify({ requests: passkeyRequests, webauthn: await page.evaluate(() => (window as Window & { __passkeyDiagnostic?: unknown }).__passkeyDiagnostic) })}`)
     expect(beginResponse.status, 'passkey registration ceremony begins').toBe(200)
-    await expect.poll(async () => (await passkeyDialog.isHidden()) || Boolean(await passkeyDialog.getByRole('alert').textContent()), { timeout: 15_000 }).toBe(true)
+    const registrationAlerts = passkeyDialog.getByRole('alert')
+    await expect.poll(async () => {
+      if (await passkeyDialog.isHidden()) return true
+      const messages = await registrationAlerts.allTextContents()
+      return messages.some((message) => message.trim().length > 0)
+    }, { timeout: 15_000 }).toBe(true)
     if (await passkeyDialog.isVisible()) {
-      const message = await passkeyDialog.getByRole('alert').textContent()
+      const message = (await registrationAlerts.allTextContents())
+        .map((text) => text.trim())
+        .filter(Boolean)
+        .join(' | ') || null
       const webauthn = await page.evaluate(() => (window as Window & { __passkeyDiagnostic?: unknown }).__passkeyDiagnostic)
       throw new Error(`virtual passkey registration failed: ${JSON.stringify({ message, requests: passkeyRequests, webauthn })}`)
     }

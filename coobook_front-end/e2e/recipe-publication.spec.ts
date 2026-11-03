@@ -67,7 +67,7 @@ test("owners can publish and withdraw a public recipe without losing owner acces
     await page.getByLabel("Ingredients (name | quantity | notes per line)").fill(
       "Synthetic tomatoes",
     );
-    await page.getByLabel("Step 1").fill("Slice the tomatoes.");
+    await page.getByLabel("Step 1", { exact: true }).fill("Slice the tomatoes.");
     await page.getByLabel("Visibility").selectOption("public");
     await page.getByRole("checkbox", { name: /anyone can read/i }).check();
     await page

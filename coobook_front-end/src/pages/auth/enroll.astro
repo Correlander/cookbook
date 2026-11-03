@@ -1,0 +1,11 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro'
+import PasskeyEnrollment from '../../features/auth/PasskeyEnrollment.tsx'
+
+const title = 'Set up your passkey — Cookbook'
+const description = 'Complete your one-time Cookbook passkey setup.'
+---
+
+<BaseLayout title={title} description={description} robots="noindex,nofollow">
+  <PasskeyEnrollment client:load />
+</BaseLayout>

@@ -50,11 +50,13 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
     await mkdir(join(dist, 'admin'), { recursive: true })
     await writeFile(join(dist, 'index.html'), '<!doctype html><html><head><title>Root</title></head></html>')
     await writeFile(join(dist, 'auth/confirm.html'), '<!doctype html><html><head><meta name="robots" content="noindex,follow"><title>Confirm</title></head></html>')
+    await writeFile(join(dist, 'auth/enroll.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Passkey enrollment</title></head></html>')
     await writeFile(join(dist, 'account/security.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Account security</title></head></html>')
     await writeFile(join(dist, 'admin/settings.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Admin settings</title></head></html>')
     await writeFile(join(dist, 'static-csp.json'), JSON.stringify([
       { route: '/', policy: "default-src 'self'; script-src 'self'" },
       { route: '/auth/confirm', policy: "default-src 'self'; style-src 'self'" },
+      { route: '/auth/enroll', policy: "default-src 'self'; script-src 'self'" },
       { route: '/account/security', policy: "default-src 'self'; img-src 'self'" },
       { route: '/admin/settings', policy: "default-src 'self'; connect-src 'self'" },
     ]))
@@ -79,6 +81,13 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
     assert.match(confirmHTML, /<meta name="robots" content="noindex,follow">/)
     assert.equal(confirm.headers.get('cache-control'), 'no-store')
     assert.equal(confirm.headers.get('content-security-policy'), "default-src 'self'; style-src 'self'")
+    for (const alias of ['/auth/enroll', '/auth/enroll.html']) {
+      const enrollment = await fetch(`${base}${alias}`)
+      assert.equal(enrollment.status, 200, alias)
+      assert.match(await enrollment.text(), /<meta name="robots" content="noindex,nofollow">/)
+      assert.equal(enrollment.headers.get('cache-control'), 'no-store')
+      assert.equal(enrollment.headers.get('content-security-policy'), "default-src 'self'; script-src 'self'")
+    }
     const rootPage = await fetch(base)
     assert.equal(rootPage.status, 200)
     assert.doesNotMatch(await rootPage.text(), /<meta name="robots"/)

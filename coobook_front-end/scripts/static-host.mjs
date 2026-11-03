@@ -14,6 +14,8 @@ const pageAliases = new Map([
   ['index.html', { file: 'index.html', route: '/' }],
   ['auth/confirm', { file: 'auth/confirm.html', route: '/auth/confirm' }],
   ['auth/confirm.html', { file: 'auth/confirm.html', route: '/auth/confirm' }],
+  ['auth/enroll', { file: 'auth/enroll.html', route: '/auth/enroll' }],
+  ['auth/enroll.html', { file: 'auth/enroll.html', route: '/auth/enroll' }],
   ['account/security', { file: 'account/security.html', route: '/account/security' }],
   ['account/security.html', { file: 'account/security.html', route: '/account/security' }],
   ['admin/settings', { file: 'admin/settings.html', route: '/admin/settings' }],

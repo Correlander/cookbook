@@ -26,6 +26,11 @@ interface PasskeyBeginResponse {
   options: { publicKey: CreationOptionsJSON | RequestOptionsJSON };
 }
 
+interface PasskeyEnrollmentBeginResponse {
+  ceremony_id: string;
+  options: { publicKey: CreationOptionsJSON };
+}
+
 export function validTransports(
   values: string[] | undefined,
 ): AuthenticatorTransport[] | undefined {
@@ -323,4 +328,54 @@ export function signInWithPasskey(): Promise<unknown> {
     "/api/auth/passkey/login/begin",
     "/api/auth/passkey/login/finish",
   );
+}
+
+export async function enrollPasskeyWithGrant(
+  token: string,
+  signal: AbortSignal,
+): Promise<void> {
+  if (!window.PublicKeyCredential || !window.isSecureContext) {
+    throw new Error(
+      "Passkeys require a supported browser and a secure connection.",
+    );
+  }
+
+  const beginResponse = await fetch("/api/auth/passkey/enrollment/begin", {
+    method: "POST",
+    credentials: "omit",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+    signal,
+  });
+  if (!beginResponse.ok) {
+    throw new Error("The enrollment code could not be accepted.");
+  }
+
+  const { ceremony_id: ceremonyID, options } =
+    (await beginResponse.json()) as PasskeyEnrollmentBeginResponse;
+  const publicKey = publicKeyCreationOptions(options.publicKey);
+  const credential = await navigator.credentials.create({
+    publicKey,
+    signal,
+  });
+  if (!isPublicKeyCredential(credential)) {
+    throw new DOMException("The passkey setup was cancelled.", "AbortError");
+  }
+
+  const finishResponse = await fetch("/api/auth/passkey/enrollment/finish", {
+    method: "POST",
+    credentials: "omit",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      token,
+      ceremony_id: ceremonyID,
+      ...serializeCredential(credential, true),
+    }),
+    signal,
+  });
+  if (!finishResponse.ok) {
+    throw new Error("The passkey could not be verified.");
+  }
 }

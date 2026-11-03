@@ -1,11 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   decodeBase64URL,
+  enrollPasskeyWithGrant,
   encodeBase64URL,
   encodeUserHandle,
   serializeCredential,
   validTransports,
 } from "./passkeys.ts";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("WebAuthn byte encoding", () => {
   it("decodes base64url challenges and credential IDs to exact bytes", () => {
@@ -97,5 +102,145 @@ describe("passkey authenticator transports", () => {
     expect(validTransports(["usb", "invalid", "smart-card"])).toEqual(["usb"]);
     expect(validTransports([])).toEqual([]);
     expect(validTransports(undefined)).toBeUndefined();
+  });
+});
+
+describe("offline passkey enrollment", () => {
+  it("posts the grant only in request bodies and preserves server WebAuthn options", async () => {
+    const secureContextDescriptor = Object.getOwnPropertyDescriptor(
+      window,
+      "isSecureContext",
+    );
+    const publicKeyDescriptor = Object.getOwnPropertyDescriptor(
+      window,
+      "PublicKeyCredential",
+    );
+    const credentialsDescriptor = Object.getOwnPropertyDescriptor(
+      navigator,
+      "credentials",
+    );
+    Object.defineProperty(window, "isSecureContext", {
+      configurable: true,
+      value: true,
+    });
+    Object.defineProperty(window, "PublicKeyCredential", {
+      configurable: true,
+      value: class PublicKeyCredential {},
+    });
+
+    const credential = {
+      id: "credential-id",
+      rawId: new Uint8Array([9, 8, 7]).buffer,
+      type: "public-key",
+      authenticatorAttachment: "platform",
+      response: {
+        clientDataJSON: new Uint8Array([1, 2]).buffer,
+        attestationObject: new Uint8Array([3, 4]).buffer,
+      },
+      getClientExtensionResults: () => ({}),
+    } as unknown as PublicKeyCredential;
+    const create = vi.fn().mockResolvedValue(credential);
+    Object.defineProperty(navigator, "credentials", {
+      configurable: true,
+      value: { create },
+    });
+
+    const begin = {
+      ceremony_id: "0123456789abcdef0123456789abcdef",
+      options: {
+        publicKey: {
+          challenge: "AQID",
+          rp: { name: "Cookbook", id: "localhost" },
+          user: {
+            id: "account-id",
+            name: "cookbook",
+            displayName: "Cookbook",
+          },
+          pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+          authenticatorSelection: { userVerification: "required" },
+        },
+      },
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => begin,
+      } as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const controller = new AbortController();
+      await enrollPasskeyWithGrant("operator-grant-secret", controller.signal);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const [beginPath, beginRequest] = fetchMock.mock.calls[0] as [
+        string,
+        RequestInit,
+      ];
+      expect(beginPath).toBe("/api/auth/passkey/enrollment/begin");
+      expect(beginRequest).toMatchObject({
+        method: "POST",
+        credentials: "omit",
+        cache: "no-store",
+        body: JSON.stringify({ token: "operator-grant-secret" }),
+        signal: controller.signal,
+      });
+      expect(beginRequest.headers).toEqual({ "Content-Type": "application/json" });
+      expect(beginPath).not.toContain("operator-grant-secret");
+
+      const [finishPath, finishRequest] = fetchMock.mock.calls[1] as [
+        string,
+        RequestInit,
+      ];
+      expect(finishPath).toBe("/api/auth/passkey/enrollment/finish");
+      expect(finishRequest).toMatchObject({
+        method: "POST",
+        credentials: "omit",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      expect(finishRequest.headers).toEqual({ "Content-Type": "application/json" });
+      expect(finishPath).not.toContain("operator-grant-secret");
+      expect(JSON.parse(String(finishRequest.body))).toEqual({
+        token: "operator-grant-secret",
+        ceremony_id: begin.ceremony_id,
+        id: "credential-id",
+        rawId: "CQgH",
+        type: "public-key",
+        authenticatorAttachment: "platform",
+        clientExtensionResults: {},
+        response: { clientDataJSON: "AQI", attestationObject: "AwQ" },
+      });
+
+      const creation = create.mock.calls[0]?.[0] as CredentialCreationOptions & {
+        publicKey: PublicKeyCredentialCreationOptions;
+      };
+      expect([
+        ...new Uint8Array(creation.publicKey.challenge as ArrayBuffer),
+      ]).toEqual([1, 2, 3]);
+      expect(creation.publicKey.rp.id).toBe("localhost");
+      expect(creation.publicKey.authenticatorSelection?.userVerification).toBe(
+        "required",
+      );
+      expect(creation.signal).toBe(controller.signal);
+    } finally {
+      if (secureContextDescriptor) {
+        Object.defineProperty(window, "isSecureContext", secureContextDescriptor);
+      } else {
+        Reflect.deleteProperty(window, "isSecureContext");
+      }
+      if (publicKeyDescriptor) {
+        Object.defineProperty(window, "PublicKeyCredential", publicKeyDescriptor);
+      } else {
+        Reflect.deleteProperty(window, "PublicKeyCredential");
+      }
+      if (credentialsDescriptor) {
+        Object.defineProperty(navigator, "credentials", credentialsDescriptor);
+      } else {
+        Reflect.deleteProperty(navigator, "credentials");
+      }
+    }
   });
 });

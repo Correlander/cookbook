@@ -5,6 +5,7 @@ const dist = resolve(process.argv[2] ?? 'dist')
 const pages = [
   { file: 'index.html', route: '/' },
   { file: 'auth/confirm.html', route: '/auth/confirm' },
+  { file: 'auth/enroll.html', route: '/auth/enroll' },
   { file: 'account/security.html', route: '/account/security' },
   { file: 'admin/settings.html', route: '/admin/settings' },
 ]

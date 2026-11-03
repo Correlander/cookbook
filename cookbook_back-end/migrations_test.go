@@ -58,14 +58,14 @@ func TestFreshDatabaseRecordsAllRegisteredMigrations(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if got := migrationVersion(t, db); got != 5 {
-		t.Fatalf("migration version=%d, want 5", got)
+	if got := migrationVersion(t, db); got != 6 {
+		t.Fatalf("migration version=%d, want 6", got)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != 5 {
-		t.Fatalf("migration ledger rows=%d err=%v, want 5", count, err)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != 6 {
+		t.Fatalf("migration ledger rows=%d err=%v, want 6", count, err)
 	}
-	for version, name := range map[int]string{1: "legacy-baseline", 2: "instance-owner-authority", 3: "recipe-publication-policy", 4: "offline-passkey-enrollment", 5: "person-actor-identity"} {
+	for version, name := range map[int]string{1: "legacy-baseline", 2: "instance-owner-authority", 3: "recipe-publication-policy", 4: "offline-passkey-enrollment", 5: "person-actor-identity", 6: "personal-library-bookmarks"} {
 		var got string
 		if err := db.QueryRow(`SELECT name FROM schema_migrations WHERE version=?`, version).Scan(&got); err != nil || got != name {
 			t.Fatalf("migration %d name=%q err=%v, want %q", version, got, err, name)
@@ -94,7 +94,7 @@ func TestMigrationV1AndV2ChecksumsRemainImmutable(t *testing.T) {
 	}
 }
 
-func TestV4DatabaseUpgradesToV5WithoutChangingEarlierLedgerRows(t *testing.T) {
+func TestV4DatabaseUpgradesToV6WithoutChangingEarlierLedgerRows(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v4-upgrade.db")
 	db := rawMigrationDB(t, path)
 	ctx := context.Background()
@@ -135,8 +135,8 @@ func TestV4DatabaseUpgradesToV5WithoutChangingEarlierLedgerRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := migrationVersion(t, db); got != 5 {
-		t.Fatalf("upgraded migration version=%d, want 5", got)
+	if got := migrationVersion(t, db); got != 6 {
+		t.Fatalf("upgraded migration version=%d, want 6", got)
 	}
 	for _, entry := range before {
 		var name, checksum string
@@ -163,8 +163,99 @@ func TestV4DatabaseUpgradesToV5WithoutChangingEarlierLedgerRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if got := migrationVersion(t, db); got != 5 {
-		t.Fatalf("restarted migration version=%d, want 5", got)
+	if got := migrationVersion(t, db); got != 6 {
+		t.Fatalf("restarted migration version=%d, want 6", got)
+	}
+}
+
+func TestV5DatabaseUpgradesToV6WithStableLibraryNamespace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v5-bookmarks-upgrade.db")
+	db := rawMigrationDB(t, path)
+	ctx := context.Background()
+	if err := runSchemaMigrations(ctx, db, registeredSchemaMigrations()[:5]); err != nil {
+		t.Fatal(err)
+	}
+	type migrationRecord struct {
+		version        int
+		name, checksum string
+	}
+	var before []migrationRecord
+	rows, err := db.Query(`SELECT version,name,checksum FROM schema_migrations ORDER BY version`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var entry migrationRecord
+		if err := rows.Scan(&entry.version, &entry.name, &entry.checksum); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		before = append(before, entry)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 5 {
+		t.Fatalf("v5 ledger rows=%d, want 5", len(before))
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = openDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var namespace string
+	if err := db.QueryRow(`SELECT instance_id FROM library_instance_identity WHERE singleton_id=1`).Scan(&namespace); err != nil || !validLibraryInstanceID(namespace) {
+		db.Close()
+		t.Fatalf("new library namespace=%q err=%v", namespace, err)
+	}
+	if got := migrationVersion(t, db); got != 6 {
+		db.Close()
+		t.Fatalf("upgraded version=%d, want 6", got)
+	}
+	for _, entry := range before {
+		var name, checksum string
+		if err := db.QueryRow(`SELECT name,checksum FROM schema_migrations WHERE version=?`, entry.version).Scan(&name, &checksum); err != nil || name != entry.name || checksum != entry.checksum {
+			db.Close()
+			t.Fatalf("migration v%d changed: name=%q checksum=%q err=%v", entry.version, name, checksum, err)
+		}
+	}
+	var foreignTables []string
+	fks, err := db.Query(`PRAGMA foreign_key_list(recipe_bookmarks)`)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	for fks.Next() {
+		var id, seq int
+		var table, from, to, onUpdate, onDelete, match string
+		if err := fks.Scan(&id, &seq, &table, &from, &to, &onUpdate, &onDelete, &match); err != nil {
+			fks.Close()
+			db.Close()
+			t.Fatal(err)
+		}
+		foreignTables = append(foreignTables, table)
+	}
+	if err := fks.Close(); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if len(foreignTables) != 1 || foreignTables[0] != "users" {
+		db.Close()
+		t.Fatalf("bookmark foreign keys=%v, want users only", foreignTables)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = openDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var restartedNamespace string
+	if err := db.QueryRow(`SELECT instance_id FROM library_instance_identity WHERE singleton_id=1`).Scan(&restartedNamespace); err != nil || restartedNamespace != namespace {
+		t.Fatalf("restarted library namespace=%q err=%v, want stable %q", restartedNamespace, err, namespace)
 	}
 }
 
@@ -210,6 +301,10 @@ DROP TABLE passkey_enrollment_grants`); err != nil {
 		db.Close()
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`DROP TRIGGER recipe_bookmarks_account_limit; DROP TABLE recipe_bookmarks; DROP TABLE library_instance_identity`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -227,8 +322,8 @@ DROP TABLE passkey_enrollment_grants`); err != nil {
 	if public != 1 || admin != 1 || creator != "Claimed Creator" || title != "Preserve me" || version != 4 || sessionID != "stable-session" || revisionCount != beforeRevisions {
 		t.Fatalf("adopted data changed: public=%d admin=%d creator=%q title=%q version=%d session=%q revisions=%d", public, admin, creator, title, version, sessionID, revisionCount)
 	}
-	if got := migrationVersion(t, db); got != 5 {
-		t.Fatalf("adopted migration version=%d, want 5", got)
+	if got := migrationVersion(t, db); got != 6 {
+		t.Fatalf("adopted migration version=%d, want 6", got)
 	}
 	var owner sql.NullString
 	var generation int64
@@ -260,8 +355,8 @@ func TestInstanceOwnerMigrationPreservesV1RowsAndLeavesAuthorityUnclaimed(t *tes
 	if err := runSchemaMigrations(ctx, db, registeredSchemaMigrations()); err != nil {
 		t.Fatal(err)
 	}
-	if got := migrationVersion(t, db); got != 5 {
-		t.Fatalf("migration version=%d, want 5", got)
+	if got := migrationVersion(t, db); got != 6 {
+		t.Fatalf("migration version=%d, want 6", got)
 	}
 	var owner sql.NullString
 	var claimedAt sql.NullString
@@ -330,7 +425,7 @@ func TestFutureMigrationRunsOnceAndFailureRollsBackStepAndLedger(t *testing.T) {
 	defer db.Close()
 	fail := true
 	runs := 0
-	step := migrationTestStep(6, "test-marker", func(ctx context.Context, exec migrationExecutor) error {
+	step := migrationTestStep(7, "test-marker", func(ctx context.Context, exec migrationExecutor) error {
 		runs++
 		if _, err := exec.ExecContext(ctx, `CREATE TABLE migration_marker(value TEXT NOT NULL); INSERT INTO migration_marker(value) VALUES('applied')`); err != nil {
 			return err
@@ -344,14 +439,14 @@ func TestFutureMigrationRunsOnceAndFailureRollsBackStepAndLedger(t *testing.T) {
 	if err := runSchemaMigrations(context.Background(), db, migrations); err == nil || !strings.Contains(err.Error(), "injected migration failure") {
 		t.Fatalf("failed migration error=%v", err)
 	}
-	if migrationObjectExists(t, db, "table", "migration_marker") || migrationVersion(t, db) != 5 {
+	if migrationObjectExists(t, db, "table", "migration_marker") || migrationVersion(t, db) != 6 {
 		t.Fatal("failed migration left partial DDL/data or advanced the ledger")
 	}
 	fail = false
 	if err := runSchemaMigrations(context.Background(), db, migrations); err != nil {
 		t.Fatal(err)
 	}
-	if migrationVersion(t, db) != 6 || !migrationObjectExists(t, db, "table", "migration_marker") {
+	if migrationVersion(t, db) != 7 || !migrationObjectExists(t, db, "table", "migration_marker") {
 		t.Fatal("pending migration did not apply")
 	}
 	if err := runSchemaMigrations(context.Background(), db, migrations); err != nil {
@@ -413,7 +508,7 @@ func TestMigrationNameChecksumAndNewerVersionAreValidated(t *testing.T) {
 	}{
 		{name: "name", update: `UPDATE schema_migrations SET name='other' WHERE version=2`, wantErrSub: `name`},
 		{name: "checksum", update: `UPDATE schema_migrations SET checksum=lower(hex(randomblob(32))) WHERE version=2`, wantErrSub: `checksum mismatch`},
-		{name: "newer version", update: `UPDATE schema_migrations SET version=999 WHERE version=5`, wantErrSub: `newer than this binary`},
+		{name: "newer version", update: `UPDATE schema_migrations SET version=999 WHERE version=6`, wantErrSub: `newer than this binary`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "ledger.db")
@@ -523,8 +618,8 @@ func TestConcurrentStartupSerializesBaselineMigration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := migrationVersion(t, first); got != 5 {
-		t.Fatalf("concurrent migration version=%d, want 5", got)
+	if got := migrationVersion(t, first); got != 6 {
+		t.Fatalf("concurrent migration version=%d, want 6", got)
 	}
 }
 

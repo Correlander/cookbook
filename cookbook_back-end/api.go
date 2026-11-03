@@ -222,6 +222,10 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.exportData(w, r)
 	case len(parts) == 1 && parts[0] == "import":
 		h.importData(w, r)
+	case len(parts) == 2 && parts[0] == "library" && parts[1] == "bookmarks":
+		h.recipeBookmarks(w, r, "")
+	case len(parts) == 3 && parts[0] == "library" && parts[1] == "bookmarks":
+		h.recipeBookmarks(w, r, parts[2])
 	case len(parts) == 1 && parts[0] == "cookbooks":
 		h.cookbooks(w, r)
 	case len(parts) == 2 && parts[0] == "cookbooks":

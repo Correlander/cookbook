@@ -63,6 +63,11 @@ func registeredSchemaMigrations() []schemaMigration {
 		name:     "person-actor-identity",
 		checksum: migrationChecksum("person-actor-identity", personActorSchemaDDL),
 		apply:    ApplyPersonActorMigration,
+	}, {
+		version:  6,
+		name:     "personal-library-bookmarks",
+		checksum: migrationChecksum("personal-library-bookmarks", recipeBookmarkSchemaDDL+"\x00"+recipeBookmarkLimitTriggerDDL),
+		apply:    ApplyRecipeBookmarkMigration,
 	}}
 }
 

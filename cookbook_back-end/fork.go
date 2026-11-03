@@ -88,6 +88,10 @@ func (h apiHandler) forkRecipe(w http.ResponseWriter, r *http.Request, recipeID 
 		writeError(w, 500, "storage_error")
 		return
 	}
+	if err := insertDefaultRecipePublicationPolicy(r.Context(), tx, id); err != nil {
+		writeError(w, 500, "storage_error")
+		return
+	}
 	if err := insertRecipeRevision(tx, id, 1, userID, source.Title, source.Description, ingredientJSON, stepJSON, source.Servings, source.PrepTime, source.CookTime, tagJSON, visibilityPrivate, ""); err != nil {
 		writeError(w, 500, "storage_error")
 		return

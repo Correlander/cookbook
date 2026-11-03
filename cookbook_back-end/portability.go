@@ -375,6 +375,10 @@ func (h apiHandler) importData(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 500, "storage_error")
 			return
 		}
+		if err := insertDefaultRecipePublicationPolicy(r.Context(), tx, id); err != nil {
+			writeError(w, 500, "storage_error")
+			return
+		}
 		if err := insertRecipeRevision(tx, id, 1, uid, recipe.Title, recipe.Description, ingredients, steps, recipe.Servings, recipe.PrepTime, recipe.CookTime, tags, "private", imagePath); err != nil {
 			writeError(w, 500, "storage_error")
 			return

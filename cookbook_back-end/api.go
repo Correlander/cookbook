@@ -758,6 +758,11 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 500, "storage_error")
 			return
 		}
+		if err = insertDefaultRecipePublicationPolicy(r.Context(), tx, id); err != nil {
+			_ = tx.Rollback()
+			writeError(w, 500, "storage_error")
+			return
+		}
 		if err = replaceCookbookRefs(tx, id, in.OwnerID, in.cookbookIDs()); err != nil {
 			_ = tx.Rollback()
 			writeError(w, 403, "cookbook_access_denied")

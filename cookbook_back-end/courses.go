@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -259,7 +260,7 @@ func (h apiHandler) courseLessons(w http.ResponseWriter, r *http.Request, course
 	}
 	input.Title = strings.TrimSpace(input.Title)
 	input.Content = strings.TrimSpace(input.Content)
-	if !validLessonFields(input.Title, input.Content, input.Position) || (input.RecipeID != "" && !h.canReadRecipe(input.RecipeID, authenticatedUser(r))) {
+	if !validLessonFields(input.Title, input.Content, input.Position) || (input.RecipeID != "" && !h.canReadRecipe(r.Context(), input.RecipeID, authenticatedUser(r))) {
 		writeError(w, http.StatusBadRequest, "invalid_course_lesson")
 		return
 	}
@@ -297,7 +298,7 @@ func (h apiHandler) listCourseLessons(w http.ResponseWriter, r *http.Request, co
 		return
 	}
 	for index := range items {
-		if items[index].RecipeID != "" && !h.canReadRecipe(items[index].RecipeID, uid) {
+		if items[index].RecipeID != "" && !h.canReadRecipe(r.Context(), items[index].RecipeID, uid) {
 			items[index].RecipeID = ""
 		}
 	}
@@ -353,7 +354,7 @@ func (h apiHandler) courseLessonItem(w http.ResponseWriter, r *http.Request, cou
 	if input.Position != nil {
 		item.Position = *input.Position
 	}
-	if !validLessonFields(item.Title, item.Content, item.Position) || (item.RecipeID != "" && !h.canReadRecipe(item.RecipeID, uid)) {
+	if !validLessonFields(item.Title, item.Content, item.Position) || (item.RecipeID != "" && !h.canReadRecipe(r.Context(), item.RecipeID, uid)) {
 		writeError(w, http.StatusBadRequest, "invalid_course_lesson")
 		return
 	}
@@ -381,7 +382,7 @@ func (h apiHandler) ownsCourse(courseID, uid string) bool {
 	return uid != "" && h.db.QueryRow(`SELECT COUNT(*) FROM courses WHERE id=? AND owner_id=?`, courseID, uid).Scan(&count) == nil && count == 1
 }
 
-func (h apiHandler) canReadRecipe(recipeID, uid string) bool {
+func (h apiHandler) canReadRecipe(ctx context.Context, recipeID, uid string) bool {
 	var owner string
 	var itemVisibility visibility
 	var public int
@@ -389,5 +390,12 @@ func (h apiHandler) canReadRecipe(recipeID, uid string) bool {
 		return false
 	}
 	member := recipeMemberRole(h.db, recipeID, uid)
-	return canReadResource(uid, access{instancePublic: public == 1, visibility: itemVisibility, ownerID: owner, memberRole: member})
+	if !canReadResource(uid, access{instancePublic: public == 1, visibility: itemVisibility, ownerID: owner, memberRole: member}) {
+		return false
+	}
+	if hasLocalRecipeRead(uid, owner, member) {
+		return true
+	}
+	facts, err := readRecipePublicReadFacts(ctx, h.db, recipeID)
+	return err == nil && facts.AnonymousEligible()
 }

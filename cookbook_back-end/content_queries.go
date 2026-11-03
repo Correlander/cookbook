@@ -51,6 +51,16 @@ func readRecipeDetail(ctx context.Context, db *sql.DB, actor ContentActor, recip
 	if !canReadResource(actor.AccountID, resource) {
 		return recipe{}, errRecipeDetailDenied
 	}
+	if !hasLocalRecipeRead(actor.AccountID, item.OwnerID, memberRole) {
+		facts, err := readRecipePublicReadFacts(ctx, db, recipeID)
+		if err != nil {
+			return recipe{}, fmt.Errorf("read recipe publication facts: %w", err)
+		}
+		if !facts.AnonymousEligible() {
+			return recipe{}, errRecipeDetailDenied
+		}
+		item.SourceRecipeID = ""
+	}
 
 	item.CookbookIDs, err = readableRecipeCookbooks(ctx, db, recipeID, actor.AccountID)
 	if err != nil {
@@ -63,6 +73,10 @@ func readRecipeDetail(ctx context.Context, db *sql.DB, actor ContentActor, recip
 	item.CanDelete = actor.AccountID != "" && actor.AccountID == item.OwnerID
 	item.CanManageSharing = canManageRecipeSharing(actor.AccountID, item.OwnerID)
 	return item, nil
+}
+
+func hasLocalRecipeRead(accountID, ownerID string, memberRole role) bool {
+	return accountID != "" && (accountID == ownerID || memberRole != "")
 }
 
 func canManageRecipeSharing(accountID, recipeOwnerID string) bool {

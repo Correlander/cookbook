@@ -80,7 +80,7 @@ func TestReadRecipeDetailUsesLocalAccountAndRecipeACL(t *testing.T) {
 		})
 	}
 
-	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1; UPDATE recipes SET visibility='public' WHERE id='private-recipe'`); err != nil {
+	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1; UPDATE recipes SET visibility='public' WHERE id='private-recipe'; INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at) VALUES('private-recipe','published','off',0,'now')`); err != nil {
 		t.Fatal(err)
 	}
 	public, err := readRecipeDetail(context.Background(), db, ContentActor{}, "private-recipe")

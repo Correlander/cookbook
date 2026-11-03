@@ -18,6 +18,8 @@ func TestPublicCookbooksExposeOnlyPublicResources(t *testing.T) {
 		('public-recipe','owner','Owner','Public soup','','[]','[]','[]','public','owner_only','now','2026-01-02'),
 		('private-recipe','owner','Owner','Secret soup','','[]','[]','[]','private','owner_only','now','2026-01-03'),
 		('unlisted-recipe','owner','Owner','Unlisted soup','','[]','[]','[]','unlisted','owner_only','now','2026-01-01');
+		INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at) VALUES
+		('public-recipe','published','off',0,'now'),('private-recipe','unpublished','off',0,'now'),('unlisted-recipe','unpublished','off',0,'now');
 		INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES
 		('public-book','public-recipe','owner','now'),('public-book','private-recipe','owner','now'),('public-book','unlisted-recipe','owner','now'),('private-book','public-recipe','owner','now')`)
 	if err != nil {
@@ -73,6 +75,7 @@ func TestPublicCookbookEndpointsValidateMethodsPaginationAndSearch(t *testing.T)
 		INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now');
 		INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at) VALUES('book','owner','Soup book','public','now','now');
 		INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at) VALUES('soup','owner','Owner','Tomato soup','','[]','[]','[]','public','owner_only','now','now');
+		INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at) VALUES('soup','published','off',0,'now');
 		INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES('book','soup','owner','now')`)
 	if err != nil {
 		t.Fatal(err)
@@ -111,6 +114,8 @@ func TestPublicCookbookRecipeTagFilterAndSortPreserveVisibility(t *testing.T) {
 		('a-tart','owner','Owner','Apple tart','[]','[]','["dessert"]','public','owner_only','now','now'),
 		('hidden','owner','Owner','Hidden dessert','[]','[]','["dessert"]','private','owner_only','now','now'),
 		('almost','owner','Owner','Dinner pie','[]','[]','["desserts"]','public','owner_only','now','now');
+		INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at) VALUES
+		('z-pie','published','off',0,'now'),('a-tart','published','off',0,'now'),('hidden','unpublished','off',0,'now'),('almost','published','off',0,'now');
 		INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) SELECT 'book',id,'owner','now' FROM recipes`)
 	if err != nil {
 		t.Fatal(err)

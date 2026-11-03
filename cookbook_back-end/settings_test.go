@@ -12,7 +12,8 @@ func TestInstanceSettingsRequireAdminAndConfirmExistingPublication(t *testing.T)
 	db := testDatabase(t)
 	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,is_admin,created_at) VALUES('admin','admin@example.test','Admin',1,'now'),('member','member@example.test','Member',0,'now');
 		INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at) VALUES('public-book','member','Public cookbook','public','now','now'),('private-book','member','Private cookbook','private','now','now');
-		INSERT INTO recipes(id,owner_id,creator_name,title,visibility,edit_policy,created_at,updated_at) VALUES('public-recipe','member','Member','Public recipe','public','owner_only','now','now'),('private-recipe','member','Member','Private recipe','private','owner_only','now','now')`); err != nil {
+		INSERT INTO recipes(id,owner_id,creator_name,title,visibility,edit_policy,created_at,updated_at) VALUES('public-recipe','member','Member','Public recipe','public','owner_only','now','now'),('private-recipe','member','Member','Private recipe','private','owner_only','now','now');
+		INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at) VALUES('public-recipe','published','off',0,'now'),('private-recipe','unpublished','off',0,'now')`); err != nil {
 		t.Fatal(err)
 	}
 	adminToken, _, err := issueSession(db, "admin")

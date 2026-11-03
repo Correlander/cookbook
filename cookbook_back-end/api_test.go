@@ -323,6 +323,9 @@ func TestPublicRecipeListingRequiresPublicInstanceAndPublishedRecipe(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at) VALUES('private','unpublished','off',0,'now'),('public','published','off',0,'now')`); err != nil {
+		t.Fatal(err)
+	}
 	h := handlerWithAuth(db, testAuth(db))
 	privateInstance := httptest.NewRecorder()
 	h.ServeHTTP(privateInstance, httptest.NewRequest(http.MethodGet, "/api/public/recipes", nil))
@@ -348,7 +351,7 @@ func TestPublicRecipeListingRequiresPublicInstanceAndPublishedRecipe(t *testing.
 
 func TestPublicRecipeSearchAndPagination(t *testing.T) {
 	db := testDatabase(t)
-	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1; INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'); INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,created_at,updated_at) VALUES('soup-a','owner','Owner','Soup A','','[]','[]','public','owner_only','now','2026-01-01'),('soup-b','owner','Owner','Soup B','','[]','[]','public','owner_only','now','2026-01-02'),('cake','owner','Owner','Cake','','[]','[]','public','owner_only','now','2026-01-03')`); err != nil {
+	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1; INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'); INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,created_at,updated_at) VALUES('soup-a','owner','Owner','Soup A','','[]','[]','public','owner_only','now','2026-01-01'),('soup-b','owner','Owner','Soup B','','[]','[]','public','owner_only','now','2026-01-02'),('cake','owner','Owner','Cake','','[]','[]','public','owner_only','now','2026-01-03'); INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at) VALUES('soup-a','published','off',0,'now'),('soup-b','published','off',0,'now'),('cake','published','off',0,'now')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`UPDATE recipes SET tags_json='["quick"]' WHERE id='soup-b'`); err != nil {
@@ -505,6 +508,7 @@ func TestRecipeHistoryRequiresEditPermission(t *testing.T) {
 		('editor-book','editor','editor','now');
 		INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,version,created_at,updated_at)
 		VALUES('shared','owner','Owner','Public recipe','','[]','[]','public','cookbook_editors',2,'now','now');
+		INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at) VALUES('shared','published','off',0,'now');
 		INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES
 		('viewer-book','shared','owner','now'),
 		('editor-book','shared','owner','now')`)
@@ -642,6 +646,7 @@ func TestRecipeResponseOnlyIncludesReadableCookbooks(t *testing.T) {
 		INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('reader','reader@example.test','Reader','now');
 		INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at) VALUES('public-book','owner','Public','public','now','now'),('private-book','owner','Private','private','now','now'),('unlisted-book','owner','Unlisted','unlisted','now','now');
 		INSERT INTO recipes(id,owner_id,creator_name,title,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at) VALUES('recipe','owner','Owner','Shared recipe','[]','[]','[]','public','owner_only','now','now');
+		INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at) VALUES('recipe','published','off',0,'now');
 		INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES('public-book','recipe','owner','now'),('private-book','recipe','owner','now'),('unlisted-book','recipe','owner','now')`)
 	if err != nil {
 		t.Fatal(err)
@@ -699,7 +704,7 @@ func TestCookbookPagination(t *testing.T) {
 
 func TestRecipeImageUploadAccessAndRevisionRestore(t *testing.T) {
 	db := testDatabase(t)
-	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('other','other@example.test','Other','now'); INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,version,created_at,updated_at) VALUES('private-recipe','owner','Owner','Soup','','[]','[]','private','owner_only',1,'now','now')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('other','other@example.test','Other','now'); INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,version,created_at,updated_at) VALUES('private-recipe','owner','Owner','Soup','','[]','[]','private','owner_only',1,'now','now'); INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at) VALUES('private-recipe','unpublished','off',0,'now')`); err != nil {
 		t.Fatal(err)
 	}
 	ownerToken, _, err := issueSession(db, "owner")
@@ -774,12 +779,12 @@ func TestRecipeImageUploadAccessAndRevisionRestore(t *testing.T) {
 	if privateFetch.Code != http.StatusOK || privateFetch.Header().Get("Content-Type") != "image/png" || privateFetch.Header().Get("Cache-Control") != "private, no-store" {
 		t.Fatalf("owner image response = %d content-type=%q cache-control=%q", privateFetch.Code, privateFetch.Header().Get("Content-Type"), privateFetch.Header().Get("Cache-Control"))
 	}
-	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1; UPDATE recipes SET visibility='public' WHERE id='private-recipe'`); err != nil {
+	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1; UPDATE recipes SET visibility='public' WHERE id='private-recipe'; UPDATE recipe_publication_policy SET publication_state='published' WHERE recipe_id='private-recipe'`); err != nil {
 		t.Fatal(err)
 	}
 	publicFetch := httptest.NewRecorder()
 	h.ServeHTTP(publicFetch, httptest.NewRequest(http.MethodGet, uploaded.Image, nil))
-	if publicFetch.Code != http.StatusOK || publicFetch.Header().Get("Cache-Control") != "public, max-age=300" {
+	if publicFetch.Code != http.StatusOK || publicFetch.Header().Get("Cache-Control") != "private, no-store" {
 		t.Fatalf("public image response = %d cache-control=%q", publicFetch.Code, publicFetch.Header().Get("Cache-Control"))
 	}
 	invalid := upload(&http.Cookie{Name: sessionCookie, Value: ownerToken}, []byte("not an image"))

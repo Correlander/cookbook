@@ -7,6 +7,46 @@ import (
 	"fmt"
 )
 
+type recipePolicyQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+// RecipePublicReadFacts is the intersection of instance, recipe and local
+// publication state needed by anonymous projections. It is deliberately
+// queryable through both *sql.DB and *sql.Tx for read/use-case composition.
+type RecipePublicReadFacts struct {
+	InstancePublic   bool
+	Visibility       visibility
+	Deleted          bool
+	PolicyExists     bool
+	PublicationState RecipePublicationState
+}
+
+func (facts RecipePublicReadFacts) AnonymousEligible() bool {
+	return facts.InstancePublic && facts.Visibility == visibilityPublic && !facts.Deleted &&
+		facts.PolicyExists && facts.PublicationState == RecipePublicationPublished
+}
+
+func readRecipePublicReadFacts(ctx context.Context, queryer recipePolicyQueryer, recipeID string) (RecipePublicReadFacts, error) {
+	var facts RecipePublicReadFacts
+	var instancePublic, deleted int
+	var publicationState sql.NullString
+	err := queryer.QueryRowContext(ctx, `SELECT s.public_instance,r.visibility,r.deleted_at IS NOT NULL,p.publication_state
+		FROM recipes r JOIN instance_settings s ON s.id=1
+		LEFT JOIN recipe_publication_policy p ON p.recipe_id=r.id WHERE r.id=?`, recipeID).
+		Scan(&instancePublic, &facts.Visibility, &deleted, &publicationState)
+	if err != nil {
+		return RecipePublicReadFacts{}, err
+	}
+	facts.InstancePublic = instancePublic == 1
+	facts.Deleted = deleted == 1
+	facts.PolicyExists = publicationState.Valid
+	if publicationState.Valid {
+		facts.PublicationState = RecipePublicationState(publicationState.String)
+	}
+	return facts, nil
+}
+
 type RecipePublicationState string
 
 const (

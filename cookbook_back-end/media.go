@@ -154,6 +154,13 @@ func (h mediaHandler) serveImage(w http.ResponseWriter, r *http.Request, recipeI
 		http.NotFound(w, r)
 		return
 	}
+	if !hasLocalRecipeRead(uid, owner, member) {
+		facts, err := readRecipePublicReadFacts(r.Context(), h.db, recipeID)
+		if err != nil || !facts.AnonymousEligible() {
+			http.NotFound(w, r)
+			return
+		}
+	}
 	cleanName := filepath.Base(imagePath)
 	if cleanName != imagePath || strings.Contains(cleanName, "..") || !validStoredImageName(cleanName) {
 		http.NotFound(w, r)
@@ -186,11 +193,7 @@ func (h mediaHandler) serveImage(w http.ResponseWriter, r *http.Request, recipeI
 		return
 	}
 	w.Header().Set("Content-Type", contentType)
-	if public == 1 && recipeVisibility == visibilityPublic {
-		w.Header().Set("Cache-Control", "public, max-age=300")
-	} else {
-		w.Header().Set("Cache-Control", "private, no-store")
-	}
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("Content-Disposition", "inline; filename=recipe-image")
 	http.ServeContent(w, r, "recipe-image", info.ModTime(), file)
 }

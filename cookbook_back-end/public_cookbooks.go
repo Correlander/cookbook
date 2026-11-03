@@ -18,6 +18,20 @@ type publicCookbook struct {
 
 type publicCookbooksHandler struct{ db *sql.DB }
 
+const publicCookbookRowsQuery = `SELECT c.id,c.title,c.description,
+	(SELECT COUNT(*) FROM cookbook_recipes cr JOIN recipes r ON r.id=cr.recipe_id JOIN recipe_publication_policy p ON p.recipe_id=r.id JOIN instance_settings s2 ON s2.id=1 WHERE cr.cookbook_id=c.id AND s2.public_instance=1 AND r.deleted_at IS NULL AND r.visibility='public' AND p.publication_state='published'),
+	c.created_at,c.updated_at
+	FROM cookbooks c JOIN instance_settings s ON s.id=1
+	WHERE s.public_instance=1 AND c.visibility='public' AND (?='' OR instr(lower(c.title||' '||c.description),lower(?))>0)
+	ORDER BY c.updated_at DESC,c.id LIMIT ? OFFSET ?`
+
+const publicCookbookRecipeRowsQuery = `SELECT r.id,r.owner_id,r.creator_name,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,r.image_path
+	FROM cookbook_recipes cr JOIN recipes r ON r.id=cr.recipe_id JOIN recipe_publication_policy p ON p.recipe_id=r.id JOIN instance_settings s ON s.id=1
+	WHERE s.public_instance=1 AND cr.cookbook_id=? AND r.deleted_at IS NULL AND r.visibility='public' AND p.publication_state='published'
+	AND (?='' OR instr(lower(r.title||' '||r.description||' '||r.tags_json),lower(?))>0)
+	AND (?='' OR instr(lower(r.tags_json),lower(?))>0)
+	ORDER BY `
+
 func (h publicCookbooksHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
@@ -33,21 +47,7 @@ func (h publicCookbooksHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid_query")
 		return
 	}
-	var public int
-	if err := h.db.QueryRow(`SELECT public_instance FROM instance_settings WHERE id=1`).Scan(&public); err != nil {
-		writeError(w, http.StatusInternalServerError, "storage_error")
-		return
-	}
-	if public != 1 {
-		writeJSON(w, http.StatusOK, []publicCookbook{})
-		return
-	}
-	rows, err := h.db.Query(`SELECT c.id,c.title,c.description,
-		(SELECT COUNT(*) FROM cookbook_recipes cr JOIN recipes r ON r.id=cr.recipe_id WHERE cr.cookbook_id=c.id AND r.deleted_at IS NULL AND r.visibility='public'),
-		c.created_at,c.updated_at
-		FROM cookbooks c
-		WHERE c.visibility='public' AND (?='' OR instr(lower(c.title||' '||c.description),lower(?))>0)
-		ORDER BY c.updated_at DESC,c.id LIMIT ? OFFSET ?`, query, query, limit, offset)
+	rows, err := h.db.Query(publicCookbookRowsQuery, query, query, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
@@ -97,12 +97,7 @@ func (h publicCookbookRecipesHandler) ServeHTTP(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, "invalid_query")
 		return
 	}
-	rows, err := h.db.Query(`SELECT r.id,r.owner_id,r.creator_name,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,r.image_path
-		FROM cookbook_recipes cr JOIN recipes r ON r.id=cr.recipe_id
-		WHERE cr.cookbook_id=? AND r.deleted_at IS NULL AND r.visibility='public'
-		AND (?='' OR instr(lower(r.title||' '||r.description||' '||r.tags_json),lower(?))>0)
-		AND (?='' OR instr(lower(r.tags_json),lower(?))>0)
-		ORDER BY `+order+` LIMIT ? OFFSET ?`, cookbookID, query, query, tagJSON, tagJSON, limit, offset)
+	rows, err := h.db.Query(publicCookbookRecipeRowsQuery+order+` LIMIT ? OFFSET ?`, cookbookID, query, query, tagJSON, tagJSON, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return

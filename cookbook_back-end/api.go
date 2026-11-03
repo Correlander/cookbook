@@ -113,16 +113,11 @@ func (h publicRecipeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_query")
 		return
 	}
-	var public int
-	if err := h.db.QueryRow(`SELECT public_instance FROM instance_settings WHERE id=1`).Scan(&public); err != nil {
-		writeError(w, http.StatusInternalServerError, "storage_error")
-		return
-	}
-	if public != 1 {
-		writeJSON(w, http.StatusOK, []recipe{})
-		return
-	}
-	rows, err := h.db.Query(`SELECT id,owner_id,creator_name,source_recipe_id,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,edit_policy,version,created_at,updated_at,image_path FROM recipes WHERE deleted_at IS NULL AND visibility='public' AND (?='' OR instr(lower(title||' '||description||' '||tags_json),lower(?))>0) ORDER BY updated_at DESC,id LIMIT ? OFFSET ?`, query, query, limit, offset)
+	rows, err := h.db.Query(`SELECT r.id,r.owner_id,r.creator_name,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,r.image_path
+		FROM recipes r JOIN recipe_publication_policy p ON p.recipe_id=r.id JOIN instance_settings s ON s.id=1
+		WHERE s.public_instance=1 AND r.deleted_at IS NULL AND r.visibility='public' AND p.publication_state='published'
+		AND (?='' OR instr(lower(r.title||' '||r.description||' '||r.tags_json),lower(?))>0)
+		ORDER BY r.updated_at DESC,r.id LIMIT ? OFFSET ?`, query, query, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
@@ -133,7 +128,7 @@ func (h publicRecipeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		it := recipe{}
 		var ingredients, steps, tags string
 		var imagePath string
-		if err := rows.Scan(&it.ID, &it.OwnerID, &it.CreatorName, &it.SourceRecipeID, &it.Title, &it.Description, &ingredients, &steps, &it.Servings, &it.PrepTime, &it.CookTime, &tags, &it.Visibility, &it.EditPolicy, &it.Version, &it.CreatedAt, &it.UpdatedAt, &imagePath); err != nil {
+		if err := rows.Scan(&it.ID, &it.OwnerID, &it.CreatorName, &it.Title, &it.Description, &ingredients, &steps, &it.Servings, &it.PrepTime, &it.CookTime, &tags, &it.Visibility, &it.EditPolicy, &it.Version, &it.CreatedAt, &it.UpdatedAt, &imagePath); err != nil {
 			writeError(w, http.StatusInternalServerError, "storage_error")
 			return
 		}
@@ -150,6 +145,7 @@ func (h publicRecipeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		it.OwnerID = ""
+		it.SourceRecipeID = ""
 		it.CookbookIDs = []string{}
 		it.EditPolicy = ""
 		if imagePath != "" {
@@ -820,7 +816,7 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_pagination_or_query")
 		return
 	}
-	rows, err := h.db.Query(`SELECT r.id,r.owner_id,r.creator_name,r.source_recipe_id,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,s.public_instance,r.image_path FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.deleted_at IS NULL AND ((r.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_recipes cr JOIN cookbook_memberships m ON m.cookbook_id=cr.cookbook_id WHERE cr.recipe_id=r.id AND m.user_id=?)) OR (s.public_instance=1 AND r.visibility='public')) AND (?='' OR instr(lower(r.title||' '||r.description||' '||r.tags_json),lower(?))>0) AND (?='' OR EXISTS(SELECT 1 FROM cookbook_recipes scope WHERE scope.recipe_id=r.id AND scope.cookbook_id=?)) AND (?='' OR instr(lower(r.tags_json),lower(?))>0) ORDER BY `+order+` LIMIT ? OFFSET ?`, uid, uid, q, q, cookbookID, cookbookID, tagJSON, tagJSON, limit, offset)
+	rows, err := h.db.Query(`SELECT r.id,r.owner_id,r.creator_name,r.source_recipe_id,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,s.public_instance,r.image_path FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.deleted_at IS NULL AND ((r.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_recipes cr JOIN cookbook_memberships m ON m.cookbook_id=cr.cookbook_id WHERE cr.recipe_id=r.id AND m.user_id=?)) OR (s.public_instance=1 AND r.visibility='public' AND EXISTS(SELECT 1 FROM recipe_publication_policy p WHERE p.recipe_id=r.id AND p.publication_state='published'))) AND (?='' OR instr(lower(r.title||' '||r.description||' '||r.tags_json),lower(?))>0) AND (?='' OR EXISTS(SELECT 1 FROM cookbook_recipes scope WHERE scope.recipe_id=r.id AND scope.cookbook_id=?)) AND (?='' OR instr(lower(r.tags_json),lower(?))>0) ORDER BY `+order+` LIMIT ? OFFSET ?`, uid, uid, q, q, cookbookID, cookbookID, tagJSON, tagJSON, limit, offset)
 	if err != nil {
 		writeError(w, 500, "storage_error")
 		return
@@ -867,6 +863,9 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 		member := recipeMemberRole(h.db, it.ID, uid)
 		if !canReadResource(uid, access{instancePublic: publicFlags[index], visibility: it.Visibility, ownerID: it.OwnerID, memberRole: member}) {
 			continue
+		}
+		if !hasLocalRecipeRead(uid, it.OwnerID, member) {
+			it.SourceRecipeID = ""
 		}
 		it.CookbookIDs = h.recipeCookbooks(it.ID, uid)
 		it.CanEdit = canEditRecipe(uid, access{ownerID: it.OwnerID, memberRole: member}, it.EditPolicy)

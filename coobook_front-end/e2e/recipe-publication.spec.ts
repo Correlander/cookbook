@@ -151,7 +151,11 @@ test("owners can publish and withdraw a public recipe without losing owner acces
 
     await test.step("Confirm publication controls are ready", async () => {
       await expect(page.getByText("Current status")).toBeVisible();
-      await expect(page.getByText("Not published", { exact: true })).toBeVisible();
+      const currentStatus = page
+        .locator("dl > div")
+        .filter({ has: page.getByText("Current status", { exact: true }) })
+        .locator("dd");
+      await expect(currentStatus).toHaveText("Not published");
       const publicationState = page.getByLabel("Public browsing status");
       await expect(publicationState).toBeVisible();
       await expect(publicationState).toBeEnabled();

@@ -1,9 +1,9 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 
 const labelKey = 'io.cookbook.caddy-smoke'
 const requestTimeoutMs = 2500
@@ -92,7 +92,7 @@ function runCommand(engine, args, { allowFailure = false, timeoutMs = selectedCo
       clearTimeout(timer)
       activeChildren.delete(child)
       if (allowFailure) resolve({ code: null, stdout, stderr: error.message })
-      else reject(new Error(`${engine} could not start: ${error.message}`, { cause: error }))
+      else reject(Object.assign(new Error(`${engine} could not start: ${error.message}`, { cause: error }), { exitCode: null, durationMs: Date.now() - startedAt, timedOut: false }))
     })
     child.once('close', (code, signal) => {
       clearTimeout(timer)
@@ -105,7 +105,7 @@ function runCommand(engine, args, { allowFailure = false, timeoutMs = selectedCo
           : redactFailureOutput
             ? `${engine} ${args[0]} failed (${code ?? signal}); output was suppressed because it may contain a sign-in link`
             : `${engine} ${args[0]} failed (${code ?? signal}): ${stderr.trim() || stdout.trim()}`)
-          if (redactFailureOutput) Object.assign(error, { stdout, stderr, durationMs: Date.now() - startedAt, timedOut })
+          if (redactFailureOutput) Object.assign(error, { stdout, stderr, exitCode: code, durationMs: Date.now() - startedAt, timedOut })
           reject(error)
         }
       })
@@ -239,64 +239,147 @@ function safeErrorClass(candidate) {
   return candidate === 'TimeoutError' || candidate === 'Error' ? candidate : 'unknown'
 }
 
-function summarizePlaywright(output, durationMs, timedOut = false) {
-  const maxInputLength = 128 * 1024
-  const maxLineLength = 512
-  const maxTests = 100
-  const boundedOutput = output.slice(-maxInputLength)
-  const tests = []
-  let current
-  let truncated = output.length > maxInputLength
-  const saveCurrent = () => {
-    if (current) tests.push(current)
-    current = undefined
+const safeFailureSources = new Map([
+  ['e2e/recipe-publication.spec.ts', 'publication-spec'],
+  ['e2e/static-host.spec.ts', 'static-host-spec'],
+  ['e2e/auth.ts', 'auth-helper'],
+])
+const maxFailureLocation = 100_000
+const maxPlaywrightReportBytes = 1024 * 1024
+
+function safeFailureLocation(location, sourceRoot) {
+  const file = typeof location?.file === 'string' ? location.file.replaceAll('\\', '/') : ''
+  const resolvedFile = file ? resolve(sourceRoot, file) : ''
+  const relativeFile = resolvedFile ? relative(sourceRoot, resolvedFile).replaceAll('\\', '/') : ''
+  const source = relativeFile && relativeFile !== '..' && !relativeFile.startsWith('../') && !isAbsolute(relativeFile)
+    ? safeFailureSources.get(relativeFile)
+    : undefined
+  const line = location?.line
+  const column = location?.column
+  if (!source || !Number.isSafeInteger(line) || !Number.isSafeInteger(column) || line < 1 || line > maxFailureLocation || column < 1 || column > maxFailureLocation) {
+    return { source: 'unknown', line: null, column: null }
   }
-  for (const line of boundedOutput.split(/\r?\n/)) {
-    if (line.length > maxLineLength) {
-      truncated = true
-      continue
+  return { source, line, column }
+}
+
+function deriveTestOutcome(expectedStatus, results) {
+  let skipped = 0
+  let expected = 0
+  let unexpected = 0
+  for (const result of results) {
+    if (result.status === 'interrupted') continue
+    if (result.status === 'skipped' && expectedStatus === 'skipped') skipped += 1
+    else if (result.status === 'skipped') continue
+    else if (result.status === expectedStatus) expected += 1
+    else unexpected += 1
+  }
+  if (expected === 0 && unexpected === 0) return 'skipped'
+  if (unexpected === 0) return 'expected'
+  if (expected === 0 && skipped === 0) return 'unexpected'
+  return 'flaky'
+}
+
+function summarizePlaywrightReport(report, durationMs, childExitCode, timedOut, sourceRoot) {
+  const maxTests = 100
+  const validTestStatuses = new Set(['expected', 'unexpected', 'flaky', 'skipped'])
+  const validResultStatuses = new Set(['passed', 'failed', 'skipped', 'timedOut', 'interrupted'])
+  const validExpectedStatuses = new Set(['passed', 'failed', 'skipped', 'timedOut', 'interrupted'])
+  const tests = []
+  let truncated = false
+  let invalidReport = !report || typeof report !== 'object' || !Array.isArray(report.suites)
+  const counts = { expected: 0, unexpected: 0, flaky: 0, skipped: 0 }
+  let executedResults = 0
+  const visitSuites = (suites) => {
+    if (!Array.isArray(suites)) {
+      invalidReport = true
+      return
     }
-    const match = line.match(/^(PASS|SKIP|FAIL) ([A-Za-z0-9][A-Za-z0-9 .,'():/_-]{0,159})$/)
-    if (match) {
-      saveCurrent()
-      if (tests.length >= maxTests) {
-        truncated = true
+    for (const suite of suites) {
+      if (!suite || typeof suite !== 'object' || !Array.isArray(suite.specs) || (suite.suites !== undefined && !Array.isArray(suite.suites))) {
+        invalidReport = true
         continue
       }
-      current = { ordinal: tests.length + 1, status: match[1].toLowerCase() }
-      continue
+      for (const spec of suite.specs) {
+        if (!spec || typeof spec !== 'object' || !Array.isArray(spec.tests)) {
+          invalidReport = true
+          continue
+        }
+        for (const test of spec.tests) {
+          if (!test || typeof test !== 'object' || !validTestStatuses.has(test.status) || !validExpectedStatuses.has(test.expectedStatus) || !Array.isArray(test.results) || test.results.length === 0) {
+            invalidReport = true
+            continue
+          }
+          if (tests.length >= maxTests) {
+            truncated = true
+            return
+          }
+          tests.push(test)
+          counts[test.status] += 1
+          for (const result of test.results) {
+            if (!result || typeof result !== 'object' || !validResultStatuses.has(result.status)) invalidReport = true
+            else if (result.status === 'passed' || result.status === 'failed' || result.status === 'timedOut') executedResults += 1
+          }
+          if (test.results.every((result) => result && validResultStatuses.has(result.status)) && deriveTestOutcome(test.expectedStatus, test.results) !== test.status) invalidReport = true
+        }
+      }
+      visitSuites(suite.suites ?? [])
+      if (truncated) return
     }
-    if (current?.status === 'fail' && current.errorClass === undefined) {
-      const errorClass = line.match(/^([A-Z][A-Za-z0-9]*Error|Error):/)?.[1]
-      if (errorClass) current.errorClass = safeErrorClass(errorClass)
-    }
-    if (/^Playwright result:/.test(line)) saveCurrent()
   }
-  saveCurrent()
-  const counts = {
-    passed: tests.filter(({ status }) => status === 'pass').length,
-    failed: tests.filter(({ status }) => status === 'fail').length,
-    skipped: tests.filter(({ status }) => status === 'skip').length,
+  visitSuites(report?.suites)
+  const reportStats = report?.stats
+  for (const status of Object.keys(counts)) {
+    if (!Number.isSafeInteger(reportStats?.[status]) || reportStats[status] < 0 || reportStats[status] !== counts[status]) invalidReport = true
   }
-  const failures = tests.filter(({ status }) => status === 'fail')
-  const errorClasses = boundedOutput.split(/\r?\n/)
-    .filter((line) => line.length <= 256)
-    .map((line) => line.match(/^([A-Z][A-Za-z0-9]*Error|Error):/)?.[1])
-    .filter(Boolean)
-  failures.forEach((failure, index) => {
-    if (!failure.errorClass && errorClasses[index]) {
-      failure.errorClass = safeErrorClass(errorClasses[index])
-    }
+  if (tests.length === 0 || executedResults === 0 || truncated) invalidReport = true
+  const passed = tests.filter((test) => test?.status === 'expected' || test?.status === 'flaky').length
+  const skipped = tests.filter((test) => test?.status === 'skipped').length
+  const failures = tests.flatMap((test, index) => {
+    if (test?.status !== 'unexpected') return []
+    const results = Array.isArray(test.tests) ? test.tests.flatMap((entry) => entry?.results ?? []) : (Array.isArray(test.results) ? test.results : [])
+    const failedResult = [...results].reverse().find((entry) => entry?.status === 'failed' || entry?.status === 'timedOut' || entry?.status === 'interrupted')
+    const errorMessage = failedResult?.errors?.[0]?.message ?? failedResult?.error?.message
+    const safeClass = typeof errorMessage === 'string' ? errorMessage.match(/^(TimeoutError|Error):/)?.[1] : undefined
+    return [{ ordinal: index + 1, errorClass: safeErrorClass(safeClass), ...safeFailureLocation(failedResult?.errorLocation, sourceRoot) }]
   })
-  const resultLine = boundedOutput.split(/\r?\n/).find((line) => line.length <= 64 && /^Playwright result: (passed|failed|timed out|interrupted)$/.test(line))
-  const reportedResult = resultLine?.match(/^Playwright result: (passed|failed|timed out|interrupted)$/)?.[1]
-  const result = timedOut ? 'timed out' : reportedResult ?? (counts.failed ? 'failed' : 'unknown')
-  return { result, durationMs, ...counts, truncated, failures: failures.map(({ ordinal, status, errorClass = 'unknown' }) => ({ ordinal, status, errorClass: safeErrorClass(errorClass) })) }
+  const failed = failures.length
+  const exitMismatch = timedOut ? false : childExitCode === 0 ? failed > 0 : Number.isInteger(childExitCode) ? failed === 0 : true
+  const result = timedOut ? 'timed out' : invalidReport ? 'unknown' : childExitCode === 0 && failed === 0 ? 'passed' : 'failed'
+  return { result, durationMs, passed, failed, skipped, truncated, invalidReport, exitMismatch, failures }
+}
+
+async function readPlaywrightReport(path) {
+  const info = await stat(path)
+  if (info.size > maxPlaywrightReportBytes) throw new Error('Playwright structured report exceeded its private size limit')
+  return JSON.parse(await readFile(path, 'utf8'))
+}
+
+async function summarizePlaywrightReportFile(path, durationMs, childExitCode, timedOut, sourceRoot) {
+  try {
+    return summarizePlaywrightReport(await readPlaywrightReport(path), durationMs, childExitCode, timedOut, sourceRoot)
+  } catch {
+    return {
+      result: timedOut ? 'timed out' : childExitCode === 0 ? 'unknown' : 'failed',
+      durationMs,
+      passed: 0,
+      failed: 0,
+      skipped: 0,
+      truncated: true,
+      reportUnavailable: true,
+      invalidReport: true,
+      exitMismatch: !timedOut && childExitCode === 0,
+      failures: [],
+    }
+  }
 }
 
 function formatPlaywrightSummary(summary) {
   const parts = [`Playwright ${summary.result}: ${summary.passed} passed, ${summary.failed} failed, ${summary.skipped} skipped in ${summary.durationMs}ms`]
-  for (const failure of summary.failures) parts.push(`failed test #${failure.ordinal} (${failure.errorClass})`)
+  for (const failure of summary.failures) parts.push(`failed test #${failure.ordinal} (${failure.errorClass}; source=${failure.source}; line=${failure.line ?? 'unknown'}; column=${failure.column ?? 'unknown'})`)
+  if (summary.reportUnavailable) parts.push('structured Playwright report unavailable')
+  if (summary.invalidReport && !summary.reportUnavailable) parts.push('structured Playwright report rejected')
+  if (summary.exitMismatch) parts.push('Playwright process/report status mismatch')
+  if (summary.truncated && !summary.reportUnavailable) parts.push('structured Playwright report exceeded the test summary limit')
   return parts.join('\n')
 }
 
@@ -407,7 +490,14 @@ async function prepareBrowserArtifacts() {
       mkdir(playwrightDist, { mode: 0o700 }),
       mkdir(playwrightOutput, { mode: 0o700 }),
     ])
-    return { runDirectory, mailDirectory, emailCapturePath: join(mailDirectory, 'capture.json'), playwrightDist, playwrightOutput }
+    return {
+      runDirectory,
+      mailDirectory,
+      emailCapturePath: join(mailDirectory, 'capture.json'),
+      playwrightDist,
+      playwrightOutput,
+      playwrightReport: join(playwrightOutput, 'playwright-report.json'),
+    }
   } catch (error) {
     await rm(runDirectory, { recursive: true, force: true })
     runDirectory = undefined
@@ -504,7 +594,7 @@ async function main() {
       let playwrightResult
       try {
         playwrightResult = await runCommand(playwright, [
-          'test', '--config=e2e/playwright.config.ts', '--workers=1',
+          'test', '--config=e2e/playwright.config.ts', '--workers=1', '--reporter=json',
           ...(options.browserGrep ? [`--grep=${options.browserGrep}`] : []),
         ], {
           cwd: frontendRoot,
@@ -515,18 +605,25 @@ async function main() {
             PLAYWRIGHT_BASE_URL: origin,
             PLAYWRIGHT_DIST: browserArtifacts.playwrightDist,
             PLAYWRIGHT_OUTPUT_DIR: browserArtifacts.playwrightOutput,
+            PLAYWRIGHT_JSON_OUTPUT_FILE: browserArtifacts.playwrightReport,
             PLAYWRIGHT_BROWSERS_PATH: browsersPath,
             E2E_EMAIL_CAPTURE: browserArtifacts.emailCapturePath,
           },
         })
       } catch (error) {
-        const output = `${error.stdout ?? ''}\n${error.stderr ?? ''}`
-        const summary = summarizePlaywright(output, error.durationMs ?? 0, error.timedOut)
+        const summary = await summarizePlaywrightReportFile(
+          browserArtifacts.playwrightReport,
+          error.durationMs ?? 0,
+          error.exitCode,
+          Boolean(error.timedOut),
+          frontendRoot,
+        )
         await writeFile(join(browserArtifacts.playwrightOutput, 'failure-summary.json'), `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o600 })
         throw new Error(formatPlaywrightSummary(summary))
       }
-      const summary = summarizePlaywright(playwrightResult.stdout, playwrightResult.durationMs)
+      const summary = await summarizePlaywrightReportFile(browserArtifacts.playwrightReport, playwrightResult.durationMs, playwrightResult.code, false, frontendRoot)
       await writeFile(join(browserArtifacts.playwrightOutput, 'result-summary.json'), `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o600 })
+      if (summary.reportUnavailable || summary.invalidReport || summary.truncated || summary.exitMismatch || summary.result !== 'passed') throw new Error(formatPlaywrightSummary(summary))
       console.log(formatPlaywrightSummary(summary))
     }
     console.log(`Caddy/Go proxy smoke passed at ${origin}`)

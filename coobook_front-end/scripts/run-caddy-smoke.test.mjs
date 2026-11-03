@@ -122,8 +122,10 @@ import { readFile, writeFile, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 if (process.env.CADDY_BROWSER_GREP_EXPECTED) assert.ok(process.argv.includes('--grep=' + process.env.CADDY_BROWSER_GREP_EXPECTED))
 assert.ok(process.argv.includes('--workers=1'))
+assert.ok(process.argv.includes('--reporter=json'))
 assert.equal(process.env.PLAYWRIGHT_BASE_URL, 'http://localhost:' + process.env.CADDY_TEST_PORT)
 assert.equal(process.env.E2E_EMAIL_CAPTURE, join(dirname(process.env.E2E_EMAIL_CAPTURE), 'capture.json'))
+assert.equal(process.env.PLAYWRIGHT_JSON_OUTPUT_FILE, join(process.env.PLAYWRIGHT_OUTPUT_DIR, 'playwright-report.json'))
 assert.equal(await readFile(join(process.env.PLAYWRIGHT_DIST, 'static-csp.json'), 'utf8'), '{"scriptHashes":[]}')
 const tempRoot = dirname(dirname(process.env.E2E_EMAIL_CAPTURE))
 assert.equal((await stat(tempRoot)).mode & 0o777, 0o700)
@@ -137,22 +139,59 @@ await writeFile(process.env.CADDY_BROWSER_STATE, JSON.stringify({
   output: process.env.PLAYWRIGHT_OUTPUT_DIR,
   browsers: process.env.PLAYWRIGHT_BROWSERS_PATH,
   capture: process.env.E2E_EMAIL_CAPTURE,
+  report: process.env.PLAYWRIGHT_JSON_OUTPUT_FILE,
 }))
-if (process.env.CADDY_BROWSER_FAIL === '1') {
-  console.log('FAIL e5z7opaqueSecret')
-  console.log('PrivateTokenError: do not print this class name')
-  console.error('https://example.test/auth/confirm?token=synthetic-private-token')
-  console.log('FAIL opaqueSecondTitle')
-  console.error('Error: expect(locator).toBeVisible failed')
-  console.log('Playwright result: failed')
-  process.exit(9)
+const result = (status, file, line, column, name = 'Error', errors = []) => ({
+  status: status === 'unexpected' ? 'failed' : status === 'skipped' ? 'skipped' : 'passed',
+  error: status === 'unexpected' ? { name, message: 'raw message with https://secret.invalid/?token=hidden', stack: '/private/secret/stack' } : undefined,
+  errors: status === 'unexpected' ? [{ name, message: name + ': private error text', stack: '/private/secret/stack' }, ...errors] : [],
+  errorLocation: status === 'unexpected' ? { file, line, column } : undefined,
+})
+const spec = (title, status, file, line, column, name, errors) => ({
+  title, file, line: 1, column: 1,
+  tests: [{ status, expectedStatus: 'passed', results: [result(status, file, line, column, name, errors)] }],
+})
+const failed = process.env.CADDY_BROWSER_FAIL === '1'
+const specs = failed ? [
+  spec('opaque publication title with token=secret', 'unexpected', 'e2e/recipe-publication.spec.ts', 47, 9, 'PrivateTokenError'),
+  spec('interleaved passing case', 'expected', 'e2e/static-host.spec.ts', 10, 1),
+  spec('opaque auth title', 'unexpected', 'e2e/auth.ts', 221, 14, 'Error', [{ name: 'TimeoutError', message: 'secondary failure; /private/secret/e2e/static-host.spec.ts:321:4' }]),
+  spec('unknown source title', 'unexpected', '/tmp/attacker/e2e/auth.ts', 2, 4),
+  spec('out of range title', 'unexpected', 'e2e/static-host.spec.ts', 9999999, 1),
+  spec('interleaved skipped case', 'skipped', 'e2e/static-host.spec.ts', 11, 1),
+] : [
+  spec('direct route serves built page', 'expected', 'e2e/static-host.spec.ts', 5, 1),
+  spec('optional browser capability', 'skipped', 'e2e/static-host.spec.ts', 6, 1),
+]
+const reportMode = process.env.CADDY_BROWSER_REPORT_MODE ?? ''
+if (reportMode === 'unknown-status') specs[0].tests[0].status = 'unrecognized'
+if (reportMode === 'unknown-result-status') specs[0].tests[0].results[0].status = 'unrecognized'
+if (reportMode === 'expected-failed-result') specs[0].tests[0].results[0].status = 'failed'
+if (reportMode === 'all-skipped' || reportMode === 'skipped-passed-result') {
+  specs.splice(0, specs.length, spec('skipped only', 'skipped', 'e2e/static-host.spec.ts', 7, 1))
 }
-console.log('PASS direct route serves built page')
-console.log('SKIP optional browser capability')
-console.log('Playwright result: passed')
+let report = {
+  stats: { expected: 1, unexpected: failed ? 4 : 0, skipped: 1, flaky: 0 },
+  suites: [{ title: 'e2e', file: '/private/secret/e2e', line: 0, column: 0, specs }],
+}
+if (reportMode === 'empty') report = {}
+if (reportMode === 'wrong-shape') report = { stats: { expected: 0, unexpected: 0, flaky: 0, skipped: 0 }, suites: [] }
+if (reportMode === 'all-skipped' || reportMode === 'skipped-passed-result') report = { stats: { expected: 0, unexpected: 0, flaky: 0, skipped: 1 }, suites: [{ title: 'e2e', file: 'e2e', specs }] }
+if (reportMode === 'skipped-passed-result') report.suites[0].specs[0].tests[0].results[0].status = 'passed'
+if (reportMode === 'missing') {
+  // Exercise the runner's missing-report path.
+} else if (reportMode === 'malformed') {
+  await writeFile(process.env.PLAYWRIGHT_JSON_OUTPUT_FILE, '{')
+} else if (reportMode === 'oversized') {
+  await writeFile(process.env.PLAYWRIGHT_JSON_OUTPUT_FILE, 'x'.repeat(1024 * 1024 + 1))
+} else {
+  await writeFile(process.env.PLAYWRIGHT_JSON_OUTPUT_FILE, JSON.stringify(report))
+}
+console.error('Error: unrelated stderr with /private/secret/e2e/static-host.spec.ts:888:2 and token=not-for-summary')
+if (process.env.CADDY_BROWSER_ZERO_EXIT !== '1' && (failed || process.env.CADDY_BROWSER_NONZERO_EXIT === '1')) process.exit(9)
 `
 
-async function runBrowserFixture({ directory, statePath, engine }, port, fail, grep) {
+async function runBrowserFixture({ directory, statePath, engine }, port, { fail = false, grep, reportMode = '', zeroExit = false, nonzeroExit = false, runnerFailure = fail || Boolean(reportMode) || nonzeroExit } = {}) {
   const browserCache = join(directory, 'browser-cache')
   const playwright = join(directory, 'fake-playwright.mjs')
   const browserState = join(directory, 'browser-state.json')
@@ -171,11 +210,14 @@ async function runBrowserFixture({ directory, statePath, engine }, port, fail, g
     CADDY_BROWSER_STATE: browserState,
     CADDY_BROWSER_FAIL: fail ? '1' : '0',
     CADDY_BROWSER_GREP_EXPECTED: grep ?? '',
+    CADDY_BROWSER_REPORT_MODE: reportMode,
+    CADDY_BROWSER_ZERO_EXIT: zeroExit ? '1' : '0',
+    CADDY_BROWSER_NONZERO_EXIT: nonzeroExit ? '1' : '0',
     COOKBOOK_CADDY_SMOKE_PLAYWRIGHT_CLI: playwright,
     PLAYWRIGHT_BROWSERS_PATH: browserCache,
     TMPDIR: directory,
   })
-  assert.equal(result.code, fail ? 1 : 0, result.stdout + result.stderr)
+  assert.equal(result.code, runnerFailure ? 1 : 0, result.stdout + result.stderr)
   const state = await loadState(statePath)
   const backend = state.calls.find((record) => record[0] === 'run' && record.includes('backend:browser-fixture'))
   assert.ok(backend)
@@ -197,6 +239,7 @@ async function runBrowserFixture({ directory, statePath, engine }, port, fail, g
   const browser = JSON.parse(await readFile(browserState, 'utf8'))
   assert.equal(browser.baseUrl, `http://localhost:${port}`)
   assert.equal(browser.browsers, browserCache)
+  assert.match(browser.report, /playwright-output\/playwright-report\.json$/)
   assert.match(browser.dist, /playwright-dist$/)
   assert.match(browser.output, /playwright-output$/)
   assert.match(browser.capture, /\/mail\/capture\.json$/)
@@ -419,19 +462,47 @@ await withFakeEngine(async ({ statePath, engine }) => {
 })
 
 await withHttpFixture(async (port) => withFakeEngine(async (context) => {
-  const result = await runBrowserFixture(context, port, false, 'signed-in account users|signed-in instance administrators|email sign-in remains explicit')
+  const result = await runBrowserFixture(context, port, { grep: 'signed-in account users|signed-in instance administrators|email sign-in remains explicit' })
   assert.equal(result.code, 0, result.stdout + result.stderr)
   assert.match(result.stdout, /Playwright passed: 1 passed, 0 failed, 1 skipped/)
   assert.match(result.stdout, /Caddy\/Go proxy smoke passed/)
 }))
 
 await withHttpFixture(async (port) => withFakeEngine(async (context) => {
-  const result = await runBrowserFixture(context, port, true)
+  const result = await runBrowserFixture(context, port, { fail: true })
   assert.equal(result.code, 1, result.stdout + result.stderr)
-  assert.match(result.stderr, /Playwright failed: 0 passed, 2 failed, 0 skipped/)
-  assert.match(result.stderr, /failed test #1 \(unknown\)/)
-  assert.match(result.stderr, /failed test #2 \(Error\)/)
-  assert.doesNotMatch(result.stderr, /e5z7opaqueSecret|opaqueSecondTitle|synthetic-private-token|PrivateTokenError/)
+  assert.match(result.stderr, /Playwright failed: 1 passed, 4 failed, 1 skipped/)
+  assert.match(result.stderr, /failed test #1 \(unknown; source=publication-spec; line=47; column=9\)/)
+  assert.match(result.stderr, /failed test #3 \(Error; source=auth-helper; line=221; column=14\)/)
+  assert.match(result.stderr, /failed test #4 \(Error; source=unknown; line=unknown; column=unknown\)/)
+  assert.match(result.stderr, /failed test #5 \(Error; source=unknown; line=unknown; column=unknown\)/)
+  assert.doesNotMatch(result.stderr, /opaque publication title|opaque auth title|unknown source title|out of range title|https:\/\/|\/private\/secret|token=|PrivateTokenError|TimeoutError|attacker|9999999|888:2/)
+}))
+
+for (const reportMode of ['missing', 'malformed', 'oversized', 'empty', 'wrong-shape', 'unknown-status', 'unknown-result-status', 'all-skipped', 'expected-failed-result', 'skipped-passed-result']) {
+  await withHttpFixture(async (port) => withFakeEngine(async (context) => {
+    const result = await runBrowserFixture(context, port, { reportMode })
+    assert.equal(result.code, 1, result.stdout + result.stderr)
+    assert.doesNotMatch(result.stdout + result.stderr, /Caddy\/Go proxy smoke passed/)
+    assert.match(result.stderr, reportMode === 'missing' || reportMode === 'malformed' || reportMode === 'oversized'
+      ? /structured Playwright report unavailable/
+      : /structured Playwright report rejected/)
+    assert.doesNotMatch(result.stdout + result.stderr, /\/tmp\/|playwright-report\.json|secret|token=/)
+  }))
+}
+
+await withHttpFixture(async (port) => withFakeEngine(async (context) => {
+  const result = await runBrowserFixture(context, port, { fail: true, zeroExit: true })
+  assert.equal(result.code, 1, result.stdout + result.stderr)
+  assert.match(result.stderr, /Playwright process\/report status mismatch/)
+  assert.doesNotMatch(result.stdout + result.stderr, /Caddy\/Go proxy smoke passed/)
+}))
+
+await withHttpFixture(async (port) => withFakeEngine(async (context) => {
+  const result = await runBrowserFixture(context, port, { nonzeroExit: true })
+  assert.equal(result.code, 1, result.stdout + result.stderr)
+  assert.match(result.stderr, /Playwright process\/report status mismatch/)
+  assert.doesNotMatch(result.stdout + result.stderr, /Caddy\/Go proxy smoke passed/)
 }))
 
 const missingImages = await runRunner(['--frontend-image', 'frontend:fixture'], {})

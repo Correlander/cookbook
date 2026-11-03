@@ -41,15 +41,6 @@ for protected_path in "$archive_dir" "$archive_path"; do
 		exit 1
 	fi
 done
-archive_format=$(python3 "$script_dir/validate_backup.py" --allow-legacy --print-format "$archive_path")
-if [ "$archive_format" = legacy ] && [ "$accept_key_loss" != yes ]; then
-	echo "legacy backup has no federation keys; refusing restore without --accept-federation-key-loss" >&2
-	exit 1
-fi
-if [ "$archive_format" = legacy ]; then
-	echo "WARNING: federation identity continuity cannot be established; a new identity will be created after restore" >&2
-fi
-
 service=${COOKBOOK_COMPOSE_SERVICE:-cookbook}
 compose_engine=${COOKBOOK_COMPOSE_ENGINE:-}
 if [ -z "$compose_engine" ]; then
@@ -64,13 +55,28 @@ case "$compose_engine" in
 	*) echo "COOKBOOK_COMPOSE_ENGINE must be podman or docker" >&2; exit 2 ;;
 esac
 compose() { "$compose_engine" compose "$@"; }
+image_refs=$(compose images -q "$service")
+image_ref_count=$(printf '%s\n' "$image_refs" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
+[ "$image_ref_count" = 1 ] || { echo "could not resolve one local image for service $service" >&2; exit 1; }
+image_ref=$(printf '%s\n' "$image_refs" | sed '/^[[:space:]]*$/d')
+verifier_image=$("$compose_engine" image inspect --format '{{.Id}}' "$image_ref")
+printf '%s\n' "$verifier_image" | grep -Eq '^(sha256:)?[0-9a-f]{64}$' || { echo "service image did not resolve to one immutable local image ID" >&2; exit 1; }
 cd "$repo_root"
+archive_format=$(python3 "$script_dir/validate_backup.py" --allow-legacy --engine "$compose_engine" --image "$verifier_image" --print-format "$archive_path")
+if [ "$archive_format" = legacy ] && [ "$accept_key_loss" != yes ]; then
+	echo "legacy backup has no federation keys; refusing restore without --accept-federation-key-loss" >&2
+	exit 1
+fi
+if [ "$archive_format" = legacy ]; then
+	echo "WARNING: federation identity continuity cannot be established; a new identity will be created after restore" >&2
+fi
 was_running=no
 if compose ps --status running --services | grep -Fx "$service" >/dev/null 2>&1; then
 	was_running=yes
 fi
-compose stop "$service"
-
+staging_dir=$(mktemp -d "${TMPDIR:-/tmp}/cookbook-restore-snapshot.XXXXXXXX")
+chmod 700 "$staging_dir"
+case "$staging_dir" in *:*|*,*) rmdir "$staging_dir"; echo "temporary snapshot path cannot contain ':' or ','" >&2; exit 1 ;; esac
 restore_succeeded=no
 cleanup() {
 	status=$?
@@ -83,6 +89,7 @@ cleanup() {
 	else
 		echo "restore failed; Cookbook was left stopped to protect its data" >&2
 	fi
+	rm -rf -- "$staging_dir"
 	exit "$status"
 }
 trap cleanup EXIT
@@ -90,8 +97,10 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+compose stop "$service"
 compose run -T --rm --no-deps --user 0:0 \
 	--volume "$archive_dir:/backup:ro" \
+	--volume "$staging_dir:/snapshot" \
 	--entrypoint /bin/sh "$service" \
 	-ec '
 	archive=$1
@@ -101,7 +110,7 @@ compose run -T --rm --no-deps --user 0:0 \
 	rm -f /data/cookbook.db /data/cookbook.db-wal /data/cookbook.db-shm /data/cookbook.db-journal
 	tar -xzf "/backup/$archive" -C /data
 	cd /data
-	if [ "$archive_format" = 2 ]; then
+	if [ "$archive_format" = 2 ] || [ "$archive_format" = 3 ]; then
 		sha256sum -c backup-manifest.sha256
 		rm -f backup-manifest.json backup-manifest.sha256
 	else
@@ -122,7 +131,13 @@ compose run -T --rm --no-deps --user 0:0 \
 		[ ! -e /data/secrets/federation-ed25519.pk8.pem ] || chmod 600 /data/secrets/federation-ed25519.pk8.pem
 		[ ! -e /data/secrets/federation-ed25519.pending.pk8.pem ] || chmod 600 /data/secrets/federation-ed25519.pending.pk8.pem
 	fi
+	for sidecar in cookbook.db-wal cookbook.db-journal; do
+		if [ -e "/data/$sidecar" ]; then cp -- "/data/$sidecar" "/snapshot/$sidecar"; chmod 600 "/snapshot/$sidecar"; fi
+	done
+	cp -- /data/cookbook.db /snapshot/cookbook.db
+	chmod 600 /snapshot/cookbook.db
 	' sh "$archive_name" "$archive_format"
 
+python3 "$script_dir/validate_backup.py" --allow-legacy --engine "$compose_engine" --image "$verifier_image" --verify-restored-snapshot "$staging_dir" "$archive_path"
 restore_succeeded=yes
 echo "Restored $archive_path"

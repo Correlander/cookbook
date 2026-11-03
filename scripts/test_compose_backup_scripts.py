@@ -7,10 +7,23 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from validate_backup import finalize_backup
+import validate_backup as backup_validation
+
+
+def _fake_actor_cli(_engine, _image, command, _snapshot, manifest=None):
+    if command == "describe":
+        return {"version": 1, "actors": []}
+    if manifest != {"version": 1, "actors": []}:
+        raise backup_validation.BackupValidationError("fixture actor mismatch")
+    return None
+
+
+def finalize_backup(path):
+    return backup_validation.finalize_backup(path, engine="podman", image="sha256:0000000000000000000000000000000000000000000000000000000000000000")
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +75,8 @@ def create_raw_archive(source_path, raw_path, *, legacy=False):
 
 class ComposeBackupScriptTests(unittest.TestCase):
     def setUp(self):
+        self.actor_cli = mock.patch.object(backup_validation, "_run_actor_verifier", side_effect=_fake_actor_cli)
+        self.actor_cli.start()
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.bin_dir = self.root / "bin"
@@ -76,6 +91,7 @@ class ComposeBackupScriptTests(unittest.TestCase):
         create_raw_archive(self.archive, self.raw_archive)
 
     def tearDown(self):
+        self.actor_cli.stop()
         self.temporary.cleanup()
 
     def _create_fake_docker(self):
@@ -83,11 +99,15 @@ class ComposeBackupScriptTests(unittest.TestCase):
         docker.write_text(
             "#!/bin/sh\n"
             "set -eu\n"
+            "if [ \"$1\" = image ]; then [ \"${MOCK_IMAGE_FAIL:-no}\" != yes ] || exit 43; echo sha256:0000000000000000000000000000000000000000000000000000000000000000; exit 0; fi\n"
+            "if [ \"$1\" = run ]; then echo '{\"version\":1,\"actors\":[]}'; exit 0; fi\n"
+            "if [ \"$1\" = ps ]; then exit 0; fi\n"
             "[ \"$1\" = compose ] || exit 90\n"
             "shift\n"
             "command=$1\n"
             "shift\n"
             "case \"$command\" in\n"
+            "  images) echo sha256:service ;;\n"
             "  ps) echo ps >> \"$MOCK_LOG\"; [ \"${MOCK_RUNNING:-yes}\" = yes ] && echo cookbook ;;\n"
             "  stop) echo stop >> \"$MOCK_LOG\" ;;\n"
             "  start) echo start >> \"$MOCK_LOG\" ;;\n"
@@ -99,11 +119,13 @@ class ComposeBackupScriptTests(unittest.TestCase):
             "    [ \"${MOCK_FAIL_RUN_AT:-0}\" != \"$count\" ] || exit 42\n"
             "    if [ \"$count\" = 1 ] && [ -n \"${MOCK_ARCHIVE:-}\" ]; then\n"
             "      volume=\n"
+            "      snapshot=\n"
             "      while [ $# -gt 0 ]; do\n"
-            "        if [ \"$1\" = --volume ]; then volume=${2%%:*}; shift 2; continue; fi\n"
+            "        if [ \"$1\" = --volume ]; then case \"$2\" in *:/snapshot) snapshot=${2%:/snapshot} ;; *) volume=${2%%:*} ;; esac; shift 2; continue; fi\n"
             "        shift\n"
             "      done\n"
             "      for target in \"$volume\"/.cookbook-backup.*; do [ ! -e \"$target\" ] || cp \"$MOCK_ARCHIVE\" \"$target\"; done\n"
+            "      if [ -n \"$snapshot\" ]; then : > \"$snapshot/cookbook.db\"; fi\n"
             "    fi\n"
             "    ;;\n"
             "  *) exit 91 ;;\n"
@@ -111,7 +133,7 @@ class ComposeBackupScriptTests(unittest.TestCase):
         )
         docker.chmod(0o755)
 
-    def _run(self, script, *args, fail_run_at=0, running="yes"):
+    def _run(self, script, *args, fail_run_at=0, running="yes", image_fail="no"):
         env = os.environ.copy()
         env.update(
             {
@@ -119,6 +141,7 @@ class ComposeBackupScriptTests(unittest.TestCase):
                 "MOCK_LOG": str(self.log),
                 "MOCK_RUN_COUNT": str(self.run_count),
                 "MOCK_FAIL_RUN_AT": str(fail_run_at),
+                "MOCK_IMAGE_FAIL": image_fail,
                 "MOCK_RUNNING": running,
                 "COOKBOOK_BACKUP_DIR": str(self.backup_dir),
                 "MOCK_ARCHIVE": str(self.raw_archive),
@@ -146,6 +169,11 @@ class ComposeBackupScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 42)
         self.assertEqual(self._events(), ["ps", "stop", "run", "start"])
 
+    def test_backup_requires_resolvable_local_image_before_stopping(self):
+        result = self._run("backup-compose.sh", self.backup_dir, image_fail="yes")
+        self.assertEqual(result.returncode, 43)
+        self.assertEqual(self._events(), [])
+
     def test_backup_refuses_a_shared_writable_directory(self):
         self.backup_dir.mkdir(mode=0o770)
         self.backup_dir.chmod(0o770)
@@ -167,6 +195,11 @@ class ComposeBackupScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 42)
         self.assertIn("left stopped", result.stderr)
         self.assertEqual(self._events(), ["ps", "stop", "run"])
+
+    def test_restore_requires_resolvable_local_image_before_stopping(self):
+        result = self._run("restore-compose.sh", self.archive, image_fail="yes")
+        self.assertEqual(result.returncode, 43)
+        self.assertEqual(self._events(), [])
 
     def test_successful_restore_restarts_service(self):
         result = self._run("restore-compose.sh", self.archive)

@@ -55,6 +55,13 @@ if [ $((0$mode & 077)) -ne 0 ]; then
 	exit 1
 fi
 
+image_refs=$(compose images -q "$service")
+image_ref_count=$(printf '%s\n' "$image_refs" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
+[ "$image_ref_count" = 1 ] || { echo "could not resolve one local image for service $service" >&2; exit 1; }
+image_ref=$(printf '%s\n' "$image_refs" | sed '/^[[:space:]]*$/d')
+verifier_image=$("$compose_engine" image inspect --format '{{.Id}}' "$image_ref")
+printf '%s\n' "$verifier_image" | grep -Eq '^(sha256:)?[0-9a-f]{64}$' || { echo "service image did not resolve to one immutable local image ID" >&2; exit 1; }
+
 archive="cookbook-$(date -u +%Y%m%dT%H%M%SZ)-$$.tar.gz"
 if [ -e "$backup_dir/$archive" ]; then
 	echo "backup already exists: $backup_dir/$archive" >&2
@@ -132,7 +139,7 @@ compose run -T --rm --no-deps --user 0:0 \
 	chmod 600 "/backup/$temp_name"
 	' sh "$temp_name" "$(id -u)" "$(id -g)"
 
-python3 "$script_dir/validate_backup.py" --finalize "$temp_path"
+python3 "$script_dir/validate_backup.py" --finalize --engine "$compose_engine" --image "$verifier_image" "$temp_path"
 
 if ! ln "$temp_path" "$backup_dir/$archive"; then
 	echo "could not publish backup without overwriting an existing file" >&2

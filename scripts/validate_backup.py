@@ -8,9 +8,14 @@ import json
 import os
 import re
 import shutil
+import selectors
+import signal
 import sqlite3
+import subprocess
 import tarfile
 import tempfile
+import time
+import uuid
 from pathlib import Path
 
 _IMAGE_NAME = re.compile(r"[0-9a-fA-F]{32}\.(?:jpg|png|webp)\Z")
@@ -21,7 +26,12 @@ _KEY_FILES = {
 }
 _MANIFEST = "backup-manifest.json"
 _CHECKSUMS = "backup-manifest.sha256"
-_FORMAT_VERSION = 2
+_FORMAT_VERSION = 3
+_PREVIOUS_FORMAT_VERSION = 2
+_ACTOR_MANIFEST_LIMIT = 32 << 20
+_VERIFIER_STDERR_LIMIT = 64 << 10
+_OUTER_MANIFEST_LIMIT = 34 << 20
+_VERIFIER_TIMEOUT_SECONDS = 130
 _MAX_MEMBERS = 100_000
 _MAX_IMAGE_BYTES = 5 << 20
 _MAX_ARCHIVE_BYTES = 50 << 30
@@ -30,6 +40,109 @@ _MAX_UNCOMPRESSED_BYTES = 50 << 30
 
 class BackupValidationError(ValueError):
     """Raised when an archive is incomplete, unsafe, or internally inconsistent."""
+
+
+def _run_actor_verifier(engine: str, image: str, command: str, snapshot: Path, manifest: dict | None = None) -> dict | None:
+    """Run the image's recovery CLI against only a private database snapshot."""
+    if engine not in ("podman", "docker") or not re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", image or ""):
+        raise BackupValidationError("a local verifier engine and immutable image ID are required")
+    label = "cookbook.backup-verifier=" + uuid.uuid4().hex
+    name = "cookbook-backup-verifier-" + uuid.uuid4().hex[:20]
+    args = [engine, "run", "--rm", "--pull=never", "--network=none", "--read-only",
+            "--cap-drop=all", "--security-opt=no-new-privileges", "--user=0:0", "--name", name,
+            "--label", label, "--volume", f"{snapshot}:/snapshot:rw", image,
+            "instance", "recovery", command,
+            "--database", "/snapshot/cookbook.db"]
+    if command == "verify":
+        args.insert(2, "--interactive")
+        args.extend(("--manifest", "-"))
+    payload = (json.dumps(manifest, separators=(",", ":")) + "\n").encode() if manifest is not None else b""
+    process = subprocess.Popen(args, stdin=subprocess.PIPE if payload else subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0, start_new_session=True)
+    output = {"stdout": bytearray(), "stderr": bytearray()}
+    caps = {"stdout": _ACTOR_MANIFEST_LIMIT, "stderr": _VERIFIER_STDERR_LIMIT}
+    selector = selectors.DefaultSelector()
+    assert process.stdout is not None and process.stderr is not None
+    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+    started = time.monotonic()
+    try:
+        if payload and process.stdin:
+            process.stdin.write(payload)
+            process.stdin.close()
+        while selector.get_map() or process.poll() is None:
+            remaining = _VERIFIER_TIMEOUT_SECONDS - (time.monotonic() - started)
+            if remaining <= 0:
+                raise BackupValidationError("Person actor verifier timed out")
+            for key, _ in selector.select(min(remaining, 0.25)):
+                chunk = os.read(key.fileobj.fileno(), 65536)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                target = output[key.data]
+                if len(target) + len(chunk) > caps[key.data]:
+                    raise BackupValidationError("Person actor verifier output exceeded its limit")
+                target.extend(chunk)
+        if process.wait(timeout=1) != 0:
+            stderr_text = output["stderr"].decode("utf-8", errors="ignore")
+            safe_reasons = (
+                "invalid Person actor recovery manifest",
+                "Person actor recovery database is unavailable",
+                "Person actor recovery schema is incomplete",
+                "Person actor recovery state is invalid",
+                "Person actor recovery key verification failed",
+                "Person actor recovery manifest does not match the database",
+            )
+            reason = next((item for item in safe_reasons if item in stderr_text), None)
+            suffix = f" ({reason})" if reason else ""
+            raise BackupValidationError(f"Person actor verifier rejected the database snapshot{suffix}")
+    except (BrokenPipeError, OSError, subprocess.TimeoutExpired) as exc:
+        raise BackupValidationError("Person actor verifier could not be completed") from exc
+    finally:
+        selector.close()
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+        process.stdout.close()
+        process.stderr.close()
+        _cleanup_verifier(engine, label, name)
+    if command == "verify":
+        return None
+    try:
+        result = json.loads(output["stdout"])
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise BackupValidationError("Person actor verifier returned an invalid manifest") from exc
+    if (not isinstance(result, dict) or set(result) != {"version", "actors"}
+            or result.get("version") != 1 or not isinstance(result.get("actors"), list)):
+        raise BackupValidationError("Person actor verifier returned an invalid manifest")
+    return result
+
+
+def _cleanup_verifier(engine: str, label: str, name: str) -> None:
+    """Remove only a residual container bearing this invocation's label and exact name."""
+    try:
+        listed = subprocess.run([engine, "ps", "-aq", "--filter", f"label={label}"],
+                                check=True, capture_output=True, text=True, timeout=10)
+        identifiers = listed.stdout.splitlines()
+        if len(identifiers) > 1 or any(not re.fullmatch(r"[0-9a-fA-F]{12,64}", item) for item in identifiers):
+            raise BackupValidationError("Person actor verifier cleanup was ambiguous")
+        for identifier in identifiers:
+            inspected = subprocess.run(
+                [engine, "inspect", "--format", f'{{{{.Name}}}} {{{{index .Config.Labels "{label.split("=", 1)[0]}"}}}}', identifier],
+                check=True, capture_output=True, text=True, timeout=10,
+            )
+            expected = f"/{name} {label.split('=', 1)[1]}"
+            if inspected.stdout.strip() not in (expected, expected.removeprefix("/")):
+                raise BackupValidationError("Person actor verifier cleanup ownership could not be confirmed")
+            subprocess.run([engine, "rm", "--force", identifier], check=True, capture_output=True, timeout=10)
+    except BackupValidationError:
+        raise
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise BackupValidationError("Person actor verifier cleanup failed") from exc
 
 
 def _key_file_fingerprint(data: bytes) -> str:
@@ -234,15 +347,37 @@ def _describe_archive(archive: tarfile.TarFile, by_name) -> tuple[dict, bytes]:
     return manifest, ("".join(checksum_lines)).encode()
 
 
-def _read_and_validate_manifest(archive: tarfile.TarFile, by_name) -> None:
+def _extract_database_snapshot(archive: tarfile.TarFile, by_name, directory: Path) -> None:
+    directory.chmod(0o700)
+    for name in _DATABASE_FILES:
+        member = by_name.get(name)
+        if member is not None:
+            stream = archive.extractfile(member)
+            if stream is None:
+                raise BackupValidationError(f"backup entry cannot be read: {name}")
+            destination = directory / name
+            with destination.open("xb") as output:
+                shutil.copyfileobj(stream, output, length=1 << 20)
+            destination.chmod(0o600)
+
+
+def _verify_archive_actors(archive: tarfile.TarFile, by_name, engine: str, image: str, manifest: dict) -> None:
+    with tempfile.TemporaryDirectory(prefix="cookbook-actor-verify-") as temporary:
+        snapshot = Path(temporary)
+        _extract_database_snapshot(archive, by_name, snapshot)
+        _run_actor_verifier(engine, image, "verify", snapshot, manifest)
+
+
+def _read_and_validate_manifest(archive: tarfile.TarFile, by_name, engine: str, image: str) -> dict:
     try:
-        manifest = json.loads(_read_member(archive, by_name[_MANIFEST], limit=64 << 10))
+        manifest = json.loads(_read_member(archive, by_name[_MANIFEST], limit=_OUTER_MANIFEST_LIMIT))
         checksums = _read_member(archive, by_name[_CHECKSUMS], limit=16 << 20).decode("ascii")
     except (UnicodeDecodeError, json.JSONDecodeError, KeyError) as exc:
         raise BackupValidationError("backup manifest is invalid") from exc
     if not isinstance(manifest, dict):
         raise BackupValidationError("backup manifest must be a JSON object")
-    if manifest.get("format") != "cookbook-full-backup" or manifest.get("format_version") != _FORMAT_VERSION:
+    version = manifest.get("format_version")
+    if manifest.get("format") != "cookbook-full-backup" or version not in (_PREVIOUS_FORMAT_VERSION, _FORMAT_VERSION):
         raise BackupValidationError("unsupported backup format version")
 
     expected_names = {
@@ -263,12 +398,26 @@ def _read_and_validate_manifest(archive: tarfile.TarFile, by_name) -> None:
         if _sha256_member(archive, by_name[name]) != expected:
             raise BackupValidationError(f"backup checksum mismatch: {name}")
 
-    actual, _ = _describe_archive(archive, {name: member for name, member in by_name.items() if name not in (_MANIFEST, _CHECKSUMS)})
-    if manifest != actual:
+    payload_members = {name: member for name, member in by_name.items() if name not in (_MANIFEST, _CHECKSUMS)}
+    actual, _ = _describe_archive(archive, payload_members)
+    expected = dict(actual)
+    expected["format_version"] = version
+    actor_manifest = manifest.get("person_actor_manifest")
+    if version == _FORMAT_VERSION:
+        if not isinstance(actor_manifest, dict):
+            raise BackupValidationError("backup is missing its Person actor recovery manifest")
+    else:
+        if "person_actor_manifest" in manifest:
+            raise BackupValidationError("version 2 backup cannot contain a Person actor manifest")
+        actor_manifest = {"version": 1, "actors": []}
+    without_actor = {key: value for key, value in manifest.items() if key != "person_actor_manifest"}
+    if without_actor != expected:
         raise BackupValidationError("backup manifest does not match its database and federation keys")
+    _verify_archive_actors(archive, payload_members, engine, image, actor_manifest)
+    return manifest
 
 
-def finalize_backup(path: Path) -> None:
+def finalize_backup(path: Path, *, engine: str, image: str) -> None:
     """Add identity/checksum manifests to the raw archive written by backup-compose.sh."""
     path = Path(path)
     if path.stat().st_size > _MAX_ARCHIVE_BYTES:
@@ -277,6 +426,10 @@ def finalize_backup(path: Path) -> None:
         with tarfile.open(path, mode="r:gz") as archive:
             by_name = _inspect_members(archive, allow_unfinalized=True)
             manifest, checksums_bytes = _describe_archive(archive, by_name)
+            with tempfile.TemporaryDirectory(prefix="cookbook-actor-describe-") as temporary:
+                snapshot = Path(temporary)
+                _extract_database_snapshot(archive, by_name, snapshot)
+                manifest["person_actor_manifest"] = _run_actor_verifier(engine, image, "describe", snapshot)
             manifest_bytes = (json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n").encode()
     except (OSError, tarfile.TarError) as exc:
         raise BackupValidationError("backup is not a readable gzip tar archive") from exc
@@ -304,25 +457,40 @@ def finalize_backup(path: Path) -> None:
                 output.addfile(info, io.BytesIO(data))
         temporary_path.chmod(0o600)
         os.replace(temporary_path, path)
-        validate_backup(path)
+        validate_backup(path, engine=engine, image=image)
     finally:
         temporary_path.unlink(missing_ok=True)
 
 
-def validate_backup(path: Path, *, allow_legacy: bool = False) -> dict:
+def validate_backup(path: Path, *, allow_legacy: bool = False, engine: str | None = None, image: str | None = None) -> dict:
     path = Path(path)
     if path.stat().st_size > _MAX_ARCHIVE_BYTES:
         raise BackupValidationError("backup archive exceeds the size limit")
     try:
         with tarfile.open(path, mode="r:gz") as archive:
             by_name = _inspect_members(archive, allow_legacy=allow_legacy)
+            if not engine or not image:
+                raise BackupValidationError("a local verifier engine and immutable image ID are required")
             if _MANIFEST not in by_name:
                 database = _database_identity(archive, by_name)
-                return {"format_version": 1, "federation_identity_status": "unavailable", "database": database}
-            _read_and_validate_manifest(archive, by_name)
-            return json.loads(_read_member(archive, by_name[_MANIFEST], limit=64 << 10))
+                result = {"format_version": 1, "federation_identity_status": "unavailable", "database": database}
+                _verify_archive_actors(archive, by_name, engine, image, {"version": 1, "actors": []})
+                return result
+            return _read_and_validate_manifest(archive, by_name, engine, image)
     except (OSError, tarfile.TarError) as exc:
         raise BackupValidationError("backup is not a readable gzip tar archive") from exc
+
+
+def verify_restored_snapshot(archive_path: Path, snapshot_path: Path, *, allow_legacy: bool, engine: str, image: str) -> None:
+    manifest = validate_backup(archive_path, allow_legacy=allow_legacy, engine=engine, image=image)
+    actors = manifest.get("person_actor_manifest", {"version": 1, "actors": []})
+    snapshot = Path(snapshot_path)
+    if snapshot.is_symlink() or not snapshot.is_dir():
+        raise BackupValidationError("restored database snapshot directory is unsafe")
+    database = snapshot / "cookbook.db"
+    if database.is_symlink() or not database.is_file():
+        raise BackupValidationError("restored database snapshot is missing")
+    _run_actor_verifier(engine, image, "verify", snapshot, actors)
 
 
 if __name__ == "__main__":
@@ -332,18 +500,30 @@ if __name__ == "__main__":
     parser.add_argument("archive", type=Path)
     parser.add_argument("--finalize", action="store_true", help="finalize a raw archive written by the backup helper")
     parser.add_argument("--allow-legacy", action="store_true", help="inspect an old DB/media archive and warn that it has no bundled key")
-    parser.add_argument("--print-format", action="store_true", help="print 2 or legacy after successful validation")
+    parser.add_argument("--print-format", action="store_true", help="print 3, 2, or legacy after successful validation")
+    parser.add_argument("--engine", choices=("podman", "docker"))
+    parser.add_argument("--image", help="immutable local service image ID for recovery verification")
+    parser.add_argument("--verify-restored-snapshot", type=Path, help="verify an extracted restore staging directory")
     args = parser.parse_args()
     try:
         if args.finalize:
-            finalize_backup(args.archive)
+            if not args.engine or not args.image:
+                raise BackupValidationError("--finalize requires --engine and --image")
+            finalize_backup(args.archive, engine=args.engine, image=args.image)
         else:
-            result = validate_backup(args.archive, allow_legacy=args.allow_legacy)
+            if args.verify_restored_snapshot:
+                if not args.engine or not args.image:
+                    raise BackupValidationError("snapshot verification requires --engine and --image")
+                verify_restored_snapshot(args.archive, args.verify_restored_snapshot, allow_legacy=args.allow_legacy,
+                                         engine=args.engine, image=args.image)
+                result = {"format_version": 3}
+            else:
+                result = validate_backup(args.archive, allow_legacy=args.allow_legacy, engine=args.engine, image=args.image)
             if result["format_version"] == 1:
                 print("WARNING: this legacy archive does not contain federation signing keys; key continuity cannot be established.", file=__import__("sys").stderr)
                 if not args.allow_legacy:
                     raise BackupValidationError("legacy restore requires explicit federation key-loss acknowledgement")
             if args.print_format:
-                print("legacy" if result["format_version"] == 1 else "2")
+                print("legacy" if result["format_version"] == 1 else str(result["format_version"]))
     except (BackupValidationError, OSError) as exc:
         parser.error(str(exc))

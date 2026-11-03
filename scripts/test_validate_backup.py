@@ -1,6 +1,7 @@
 import base64
 import io
 import hashlib
+import json
 import os
 import sqlite3
 import shutil
@@ -8,9 +9,27 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
-from validate_backup import BackupValidationError, finalize_backup, validate_backup
+import validate_backup as backup_validation
+from validate_backup import BackupValidationError
+
+
+def _fake_actor_cli(_engine, _image, command, _snapshot, manifest=None):
+    if command == "describe":
+        return {"version": 1, "actors": []}
+    if manifest != {"version": 1, "actors": []}:
+        raise BackupValidationError("fixture actor mismatch")
+    return None
+
+
+def finalize_backup(path):
+    return backup_validation.finalize_backup(path, engine="podman", image="sha256:0000000000000000000000000000000000000000000000000000000000000000")
+
+
+def validate_backup(path, **kwargs):
+    return backup_validation.validate_backup(path, engine="podman", image="sha256:0000000000000000000000000000000000000000000000000000000000000000", **kwargs)
 
 
 SEED = bytes.fromhex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
@@ -99,11 +118,14 @@ def create_archive(path, *, include_key=True, include_pending=False, key_data=No
 
 class BackupValidationTests(unittest.TestCase):
     def setUp(self):
+        self.actor_cli = mock.patch.object(backup_validation, "_run_actor_verifier", side_effect=_fake_actor_cli)
+        self.actor_cli.start()
         self.temporary = tempfile.TemporaryDirectory(prefix="cookbook-backup-tests-")
         self.root = Path(self.temporary.name)
         self.paths = []
 
     def tearDown(self):
+        self.actor_cli.stop()
         self.temporary.cleanup()
 
     def archive(self, *, finalize=True, **kwargs):
@@ -113,6 +135,139 @@ class BackupValidationTests(unittest.TestCase):
         if finalize:
             finalize_backup(path)
         return path
+
+    def rewrite_manifest(self, path, transform):
+        replacement = self.root / f"rewritten-{len(self.paths)}.tar.gz"
+        self.paths.append(replacement)
+        with tarfile.open(path, "r:gz") as source, tarfile.open(replacement, "w:gz") as target:
+            for member in source.getmembers():
+                data = source.extractfile(member).read() if member.isfile() else None
+                if member.name == "backup-manifest.json":
+                    data = (json.dumps(transform(json.loads(data)), sort_keys=True, separators=(",", ":")) + "\n").encode()
+                info = tarfile.TarInfo(member.name)
+                info.type = member.type
+                info.mode = member.mode
+                info.size = len(data) if data is not None else 0
+                target.addfile(info, io.BytesIO(data) if data is not None else None)
+        replacement.chmod(0o600)
+        return replacement
+
+    def test_v2_manifest_without_actor_field_verifies_against_empty_set(self):
+        path = self.archive()
+        legacy_v2 = self.rewrite_manifest(path, lambda manifest: {
+            key: value for key, value in {**manifest, "format_version": 2}.items()
+            if key != "person_actor_manifest"
+        })
+        self.assertEqual(validate_backup(legacy_v2)["format_version"], 2)
+        v2_with_unknown_actor_data = self.rewrite_manifest(path, lambda manifest: {
+            **manifest, "format_version": 2,
+        })
+        with self.assertRaisesRegex(BackupValidationError, "version 2 backup cannot contain"):
+            validate_backup(v2_with_unknown_actor_data)
+
+    def test_v3_requires_actor_manifest_and_verifies_recorded_value(self):
+        path = self.archive()
+        missing = self.rewrite_manifest(path, lambda manifest: {
+            key: value for key, value in manifest.items() if key != "person_actor_manifest"
+        })
+        with self.assertRaisesRegex(BackupValidationError, "missing its Person actor"):
+            validate_backup(missing)
+        mismatched = self.rewrite_manifest(path, lambda manifest: {
+            **manifest, "person_actor_manifest": {"version": 1, "actors": [{"actor_id": "omitted"}]}
+        })
+        with self.assertRaisesRegex(BackupValidationError, "fixture actor mismatch"):
+            validate_backup(mismatched)
+
+    def test_v3_large_actor_manifest_round_trips_above_old_python_limit(self):
+        actors = []
+        for index in range(6000):
+            actor_id = f"{index:032x}"
+            actors.append({
+                "actor_id": actor_id,
+                "actor_uri": f"https://example.org/actors/{actor_id}",
+                "state": "active",
+                "public_key_sha256": "a" * 64,
+            })
+        actor_manifest = {"version": 1, "actors": actors}
+
+        def fake_actor_cli(_engine, _image, command, _snapshot, manifest=None):
+            if command == "describe":
+                return actor_manifest
+            if manifest != actor_manifest:
+                raise BackupValidationError("fixture actor mismatch")
+            return None
+
+        path = self.root / "large-actor-manifest.tar.gz"
+        create_archive(path)
+        with mock.patch.object(backup_validation, "_run_actor_verifier", side_effect=fake_actor_cli):
+            finalize_backup(path)
+            restored = validate_backup(path)
+        self.assertEqual(restored["person_actor_manifest"], actor_manifest)
+        with tarfile.open(path, "r:gz") as archive:
+            manifest = next(member for member in archive.getmembers() if member.name == "backup-manifest.json")
+            self.assertGreater(manifest.size, 1 << 20)
+            self.assertLessEqual(manifest.size, backup_validation._OUTER_MANIFEST_LIMIT)
+
+    def test_verifier_uses_isolated_arguments_and_caps_streamed_output(self):
+        engine = self.root / "podman"
+        log = self.root / "engine-args"
+        engine.write_text('''#!/bin/sh
+set -eu
+case "$1" in
+  run) shift; printf '%s\n' "$*" > "$ENGINE_ARGS"; printf '{"version":1,"actors":[]}';;
+  ps) exit 0;;
+  *) exit 90;;
+esac
+''', encoding="utf-8")
+        engine.chmod(0o700)
+        snapshot = self.root / "snapshot"
+        snapshot.mkdir(mode=0o700)
+        self.actor_cli.stop()
+        try:
+            with mock.patch.dict(os.environ, {"ENGINE_ARGS": str(log), "PATH": f"{self.root}:{os.environ['PATH']}"}):
+                self.assertEqual(
+                    backup_validation._run_actor_verifier("podman", "sha256:0000000000000000000000000000000000000000000000000000000000000000", "describe", snapshot),
+                    {"version": 1, "actors": []},
+                )
+            arguments = log.read_text(encoding="utf-8")
+            for expected in ("--pull=never", "--network=none", "--read-only", "--cap-drop=all",
+                             "--security-opt=no-new-privileges", "cookbook.backup-verifier=", "/snapshot:rw",
+                             "sha256:0000000000000000000000000000000000000000000000000000000000000000", "instance recovery describe", "--database /snapshot/cookbook.db"):
+                self.assertIn(expected, arguments)
+            with mock.patch.dict(os.environ, {"ENGINE_ARGS": str(log), "PATH": f"{self.root}:{os.environ['PATH']}"}):
+                backup_validation._run_actor_verifier(
+                    "podman", "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                    "verify", snapshot, {"version": 1, "actors": []},
+                )
+            arguments = log.read_text(encoding="utf-8")
+            self.assertIn("--interactive", arguments)
+            self.assertIn("--manifest -", arguments)
+
+            engine.write_text('''#!/bin/sh
+case "$1" in run) head -c 100 /dev/zero;; ps) exit 0;; esac
+''', encoding="utf-8")
+            with mock.patch.dict(os.environ, {"PATH": f"{self.root}:{os.environ['PATH']}"}):
+                with mock.patch.object(backup_validation, "_ACTOR_MANIFEST_LIMIT", 32):
+                    with self.assertRaisesRegex(BackupValidationError, "output exceeded"):
+                        backup_validation._run_actor_verifier("podman", "sha256:0000000000000000000000000000000000000000000000000000000000000000", "describe", snapshot)
+
+            engine.write_text('''#!/bin/sh
+case "$1" in run) printf '{"version":1,"actors":[]}'; head -c 100 /dev/zero >&2;; ps) exit 0;; esac
+''', encoding="utf-8")
+            with mock.patch.dict(os.environ, {"PATH": f"{self.root}:{os.environ['PATH']}"}):
+                with mock.patch.object(backup_validation, "_VERIFIER_STDERR_LIMIT", 32):
+                    with self.assertRaisesRegex(BackupValidationError, "output exceeded"):
+                        backup_validation._run_actor_verifier("podman", "sha256:0000000000000000000000000000000000000000000000000000000000000000", "describe", snapshot)
+
+            engine.write_text('''#!/bin/sh
+case "$1" in run) sleep 5;; ps) exit 0;; esac
+''', encoding="utf-8")
+            with mock.patch.dict(os.environ, {"PATH": f"{self.root}:{os.environ['PATH']}"}):
+                with mock.patch.object(backup_validation, "_VERIFIER_TIMEOUT_SECONDS", 0.05):
+                    with self.assertRaisesRegex(BackupValidationError, "timed out"):
+                        backup_validation._run_actor_verifier("podman", "sha256:0000000000000000000000000000000000000000000000000000000000000000", "describe", snapshot)
+        finally:
+            self.actor_cli.start()
 
     def test_archive_preserves_active_and_pending_key_file_fingerprints(self):
         path = self.archive(include_pending=True)

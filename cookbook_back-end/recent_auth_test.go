@@ -15,6 +15,10 @@ func TestSensitiveOperationsRequireRecentAuthentication(t *testing.T) {
 		('recipe','owner','Owner','Pie','[]','[]','now','now')`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_by,updated_at)
+		VALUES('recipe','unpublished','off',0,'owner','2026-11-03T12:00:00.000000000Z')`); err != nil {
+		t.Fatal(err)
+	}
 	oldToken, _, err := issueSession(db, "owner")
 	if err != nil {
 		t.Fatal(err)

@@ -241,6 +241,10 @@ func TestRecipeOwnershipTransferIsOwnerAuthorizedAndKeepsAttribution(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_by,updated_at)
+		VALUES('recipe','unpublished','off',0,'owner','2026-11-03T12:00:00.000000000Z')`); err != nil {
+		t.Fatal(err)
+	}
 	h := apiHandler{db: db}
 	unauthorized := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/recipes/recipe/transfer", strings.NewReader(`{"email":"recipient@example.test"}`))
@@ -602,6 +606,7 @@ func TestCookbookEditorCannotChangeRecipeVisibility(t *testing.T) {
 	}
 	ownerCookie := &http.Cookie{Name: sessionCookie, Value: ownerToken}
 	update["visibility"] = "public"
+	update["confirm_public_access"] = true
 	update["version"] = 2
 	ownerUpdate := callAPI(handler, http.MethodPut, "/api/recipes/recipe", update, ownerCookie)
 	if ownerUpdate.Code != http.StatusOK {
@@ -826,6 +831,10 @@ func TestRecipeImageUploadAccessAndRevisionRestore(t *testing.T) {
 func TestRecipeTrashIsOwnerOnlyAndRestorable(t *testing.T) {
 	db := testDatabase(t)
 	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1; INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('other','other@example.test','Other','now'); INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,created_at,updated_at) VALUES('recipe','owner','Owner','Public soup','','[]','[]','public','owner_only','now','now')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at)
+		VALUES('recipe','published','off',0,'2026-11-03T12:00:00.000000000Z')`); err != nil {
 		t.Fatal(err)
 	}
 	ownerToken, _, err := issueSession(db, "owner")

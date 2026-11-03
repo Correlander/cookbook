@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"errors"
+	"net/http"
 )
 
 var (
@@ -12,6 +13,8 @@ var (
 	errRecipeMutationNotFound     = errors.New("recipe mutation target not found")
 	errRecipeMutationDenied       = errors.New("recipe mutation authorization denied")
 	errRecipeMutationVisibility   = errors.New("recipe visibility is owner-only")
+	errRecipeMutationConfirmation = errors.New("recipe public visibility requires confirmation")
+	errRecipeMutationInstanceGate = errors.New("recipe visibility is unavailable on a private instance")
 )
 
 type recipeMutationSnapshot struct {
@@ -37,6 +40,8 @@ type recipeMutation struct {
 	ImagePath           *string
 	CookbookIDs         []string
 	ReplaceCookbookRefs bool
+	ConfirmPublicAccess bool
+	VisibilityChanged   *bool
 }
 
 // commitRecipeMutation assumes its caller has already authenticated ActorID,
@@ -50,9 +55,11 @@ func commitRecipeMutation(db *sql.DB, mutation recipeMutation) (int, error) {
 		return 0, err
 	}
 	defer tx.Rollback()
-	if err := authorizeRecipeMutationTx(tx, mutation); err != nil {
+	currentVisibility, err := authorizeRecipeMutationTx(tx, mutation)
+	if err != nil {
 		return 0, err
 	}
+	visibilityChanged := currentVisibility != mutation.Snapshot.Visibility
 
 	updatedAt := timestamp()
 	var result sql.Result
@@ -89,36 +96,51 @@ func commitRecipeMutation(db *sql.DB, mutation recipeMutation) (int, error) {
 	if err := enqueueFederationChange(tx, mutation.RecipeID); err != nil {
 		return 0, errRecipeMutationFederation
 	}
+	if visibilityChanged {
+		if err := insertAuditEvent(tx, mutation.ActorID, "recipe.visibility.change", "recipes", mutation.RecipeID, http.StatusOK); err != nil {
+			return 0, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
+	}
+	if mutation.VisibilityChanged != nil {
+		*mutation.VisibilityChanged = visibilityChanged
 	}
 	return newVersion, nil
 }
 
-func authorizeRecipeMutationTx(tx *sql.Tx, mutation recipeMutation) error {
+func authorizeRecipeMutationTx(tx *sql.Tx, mutation recipeMutation) (visibility, error) {
 	var ownerID string
 	var editPolicy string
 	var currentVisibility visibility
-	err := tx.QueryRow(`SELECT owner_id,edit_policy,visibility FROM recipes WHERE id=? AND deleted_at IS NULL`, mutation.RecipeID).Scan(&ownerID, &editPolicy, &currentVisibility)
+	var publicInstance int
+	err := tx.QueryRow(`SELECT r.owner_id,r.edit_policy,r.visibility,s.public_instance FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.id=? AND r.deleted_at IS NULL`, mutation.RecipeID).Scan(&ownerID, &editPolicy, &currentVisibility, &publicInstance)
 	if errors.Is(err, sql.ErrNoRows) {
-		return errRecipeMutationNotFound
+		return "", errRecipeMutationNotFound
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	var memberRole role
 	if mutation.ActorID != "" && mutation.ActorID != ownerID {
 		err := tx.QueryRow(`SELECT m.role FROM cookbook_memberships m JOIN cookbook_recipes cr ON cr.cookbook_id=m.cookbook_id WHERE cr.recipe_id=? AND m.user_id=? ORDER BY CASE m.role WHEN 'editor' THEN 0 ELSE 1 END LIMIT 1`, mutation.RecipeID, mutation.ActorID).Scan(&memberRole)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
+			return "", err
 		}
 	}
 	if !canEditRecipe(mutation.ActorID, access{ownerID: ownerID, memberRole: memberRole}, editPolicy) {
-		return errRecipeMutationDenied
+		return "", errRecipeMutationDenied
 	}
 	if mutation.ActorID != ownerID && mutation.Snapshot.Visibility != currentVisibility {
-		return errRecipeMutationVisibility
+		return "", errRecipeMutationVisibility
 	}
-	return nil
+	if mutation.Snapshot.Visibility != visibilityPrivate && publicInstance != 1 {
+		return "", errRecipeMutationInstanceGate
+	}
+	if currentVisibility != visibilityPublic && mutation.Snapshot.Visibility == visibilityPublic && !mutation.ConfirmPublicAccess {
+		return "", errRecipeMutationConfirmation
+	}
+	return currentVisibility, nil
 }

@@ -232,6 +232,8 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.cookbookInvitations(w, r, parts[1])
 	case len(parts) == 2 && parts[0] == "recipes" && parts[1] == "trash":
 		h.recipeTrash(w, r)
+	case len(parts) == 3 && parts[0] == "recipes" && parts[2] == "publication":
+		h.recipePublication(w, r, parts[1])
 	case len(parts) == 3 && parts[0] == "recipes" && parts[2] == "restore":
 		h.restoreTrashedRecipe(w, r, parts[1])
 	case len(parts) == 1 && parts[0] == "recipes":
@@ -717,25 +719,37 @@ func (h apiHandler) cookbookByID(w http.ResponseWriter, r *http.Request, id stri
 
 func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
-		var in recipeInput
-		if !decodeJSON(w, r, &in) {
+		var input recipeCreateInput
+		if !decodeJSON(w, r, &input) {
 			return
 		}
+		in := input.recipeInput
 		if err := in.validate(); err != nil {
 			writeError(w, 400, "invalid_recipe")
 			return
 		}
-		if in.Visibility != visibilityPrivate && !h.instancePublic() {
-			writeError(w, 403, "instance_private")
+		if in.OwnerID = authenticatedUser(r); in.OwnerID == "" {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		initial, code := validateInitialPublication(initialRecipePublicationInput{}, input.InitialPublication != nil)
+		if input.InitialPublication != nil {
+			initial, code = validateInitialPublication(*input.InitialPublication, true)
+		}
+		if code != "" {
+			writePublicationError(w, code)
+			return
+		}
+		if in.Visibility == visibilityPublic && !input.ConfirmPublicAccess {
+			writeError(w, http.StatusConflict, "publication_confirmation_required")
 			return
 		}
 		var creator string
-		in.OwnerID = authenticatedUser(r)
 		if err := h.db.QueryRow(`SELECT display_name FROM users WHERE id=?`, in.OwnerID).Scan(&creator); err != nil {
 			writeError(w, 400, "invalid_owner")
 			return
 		}
-		id, now := newID(), timestamp()
+		id := newID()
 		edit := in.EditPolicy
 		if edit == "" {
 			edit = "owner_only"
@@ -743,7 +757,15 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 		ingredientsJSON, _ := json.Marshal(in.Ingredients)
 		stepsJSON, _ := json.Marshal(in.Steps)
 		tagsJSON, _ := json.Marshal(in.Tags)
-		tx, err := h.db.Begin()
+		tx, err := h.db.BeginTx(r.Context(), nil)
+		if err == nil {
+			if code := validateRecipeCreationGates(r.Context(), tx, in.Visibility, input.ConfirmPublicAccess, initial); code != "" {
+				_ = tx.Rollback()
+				writePublicationError(w, code)
+				return
+			}
+		}
+		now := time.Now().UTC().Format(fixedPolicyTimeLayout)
 		if err == nil {
 			_, err = tx.Exec(`INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,edit_policy,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, in.OwnerID, creator, in.Title, in.Description, string(ingredientsJSON), string(stepsJSON), in.Servings, in.PrepTime, in.CookTime, string(tagsJSON), in.Visibility, edit, now, now)
 		}
@@ -754,9 +776,9 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 500, "storage_error")
 			return
 		}
-		if err = insertDefaultRecipePublicationPolicy(r.Context(), tx, id); err != nil {
+		if err = insertInitialRecipePublicationPolicy(r.Context(), tx, id, in.OwnerID, initial, now); err != nil {
 			_ = tx.Rollback()
-			writeError(w, 500, "storage_error")
+			writePublicationError(w, "storage_error")
 			return
 		}
 		if err = replaceCookbookRefs(tx, id, in.OwnerID, in.cookbookIDs()); err != nil {
@@ -774,10 +796,16 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 503, "federation_queue_unavailable")
 			return
 		}
+		if err = insertAuditEvent(tx, in.OwnerID, "recipe.publication.initialize", "recipes", id, http.StatusOK); err != nil {
+			_ = tx.Rollback()
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
 		if err = tx.Commit(); err != nil {
 			writeError(w, 500, "storage_error")
 			return
 		}
+		markTransactionalAuditSuccess(r)
 		h.writeRecipeDetail(w, r.Context(), ContentActor{AccountID: in.OwnerID}, id)
 		return
 	}
@@ -974,16 +1002,42 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 			writeError(w, 500, "storage_error")
 			return
 		}
-		result, err := tx.Exec(`UPDATE recipes SET deleted_at=? WHERE id=? AND owner_id=? AND deleted_at IS NULL`, timestamp(), id, uid)
+		record, err := readRecipePublicationRecord(r.Context(), tx, id)
+		if errors.Is(err, sql.ErrNoRows) || (record.OwnerID != "" && (record.Deleted || record.OwnerID != uid)) {
+			_ = tx.Rollback()
+			writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		if err != nil {
+			_ = tx.Rollback()
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		result, err := tx.Exec(`UPDATE recipes SET deleted_at=?,updated_at=? WHERE id=? AND owner_id=? AND deleted_at IS NULL`, timestamp(), timestamp(), id, uid)
 		if err != nil {
 			_ = tx.Rollback()
 			writeError(w, 500, "storage_error")
 			return
 		}
-		count, _ := result.RowsAffected()
+		count, err := result.RowsAffected()
+		if err != nil {
+			_ = tx.Rollback()
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
 		if count != 1 {
 			_ = tx.Rollback()
 			writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		if err := advanceLifecyclePolicy(r.Context(), tx, record, uid); err != nil {
+			_ = tx.Rollback()
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		if err := insertAuditEvent(tx, uid, "recipe.trash", "recipes", id, http.StatusOK); err != nil {
+			_ = tx.Rollback()
+			writeError(w, http.StatusInternalServerError, "storage_error")
 			return
 		}
 		if err := enqueueFederationChange(tx, id); err != nil {
@@ -995,6 +1049,7 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 			writeError(w, 500, "storage_error")
 			return
 		}
+		markTransactionalAuditSuccess(r)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "recipe_trashed"})
 		return
 	}
@@ -1006,19 +1061,16 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 		writeError(w, 405, "method_not_allowed")
 		return
 	}
-	var in recipeInput
-	if !decodeJSON(w, r, &in) {
+	var input recipeUpdateInput
+	if !decodeJSON(w, r, &input) {
 		return
 	}
+	in := input.recipeInput
 	if err := in.validate(); err != nil {
 		writeError(w, 400, "invalid_recipe")
 		return
 	}
 	in.UserID = authenticatedUser(r)
-	if in.Visibility != visibilityPrivate && !h.instancePublic() {
-		writeError(w, 403, "instance_private")
-		return
-	}
 	if in.UserID == "" || in.Version < 1 {
 		writeError(w, 400, "invalid_update")
 		return
@@ -1047,6 +1099,7 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 	ingredientsJSON, _ := json.Marshal(in.Ingredients)
 	stepsJSON, _ := json.Marshal(in.Steps)
 	tagsJSON, _ := json.Marshal(in.Tags)
+	visibilityChanged := false
 	_, err := commitRecipeMutation(h.db, recipeMutation{
 		RecipeID: id, ActorID: in.UserID, ExpectedVersion: in.Version,
 		Snapshot: recipeMutationSnapshot{
@@ -1055,6 +1108,7 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 			CookTime: in.CookTime, TagsJSON: tagsJSON, Visibility: in.Visibility,
 		},
 		CookbookIDs: in.cookbookIDs(), ReplaceCookbookRefs: in.CookbookIDs != nil || in.UserID == owner,
+		ConfirmPublicAccess: input.ConfirmPublicAccess, VisibilityChanged: &visibilityChanged,
 	})
 	if errors.Is(err, errRecipeMutationConflict) {
 		writeError(w, http.StatusConflict, "version_conflict")
@@ -1066,6 +1120,14 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 	}
 	if errors.Is(err, errRecipeMutationVisibility) {
 		writeError(w, http.StatusForbidden, "visibility_owner_only")
+		return
+	}
+	if errors.Is(err, errRecipeMutationConfirmation) {
+		writeError(w, http.StatusConflict, "publication_confirmation_required")
+		return
+	}
+	if errors.Is(err, errRecipeMutationInstanceGate) {
+		writeError(w, http.StatusForbidden, "instance_private")
 		return
 	}
 	if errors.Is(err, errRecipeMutationDenied) {
@@ -1083,6 +1145,9 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
+	}
+	if visibilityChanged {
+		markTransactionalAuditSuccess(r)
 	}
 	h.writeRecipeDetail(w, r.Context(), ContentActor{AccountID: in.UserID}, id)
 }
@@ -1146,20 +1211,40 @@ func (h apiHandler) restoreTrashedRecipe(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
+	defer tx.Rollback()
+	record, err := readRecipePublicationRecord(r.Context(), tx, id)
+	if errors.Is(err, sql.ErrNoRows) || (record.OwnerID != "" && (!record.Deleted || record.OwnerID != uid)) {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	if err := advanceLifecyclePolicy(r.Context(), tx, record, uid); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
 	result, err := tx.Exec(`UPDATE recipes SET deleted_at=NULL,updated_at=? WHERE id=? AND owner_id=? AND deleted_at IS NOT NULL`, timestamp(), id, uid)
 	if err != nil {
 		_ = tx.Rollback()
 		writeError(w, 500, "storage_error")
 		return
 	}
-	count, _ := result.RowsAffected()
+	count, err := result.RowsAffected()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
 	if count != 1 {
-		_ = tx.Rollback()
 		writeError(w, http.StatusNotFound, "not_found")
 		return
 	}
+	if err := insertAuditEvent(tx, uid, "recipe.restore", "recipes", id, http.StatusOK); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
 	if err := enqueueFederationChange(tx, id); err != nil {
-		_ = tx.Rollback()
 		writeError(w, http.StatusServiceUnavailable, "federation_queue_unavailable")
 		return
 	}
@@ -1167,6 +1252,7 @@ func (h apiHandler) restoreTrashedRecipe(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
+	markTransactionalAuditSuccess(r)
 	h.writeRecipeDetail(w, r.Context(), ContentActor{AccountID: uid}, id)
 }
 
@@ -1308,9 +1394,7 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotFound, "not_found")
 		return
 	}
-	var input struct {
-		ExpectedVersion int `json:"expected_version"`
-	}
+	var input revisionRestoreInput
 	if !decodeJSON(w, r, &input) {
 		return
 	}
@@ -1337,10 +1421,7 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 		writeError(w, 404, "not_found")
 		return
 	}
-	if restoredVisibility != visibilityPrivate && !h.instancePublic() {
-		writeError(w, 403, "instance_private")
-		return
-	}
+	visibilityChanged := false
 	_, err = commitRecipeMutation(h.db, recipeMutation{
 		RecipeID: recipeID, ActorID: userID, ExpectedVersion: input.ExpectedVersion,
 		Snapshot: recipeMutationSnapshot{
@@ -1348,7 +1429,8 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 			StepsJSON: []byte(steps), Servings: servings, PrepTime: prepTime,
 			CookTime: cookTime, TagsJSON: []byte(tags), Visibility: restoredVisibility,
 		},
-		ImagePath: &restoredImage,
+		ImagePath: &restoredImage, ConfirmPublicAccess: input.ConfirmPublicAccess,
+		VisibilityChanged: &visibilityChanged,
 	})
 	if errors.Is(err, errRecipeMutationConflict) {
 		writeError(w, http.StatusConflict, "version_conflict")
@@ -1362,6 +1444,14 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusForbidden, "visibility_owner_only")
 		return
 	}
+	if errors.Is(err, errRecipeMutationConfirmation) {
+		writeError(w, http.StatusConflict, "publication_confirmation_required")
+		return
+	}
+	if errors.Is(err, errRecipeMutationInstanceGate) {
+		writeError(w, http.StatusForbidden, "instance_private")
+		return
+	}
 	if errors.Is(err, errRecipeMutationDenied) {
 		writeError(w, http.StatusForbidden, "forbidden")
 		return
@@ -1373,6 +1463,9 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
+	}
+	if visibilityChanged {
+		markTransactionalAuditSuccess(r)
 	}
 	h.writeRecipeDetail(w, r.Context(), ContentActor{AccountID: userID}, recipeID)
 }

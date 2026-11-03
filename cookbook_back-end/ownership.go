@@ -41,25 +41,51 @@ func (h apiHandler) transferRecipe(w http.ResponseWriter, r *http.Request, recip
 		writeError(w, http.StatusBadRequest, "recipient_is_current_owner")
 		return
 	}
-	result, err := h.db.Exec(`UPDATE recipes SET owner_id=? WHERE id=? AND owner_id=? AND deleted_at IS NULL`, recipientID, recipeID, ownerID)
+	tx, err := h.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	defer tx.Rollback()
+	record, err := readRecipePublicationRecord(r.Context(), tx, recipeID)
+	if errors.Is(err, sql.ErrNoRows) || (record.OwnerID != "" && (record.Deleted || record.OwnerID != ownerID)) {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	result, err := tx.ExecContext(r.Context(), `UPDATE recipes SET owner_id=? WHERE id=? AND owner_id=? AND deleted_at IS NULL`, recipientID, recipeID, ownerID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
 	changed, err := result.RowsAffected()
 	if err != nil {
-		writeError(w, 500, "storage_error")
+		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
 	if changed != 1 {
-		var owner string
-		err := h.db.QueryRow(`SELECT owner_id FROM recipes WHERE id=? AND deleted_at IS NULL`, recipeID).Scan(&owner)
-		if errors.Is(err, sql.ErrNoRows) || owner != ownerID {
-			writeError(w, http.StatusNotFound, "not_found")
-			return
-		}
-		writeError(w, http.StatusConflict, "ownership_unchanged")
+		writeError(w, http.StatusNotFound, "not_found")
 		return
 	}
+	if err := advanceLifecyclePolicy(r.Context(), tx, record, ownerID); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	if err := insertAuditEvent(tx, ownerID, "recipe.ownership.transfer", "recipes", recipeID, http.StatusOK); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	if err := enqueueFederationChange(tx, recipeID); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "federation_queue_unavailable")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	markTransactionalAuditSuccess(r)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ownership_transferred"})
 }

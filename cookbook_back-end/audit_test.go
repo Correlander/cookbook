@@ -39,7 +39,7 @@ func TestAuditEventsRecordSuccessfulChangesAndRequireAdmin(t *testing.T) {
 	}
 	var sawCreate, sawDenied bool
 	for _, event := range events {
-		if event.ActorID == "member" && event.ActorName == "Member" && event.Action == "POST /recipes" && event.ResourceType == "recipes" && event.ResourceID == "" && event.ResponseStatus == http.StatusOK {
+		if event.ActorID == "member" && event.ActorName == "Member" && event.Action == "recipe.publication.initialize" && event.ResourceType == "recipes" && event.ResourceID == recipeItem.ID && event.ResponseStatus == http.StatusOK {
 			sawCreate = true
 		}
 		if event.ActorID == "admin" && event.Action == "PUT /recipes/{id}" && event.ResourceType == "recipes" && event.ResourceID == recipeItem.ID && event.ResponseStatus == http.StatusForbidden {

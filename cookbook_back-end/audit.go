@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"log"
 	"net/http"
@@ -10,6 +11,18 @@ import (
 type auditResponseWriter struct {
 	http.ResponseWriter
 	status int
+}
+
+type auditSuccessMarkerKey struct{}
+
+type auditSuccessMarker struct {
+	transactional bool
+}
+
+func markTransactionalAuditSuccess(r *http.Request) {
+	if marker, ok := r.Context().Value(auditSuccessMarkerKey{}).(*auditSuccessMarker); ok {
+		marker.transactional = true
+	}
 }
 
 type auditExecer interface {
@@ -45,8 +58,13 @@ func (w *auditResponseWriter) Write(data []byte) (int, error) {
 func auditChanges(db *sql.DB, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recorder := &auditResponseWriter{ResponseWriter: w}
+		marker := &auditSuccessMarker{}
+		r = r.WithContext(context.WithValue(r.Context(), auditSuccessMarkerKey{}, marker))
 		next.ServeHTTP(recorder, r)
 		if ((recorder.status < http.StatusOK || recorder.status >= http.StatusMultipleChoices) && recorder.status != http.StatusForbidden) || (r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions) {
+			return
+		}
+		if recorder.status >= http.StatusOK && recorder.status < http.StatusMultipleChoices && marker.transactional {
 			return
 		}
 		actorID := authenticatedUser(r)

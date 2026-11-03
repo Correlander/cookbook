@@ -29,6 +29,7 @@ func TestRecipeCreationWritesDefaultPolicyEvenWhenLocallyPublic(t *testing.T) {
 	body, err := json.Marshal(map[string]any{
 		"title": "Public soup", "ingredients": []ingredient{{Name: "beans"}},
 		"steps": []recipeStep{{Text: "Cook"}}, "visibility": string(visibilityPublic),
+		"confirm_public_access": true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +48,7 @@ func TestRecipeCreationWritesDefaultPolicyEvenWhenLocallyPublic(t *testing.T) {
 	if created.ID == "" || created.OwnerID != "owner" || created.Visibility != visibilityPublic || created.Title != "Public soup" {
 		t.Fatalf("created response changed: %+v", created)
 	}
-	assertDefaultRecipePolicy(t, db, created.ID)
+	assertCreatedRecipeDefaultPolicy(t, db, created.ID, "owner")
 	assertTableCount(t, db, "recipes", 1)
 	assertTableCount(t, db, "recipe_revisions", 1)
 	assertTableCount(t, db, "recipe_publication_policy", 1)
@@ -277,6 +278,19 @@ func policyCreationPNG(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return buffer.Bytes()
+}
+
+func assertCreatedRecipeDefaultPolicy(t *testing.T, db *sql.DB, recipeID, actorID string) {
+	t.Helper()
+	var state, federation string
+	var indexEligible int
+	var updatedBy, updatedAt, publishedAt sql.NullString
+	if err := db.QueryRow(`SELECT publication_state,federation_mode,index_eligible,updated_by,updated_at,published_at FROM recipe_publication_policy WHERE recipe_id=?`, recipeID).Scan(&state, &federation, &indexEligible, &updatedBy, &updatedAt, &publishedAt); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(RecipePublicationUnpublished) || federation != string(RecipeFederationOff) || indexEligible != 0 || !updatedBy.Valid || updatedBy.String != actorID || !updatedAt.Valid || publishedAt.Valid {
+		t.Fatalf("created policy for %s = state=%q federation=%q index=%d updater=%v updated_at=%v published_at=%v", recipeID, state, federation, indexEligible, updatedBy, updatedAt, publishedAt)
+	}
 }
 
 func assertDefaultRecipePolicy(t *testing.T, db *sql.DB, recipeID string) {

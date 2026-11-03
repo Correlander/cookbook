@@ -49,7 +49,7 @@ func TestRecipeRevisionRestoreTransactionRollsBackOnOutboxFailure(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	response := callAPI(handler, http.MethodPost, "/api/recipes/"+testFederationID+"/revisions/1/restore", map[string]int{"expected_version": 2}, cookie)
+	response := callAPI(handler, http.MethodPost, "/api/recipes/"+testFederationID+"/revisions/1/restore", map[string]any{"expected_version": 2, "confirm_public_access": true}, cookie)
 	if response.Code != http.StatusServiceUnavailable || response.Body.String() != "{\"error\":\"federation_queue_unavailable\"}\n" {
 		t.Fatalf("restore failure response=%d %s", response.Code, response.Body)
 	}
@@ -68,7 +68,7 @@ func TestRecipeRevisionRestoreTransactionRollsBackOnOutboxFailure(t *testing.T) 
 
 func TestRecipeRevisionRestoreTransactionCommitsSnapshotImageAndOutbox(t *testing.T) {
 	db, handler, cookie := recipeMutationHandlerFixture(t, true)
-	response := callAPI(handler, http.MethodPost, "/api/recipes/"+testFederationID+"/revisions/1/restore", map[string]int{"expected_version": 2}, cookie)
+	response := callAPI(handler, http.MethodPost, "/api/recipes/"+testFederationID+"/revisions/1/restore", map[string]any{"expected_version": 2, "confirm_public_access": true}, cookie)
 	if response.Code != http.StatusOK {
 		t.Fatalf("restore response=%d %s", response.Code, response.Body)
 	}

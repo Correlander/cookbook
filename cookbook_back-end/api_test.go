@@ -296,6 +296,73 @@ func TestCookbookScopedRecipesRequireCookbookAndRecipeAccess(t *testing.T) {
 	}
 }
 
+func TestCookbookScopedRecipeQueryRechecksMembershipAfterAuthorization(t *testing.T) {
+	db := testDatabase(t)
+	_, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1;
+		INSERT INTO users(id,email,display_name,created_at) VALUES('book-owner','book-owner@example.test','Book owner','now'),('recipe-owner','recipe-owner@example.test','Recipe owner','now'),('reader','reader@example.test','Reader','now'),('admin','admin@example.test','Admin','now');
+		UPDATE users SET is_admin=1 WHERE id='admin';
+		INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at) VALUES('private-book','book-owner','Private','private','now','now');
+		INSERT INTO cookbook_memberships(cookbook_id,user_id,role,created_at) VALUES('private-book','reader','viewer','now');
+		INSERT INTO recipes(id,owner_id,creator_name,title,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at) VALUES('public-soup','recipe-owner','Recipe owner','Soup','[]','[]','[]','public','owner_only','now','now');
+		INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at) VALUES('public-soup','published','off',0,'now');
+		INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES('private-book','public-soup','book-owner','now')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var owner string
+	var visibilityValue visibility
+	var public int
+	var member role
+	if err := db.QueryRow(`SELECT c.owner_id,c.visibility,s.public_instance FROM cookbooks c JOIN instance_settings s ON s.id=1 WHERE c.id='private-book'`).Scan(&owner, &visibilityValue, &public); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT role FROM cookbook_memberships WHERE cookbook_id='private-book' AND user_id='reader'`).Scan(&member); err != nil {
+		t.Fatal(err)
+	}
+	if !canReadResource("reader", access{instancePublic: public == 1, visibility: visibilityValue, ownerID: owner, memberRole: member}) {
+		t.Fatal("reader was not authorized before the simulated revocation")
+	}
+	if _, err := db.Exec(`DELETE FROM cookbook_memberships WHERE cookbook_id='private-book' AND user_id='reader'`); err != nil {
+		t.Fatal(err)
+	}
+
+	queryIDs := func(userID string) []string {
+		t.Helper()
+		rows, err := db.Query(recipeRowsQuery+`r.id LIMIT ? OFFSET ?`, userID, userID, "", "", "private-book", "private-book", userID, userID, "private-book", "private-book", "", "", 24, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		ids := []string{}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return ids
+	}
+	if ids := queryIDs("reader"); len(ids) != 0 {
+		t.Fatalf("recipe query returned private cookbook associations after membership revocation: %v", ids)
+	}
+	if ids := queryIDs("admin"); len(ids) != 0 {
+		t.Fatalf("instance admin bypassed private cookbook membership: %v", ids)
+	}
+
+	h := apiHandler{db: db}
+	for _, userID := range []string{"reader", "admin"} {
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, requestForUser(http.MethodGet, "/api/recipes?cookbook_id=private-book", userID))
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("revoked/non-member %s cookbook status=%d body=%s", userID, response.Code, response.Body)
+		}
+	}
+}
+
 func TestAuthStateChangesRequireSameOrigin(t *testing.T) {
 	db := testDatabase(t)
 	h := handlerWithAuth(db, testAuth(db))

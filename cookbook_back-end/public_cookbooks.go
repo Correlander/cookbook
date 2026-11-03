@@ -26,7 +26,7 @@ const publicCookbookRowsQuery = `SELECT c.id,c.title,c.description,
 	ORDER BY c.updated_at DESC,c.id LIMIT ? OFFSET ?`
 
 const publicCookbookRecipeRowsQuery = `SELECT r.id,r.owner_id,r.creator_name,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,r.image_path
-	FROM cookbook_recipes cr JOIN recipes r ON r.id=cr.recipe_id JOIN recipe_publication_policy p ON p.recipe_id=r.id JOIN instance_settings s ON s.id=1
+	FROM cookbook_recipes cr JOIN cookbooks c ON c.id=cr.cookbook_id AND c.visibility='public' JOIN recipes r ON r.id=cr.recipe_id JOIN recipe_publication_policy p ON p.recipe_id=r.id JOIN instance_settings s ON s.id=1
 	WHERE s.public_instance=1 AND cr.cookbook_id=? AND r.deleted_at IS NULL AND r.visibility='public' AND p.publication_state='published'
 	AND (?='' OR instr(lower(r.title||' '||r.description||' '||r.tags_json),lower(?))>0)
 	AND (?='' OR instr(lower(r.tags_json),lower(?))>0)

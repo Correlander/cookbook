@@ -69,6 +69,38 @@ func TestPublicCookbooksExposeOnlyPublicResources(t *testing.T) {
 	}
 }
 
+func TestPublicCookbookRecipeQueryRechecksVisibilityAfterAuthorization(t *testing.T) {
+	db := testDatabase(t)
+	_, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1;
+		INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now');
+		INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at) VALUES('book','owner','Public book','public','now','now');
+		INSERT INTO recipes(id,owner_id,creator_name,title,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at) VALUES('soup','owner','Owner','Soup','[]','[]','[]','public','owner_only','now','now');
+		INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at) VALUES('soup','published','off',0,'now');
+		INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES('book','soup','owner','now')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var public int
+	if err := db.QueryRow(`SELECT s.public_instance FROM cookbooks c JOIN instance_settings s ON s.id=1 WHERE c.id='book' AND c.visibility='public'`).Scan(&public); err != nil || public != 1 {
+		t.Fatalf("public authorization check = %d, %v", public, err)
+	}
+	if _, err := db.Exec(`UPDATE cookbooks SET visibility='private' WHERE id='book'`); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := db.Query(publicCookbookRecipeRowsQuery+`r.id LIMIT ? OFFSET ?`, "book", "", "", "", "", 24, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("recipe query returned a cookbook association after the cookbook became private")
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPublicCookbookEndpointsValidateMethodsPaginationAndSearch(t *testing.T) {
 	db := testDatabase(t)
 	_, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1;

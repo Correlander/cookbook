@@ -721,6 +721,16 @@ func (h apiHandler) cookbookByID(w http.ResponseWriter, r *http.Request, id stri
 	h.cookbookByID(w, requestForUser(http.MethodGet, "/api/cookbooks/"+id, input.UserID), id)
 }
 
+const recipeRowsQuery = `SELECT r.id,r.owner_id,r.creator_name,r.source_recipe_id,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,s.public_instance,r.image_path
+	FROM recipes r JOIN instance_settings s ON s.id=1
+	WHERE r.deleted_at IS NULL
+	AND ((r.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_recipes cr JOIN cookbook_memberships m ON m.cookbook_id=cr.cookbook_id WHERE cr.recipe_id=r.id AND m.user_id=?)) OR (s.public_instance=1 AND r.visibility='public' AND EXISTS(SELECT 1 FROM recipe_publication_policy p WHERE p.recipe_id=r.id AND p.publication_state='published')))
+	AND (?='' OR instr(lower(r.title||' '||r.description||' '||r.tags_json),lower(?))>0)
+	AND (?='' OR EXISTS(SELECT 1 FROM cookbooks scope_book JOIN instance_settings scope_settings ON scope_settings.id=1 WHERE scope_book.id=? AND (scope_book.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_memberships scope_member WHERE scope_member.cookbook_id=scope_book.id AND scope_member.user_id=?) OR (scope_settings.public_instance=1 AND scope_book.visibility='public'))))
+	AND (?='' OR EXISTS(SELECT 1 FROM cookbook_recipes scope WHERE scope.recipe_id=r.id AND scope.cookbook_id=?))
+	AND (?='' OR instr(lower(r.tags_json),lower(?))>0)
+	ORDER BY `
+
 func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		var input recipeCreateInput
@@ -848,7 +858,7 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_pagination_or_query")
 		return
 	}
-	rows, err := h.db.Query(`SELECT r.id,r.owner_id,r.creator_name,r.source_recipe_id,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,s.public_instance,r.image_path FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.deleted_at IS NULL AND ((r.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_recipes cr JOIN cookbook_memberships m ON m.cookbook_id=cr.cookbook_id WHERE cr.recipe_id=r.id AND m.user_id=?)) OR (s.public_instance=1 AND r.visibility='public' AND EXISTS(SELECT 1 FROM recipe_publication_policy p WHERE p.recipe_id=r.id AND p.publication_state='published'))) AND (?='' OR instr(lower(r.title||' '||r.description||' '||r.tags_json),lower(?))>0) AND (?='' OR EXISTS(SELECT 1 FROM cookbook_recipes scope WHERE scope.recipe_id=r.id AND scope.cookbook_id=?)) AND (?='' OR instr(lower(r.tags_json),lower(?))>0) ORDER BY `+order+` LIMIT ? OFFSET ?`, uid, uid, q, q, cookbookID, cookbookID, tagJSON, tagJSON, limit, offset)
+	rows, err := h.db.Query(recipeRowsQuery+order+` LIMIT ? OFFSET ?`, uid, uid, q, q, cookbookID, cookbookID, uid, uid, cookbookID, cookbookID, tagJSON, tagJSON, limit, offset)
 	if err != nil {
 		writeError(w, 500, "storage_error")
 		return

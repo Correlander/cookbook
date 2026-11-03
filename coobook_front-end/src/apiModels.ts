@@ -217,6 +217,27 @@ export interface RecipeWritePayload {
   version?: number;
 }
 
+export type PublicationState = "unpublished" | "published" | "withdrawn";
+
+export type FederationMode = "off" | "followers";
+
+export interface RecipePublicationInput {
+  publication_state: PublicationState;
+  federation_mode: FederationMode;
+  index_eligible: false;
+}
+
+export interface RecipePublicationView extends RecipePublicationInput {
+  recipe_id: string;
+  updated_by: string | null;
+  updated_at: string;
+  published_at: string | null;
+  visibility: Recipe["visibility"];
+  public_instance: boolean;
+  federation_enabled: boolean;
+  federation_origin: string;
+}
+
 export type PublicRecipe = Recipe;
 
 export interface RecipeRevision {

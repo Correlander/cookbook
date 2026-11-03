@@ -63,6 +63,17 @@ it("shows Instance only after authority confirms the owner capability", async ()
   expect(screen.getByRole("link", { name: "Account" }).getAttribute("href")).toBe("/account/security");
 });
 
+it("keeps Account routed to security while marking creator-profile routes active", async () => {
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+    if (String(input) === "/api/instance/authority") return Promise.resolve(response(ordinaryAuthority));
+    return Promise.resolve(response({ transfers: [] }));
+  }));
+  renderNavigation({ pathname: "/account/creator-profile" });
+  const account = screen.getByRole("link", { name: "Account" });
+  expect(account.getAttribute("href")).toBe("/account/security");
+  expect(account.className).toContain("main-nav__active");
+});
+
 it("shows Instance to an exact incoming recipient and marks settings as part of that section", async () => {
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
     if (String(input) === "/api/instance/authority")

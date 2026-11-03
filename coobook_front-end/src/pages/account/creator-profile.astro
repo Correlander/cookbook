@@ -1,0 +1,11 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro'
+import CreatorProfileRoot from '../../app/CreatorProfileRoot.tsx'
+
+const title = 'Creator profile — Cookbook'
+const description = 'Manage your local creator profile on this Cookbook instance.'
+---
+
+<BaseLayout title={title} description={description} robots="noindex,nofollow">
+  <CreatorProfileRoot mode="editor" client:load />
+</BaseLayout>

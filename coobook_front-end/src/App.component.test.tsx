@@ -504,6 +504,8 @@ it("sends explicit safe initial publication fields and public access confirmatio
     if (url === "/api/public/remote-recipes?limit=24&offset=0")
       return Promise.resolve(jsonResponse([]));
     if (url === "/api/cookbooks") return Promise.resolve(jsonResponse([]));
+    if (url === "/api/account/creator-profile")
+      return Promise.resolve(jsonResponse({ profile: null }));
     if (url === "/api/recipes" && init?.method === "POST") {
       createBody = JSON.parse(String(init.body)) as Record<string, unknown>;
       return Promise.resolve(jsonResponse({ id: "new-recipe" }));
@@ -519,6 +521,9 @@ it("sends explicit safe initial publication fields and public access confirmatio
   });
   fireEvent.change(screen.getByLabelText("Ingredients (name | quantity | notes per line)"), {
     target: { value: "Tomatoes" },
+  });
+  fireEvent.change(await screen.findByLabelText("Creator credit"), {
+    target: { value: "unknown" },
   });
   fireEvent.change(screen.getByLabelText("Step 1"), {
     target: { value: "Mix and serve." },
@@ -554,6 +559,8 @@ it("requires public-access confirmation and retains form values after a denied c
     if (url === "/api/public/remote-recipes?limit=24&offset=0")
       return Promise.resolve(jsonResponse([]));
     if (url === "/api/cookbooks") return Promise.resolve(jsonResponse([]));
+    if (url === "/api/account/creator-profile")
+      return Promise.resolve(jsonResponse({ profile: null }));
     if (url === "/api/recipes" && init?.method === "POST")
       return Promise.resolve(
         jsonResponse({ error: "publication_unavailable" }, 409),
@@ -569,6 +576,9 @@ it("requires public-access confirmation and retains form values after a denied c
   });
   fireEvent.change(screen.getByLabelText("Ingredients (name | quantity | notes per line)"), {
     target: { value: "Tomatoes" },
+  });
+  fireEvent.change(await screen.findByLabelText("Creator credit"), {
+    target: { value: "unknown" },
   });
   fireEvent.change(screen.getByLabelText("Step 1"), {
     target: { value: "Mix and serve." },
@@ -590,6 +600,230 @@ it("requires public-access confirmation and retains form values after a denied c
   ).toBeTruthy();
   expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("Summer salad");
   expect((screen.getByLabelText("Visibility") as HTMLSelectElement).value).toBe("public");
+});
+
+it("ignores an actor A create completion after session refresh switches the form to actor B", async () => {
+  let sessionChecks = 0;
+  let resolveCreate!: (value: Response) => void;
+  const pendingCreate = new Promise<Response>((resolve) => {
+    resolveCreate = resolve;
+  });
+  const actorA = {
+    id: "actor-a",
+    email: "a@example.test",
+    display_name: "Cook A",
+    is_admin: false,
+  };
+  const actorB = {
+    id: "actor-b",
+    email: "b@example.test",
+    display_name: "Cook B",
+    is_admin: false,
+  };
+  let profileChecks = 0;
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/auth/me") {
+      sessionChecks += 1;
+      return Promise.resolve(jsonResponse(sessionChecks === 1 ? actorA : actorB));
+    }
+    if (url === "/api/public/config")
+      return Promise.resolve(jsonResponse(publicConfig(true, false)));
+    if (url === "/api/recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/public/recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/public/remote-recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/account/creator-profile") {
+      profileChecks += 1;
+      return Promise.resolve(jsonResponse({ profile: null }));
+    }
+    if (url === "/api/cookbooks") return Promise.resolve(jsonResponse([]));
+    if (url === "/api/recipes" && init?.method === "POST")
+      return pendingCreate;
+    if (url === "/api/auth/consume")
+      return Promise.resolve(jsonResponse({}));
+    if (url === "/api/auth/passkeys")
+      return Promise.resolve(jsonResponse([]));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState({}, "", "/auth/confirm?token=actor-switch");
+
+  renderApp();
+  await screen.findByRole("heading", { name: "Welcome back, Cook A." });
+  fireEvent.click((await screen.findAllByRole("button", { name: "Add a recipe" }))[0]);
+  await screen.findByRole("combobox", { name: "Creator credit" });
+  fireEvent.change(screen.getByLabelText("Title"), {
+    target: { value: "Actor A draft" },
+  });
+  fireEvent.change(
+    screen.getByLabelText("Ingredients (name | quantity | notes per line)"),
+    { target: { value: "Tomato" } },
+  );
+  fireEvent.change(screen.getByLabelText("Step 1"), {
+    target: { value: "Cook." },
+  });
+  fireEvent.change(screen.getByLabelText("Creator credit"), {
+    target: { value: "name_claim" },
+  });
+  fireEvent.change(screen.getByLabelText("Creator name (unverified)"), {
+    target: { value: "A private claim" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save recipe" }));
+  await waitFor(() =>
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input) === "/api/recipes" && init?.method === "POST",
+      ),
+    ).toBe(true),
+  );
+
+  fireEvent.click(
+    screen.getByRole("button", { name: "Continue to Cookbook" }),
+  );
+  expect(
+    await screen.findByRole("heading", { name: "Welcome back, Cook B." }),
+  ).toBeTruthy();
+  const actorBChoice = await screen.findByRole("combobox", {
+    name: "Creator credit",
+  });
+  await waitFor(() => expect(profileChecks).toBe(2));
+  expect((actorBChoice as HTMLSelectElement).value).toBe("");
+  expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("");
+
+  await act(async () => {
+    resolveCreate(
+      jsonResponse({
+        id: "late-a-recipe",
+        owner_id: actorA.id,
+        creator_name: "A private claim",
+        title: "Actor A draft",
+        ingredients: [],
+        steps: [],
+        visibility: "private",
+      }),
+    );
+    await pendingCreate;
+  });
+  expect(
+    screen.getByRole("combobox", { name: "Creator credit" }),
+  ).toBeTruthy();
+  expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("");
+  expect(
+    screen.queryByRole("button", { name: "Open Actor A draft" }),
+  ).toBeNull();
+});
+
+it("discards a same-recipe actor A image upload completion after Home switches to actor B", async () => {
+  let sessionChecks = 0;
+  let resolveImageUpload!: (value: Response) => void;
+  const pendingImageUpload = new Promise<Response>((resolve) => {
+    resolveImageUpload = resolve;
+  });
+  const actorA = {
+    id: "actor-a",
+    email: "a@example.test",
+    display_name: "Cook A",
+    is_admin: false,
+  };
+  const actorB = {
+    id: "actor-b",
+    email: "b@example.test",
+    display_name: "Cook B",
+    is_admin: false,
+  };
+  const recipe = {
+    id: "recipe-1",
+    owner_id: actorA.id,
+    title: "Apple pie",
+    description: "A family recipe.",
+    ingredients: [{ name: "Apples", quantity: "4", notes: "" }],
+    steps: [{ text: "Bake it." }],
+    servings: 6,
+    prep_time_minutes: 10,
+    cook_time_minutes: 40,
+    tags: [],
+    visibility: "private",
+    can_edit: true,
+    can_delete: true,
+    can_manage_sharing: true,
+    version: 3,
+    cookbook_ids: [],
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/auth/me") {
+      sessionChecks += 1;
+      return Promise.resolve(jsonResponse(sessionChecks === 1 ? actorA : actorB));
+    }
+    if (url === "/api/public/config")
+      return Promise.resolve(jsonResponse(publicConfig(true, false)));
+    if (url === "/api/recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([recipe]));
+    if (url === "/api/public/remote-recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/cookbooks") return Promise.resolve(jsonResponse([]));
+    if (url === "/api/recipes/recipe-1" && init?.method === "PUT")
+      return Promise.resolve(jsonResponse({ ...recipe, title: "Actor A edited pie" }));
+    if (url === "/api/recipes/recipe-1/image" && init?.method === "PUT")
+      return pendingImageUpload;
+    if (url === "/api/auth/consume")
+      return Promise.resolve(jsonResponse({}));
+    if (url === "/api/auth/passkeys")
+      return Promise.resolve(jsonResponse([]));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState({}, "", "/auth/confirm?token=actor-edit-switch");
+
+  renderApp();
+  await screen.findByRole("heading", { name: "Welcome back, Cook A." });
+  fireEvent.click(await screen.findByRole("button", { name: "Open Apple pie" }));
+  fireEvent.click(screen.getByRole("button", { name: "Edit recipe" }));
+  expect(await screen.findByRole("dialog", { name: "Edit recipe" })).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("Title"), {
+    target: { value: "Actor A edited pie" },
+  });
+  fireEvent.change(screen.getByLabelText(/Recipe photo/), {
+    target: { files: [new File(["image"], "pie.png", { type: "image/png" })] },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  await waitFor(() =>
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input) === "/api/recipes/recipe-1/image" &&
+          init?.method === "PUT",
+      ),
+    ).toBe(true),
+  );
+
+  fireEvent.click(
+    screen.getByRole("button", { name: "Continue to Cookbook" }),
+  );
+  expect(
+    await screen.findByRole("heading", { name: "Welcome back, Cook B." }),
+  ).toBeTruthy();
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog", { name: "Edit recipe" })).toBeNull(),
+  );
+  expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Open Apple pie" })).toBeTruthy();
+
+  await act(async () => {
+    resolveImageUpload(jsonResponse({ image: "/api/recipes/recipe-1/image", version: recipe.version + 1 }));
+    await pendingImageUpload;
+  });
+  expect(screen.getByRole("button", { name: "Open Apple pie" })).toBeTruthy();
+  expect(
+    screen.queryByRole("button", { name: "Open Actor A edited pie" }),
+  ).toBeNull();
+  expect(screen.queryByRole("dialog", { name: "Edit recipe" })).toBeNull();
 });
 
 it("sends only local-access confirmation on a visibility-expanding update", async () => {

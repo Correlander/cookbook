@@ -113,7 +113,7 @@ export default function AppNavigation({
         <a href="/#recipes">Recipes</a>
         {currentUser && (
           <a
-            className={pathname === "/account/security" ? "main-nav__active" : undefined}
+            className={pathname === "/account/security" || pathname === "/account/creator-profile" ? "main-nav__active" : undefined}
             href="/account/security"
           >
             Account

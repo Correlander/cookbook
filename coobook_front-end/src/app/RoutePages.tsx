@@ -2,12 +2,10 @@ import { lazy } from "react";
 import type { ReactNode } from "react";
 import FeatureIsland from "../components/FeatureIsland.tsx";
 import type { AuthenticatedUser } from "../apiModels";
-import {
-  SessionCheckError,
-  useAppSession,
-} from "./AppSession.tsx";
+import { SessionCheckError, useAppSession } from "./AppSession.tsx";
 import type { AppSessionStatus } from "./AppSession.tsx";
 import AppNavigation from "./AppNavigation.tsx";
+import AccountNavigation from "./AccountNavigation.tsx";
 
 const AccountSecurity = lazy(() => import("../AccountSecurity.tsx"));
 const AdminSettings = lazy(() => import("../AdminSettings.tsx"));
@@ -37,7 +35,11 @@ function AppRouteFrame({
         <section className="dashboard-welcome">
           <div>
             <span className="eyebrow">Your kitchen</span>
-            <h1>{pathname.startsWith("/admin/") ? "Instance administration" : "Account security"}</h1>
+            <h1>
+              {pathname.startsWith("/admin/")
+                ? "Instance administration"
+                : "Account security"}
+            </h1>
             <p>
               {pathname.startsWith("/admin/")
                 ? "Manage settings for this Cookbook instance."
@@ -53,7 +55,10 @@ function AppRouteFrame({
 
 function SignInRequired() {
   return (
-    <section className="cookbook-dashboard" aria-labelledby="signin-required-title">
+    <section
+      className="cookbook-dashboard"
+      aria-labelledby="signin-required-title"
+    >
       <h2 id="signin-required-title">Sign in to continue</h2>
       <p>This page uses your Cookbook account and browser session.</p>
       <a className="button button--green" href="/?signin=1">
@@ -65,7 +70,10 @@ function SignInRequired() {
 
 function AdminRequired() {
   return (
-    <section className="cookbook-dashboard" aria-labelledby="admin-required-title">
+    <section
+      className="cookbook-dashboard"
+      aria-labelledby="admin-required-title"
+    >
       <h2 id="admin-required-title">Administrator access required</h2>
       <p>This page is available to instance administrators.</p>
       <a className="text-link" href="/#home">
@@ -85,16 +93,21 @@ export function AccountSecurityPage() {
       onRetrySession={() => void refreshSession()}
     >
       {state.status === "loading" ? (
-        <p className="cookbook-dashboard" role="status">Checking your session…</p>
+        <p className="cookbook-dashboard" role="status">
+          Checking your session…
+        </p>
       ) : state.status === "error" ? (
         <SessionCheckError
           message={state.message}
           onRetry={() => void refreshSession()}
         />
       ) : state.status === "authenticated" ? (
-        <FeatureIsland name="Account security" loading="account security">
-          <AccountSecurity />
-        </FeatureIsland>
+        <>
+          <AccountNavigation pathname="/account/security" />
+          <FeatureIsland name="Account security" loading="account security">
+            <AccountSecurity />
+          </FeatureIsland>
+        </>
       ) : (
         <SignInRequired />
       )}
@@ -112,7 +125,9 @@ export function AdminSettingsPage() {
       onRetrySession={() => void refreshSession()}
     >
       {state.status === "loading" ? (
-        <p className="cookbook-dashboard" role="status">Checking your session…</p>
+        <p className="cookbook-dashboard" role="status">
+          Checking your session…
+        </p>
       ) : state.status === "error" ? (
         <SessionCheckError
           message={state.message}

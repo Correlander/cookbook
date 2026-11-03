@@ -12,6 +12,8 @@ import { errorMessage } from "../../apiModels";
 import { createStep } from "../../steps.ts";
 import useModalFocus from "../../useModalFocus.ts";
 import Icon from "./RecipeIcon.tsx";
+import type { RecipeCreatorAttribution } from "../../apiModels";
+import { CreatorProfileRequestError, getMyCreatorProfile } from "../creator/creatorProfileApi.ts";
 
 const StepListEditor = lazy(() => import("../../StepListEditor.tsx"));
 
@@ -25,6 +27,31 @@ interface RecipeFormProps {
 }
 
 function RecipeForm({
+  user,
+  recipe,
+  onClose,
+  onCreated,
+  onUpdated,
+  onSignedOut,
+}: RecipeFormProps) {
+  return (
+    <RecipeFormInstance
+      key={
+        recipe
+          ? `edit:${user?.id ?? "anonymous"}:${recipe.id}`
+          : `create:${user?.id ?? "anonymous"}`
+      }
+      user={user}
+      recipe={recipe}
+      onClose={onClose}
+      onCreated={onCreated}
+      onUpdated={onUpdated}
+      onSignedOut={onSignedOut}
+    />
+  );
+}
+
+function RecipeFormInstance({
   user,
   recipe,
   onClose,
@@ -66,6 +93,12 @@ function RecipeForm({
     [imageFile, setImageFile] = useState<File | null>(null),
     [error, setError] = useState(""),
     [saving, setSaving] = useState(false);
+  const [creatorSupport, setCreatorSupport] = useState<"checking" | "ready" | "unsupported" | "error">(recipe ? "ready" : "checking");
+  const [creatorChoice, setCreatorChoice] = useState<RecipeCreatorAttribution["kind"] | "">("");
+  const [creatorName, setCreatorName] = useState("");
+  const [legacyCreationConfirmed, setLegacyCreationConfirmed] = useState(false);
+  const operationGeneration = useRef(0);
+  const supportCheckGeneration = useRef(0);
   const sharingCapabilityKnown =
     !recipe || "can_manage_sharing" in recipe;
   const canManageCookbookSharing =
@@ -74,6 +107,13 @@ function RecipeForm({
     (!sharingCapabilityKnown && recipe.owner_id === user?.id);
   const legacySharingSafetyBlocked =
     Boolean(recipe && !sharingCapabilityKnown && !canManageCookbookSharing);
+  useEffect(
+    () => () => {
+      operationGeneration.current += 1;
+      supportCheckGeneration.current += 1;
+    },
+    [],
+  );
   useEffect(() => {
     if (!canManageCookbookSharing) return;
     fetch("/api/cookbooks")
@@ -81,6 +121,38 @@ function RecipeForm({
       .then(setCookbooks)
       .catch(() => setCookbooks([]));
   }, [canManageCookbookSharing]);
+  useEffect(() => {
+    if (recipe) return;
+    let active = true;
+    const generation = ++supportCheckGeneration.current;
+    setCreatorSupport("checking");
+    void getMyCreatorProfile().then(() => {
+      if (active && generation === supportCheckGeneration.current)
+        setCreatorSupport("ready");
+    }).catch((cause: unknown) => {
+      if (!active || generation !== supportCheckGeneration.current) return;
+      if (cause instanceof CreatorProfileRequestError && cause.status === 404) setCreatorSupport("unsupported");
+      else setCreatorSupport("error");
+    });
+    return () => {
+      active = false;
+      if (generation === supportCheckGeneration.current)
+        supportCheckGeneration.current += 1;
+    };
+  }, [recipe, user?.id]);
+
+  async function retryCreatorSupport() {
+    const generation = ++supportCheckGeneration.current;
+    setCreatorSupport("checking");
+    try {
+      await getMyCreatorProfile();
+      if (generation !== supportCheckGeneration.current) return;
+      setCreatorSupport("ready");
+    } catch (cause) {
+      if (generation !== supportCheckGeneration.current) return;
+      setCreatorSupport(cause instanceof CreatorProfileRequestError && cause.status === 404 ? "unsupported" : "error");
+    }
+  }
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
@@ -88,6 +160,27 @@ function RecipeForm({
       setError(
         "This server does not confirm safe cookbook sharing permissions. Update it before editing this recipe.",
       );
+      return;
+    }
+    if (!recipe && creatorSupport === "checking") {
+      setError("Checking whether this server supports typed recipe credit. Please wait or retry.");
+      return;
+    }
+    if (!recipe && creatorSupport === "error") {
+      setError("Could not check creator-profile support. Retry the check before saving.");
+      return;
+    }
+    if (!recipe && creatorSupport === "ready" && !creatorChoice) {
+      setError("Choose who created this recipe before saving.");
+      return;
+    }
+    if (!recipe && creatorSupport === "unsupported" && !legacyCreationConfirmed) {
+      setError("Confirm that you understand the legacy byline disclosure before saving.");
+      return;
+    }
+    const trimmedCreatorName = creatorName.trim();
+    if (!recipe && creatorChoice === "name_claim" && (Array.from(trimmedCreatorName).length < 1 || Array.from(trimmedCreatorName).length > 80 || new TextEncoder().encode(trimmedCreatorName).length > 320)) {
+      setError("Enter a creator name of up to 80 characters.");
       return;
     }
     const confirmsPublicAccess =
@@ -109,6 +202,7 @@ function RecipeForm({
       return;
     }
     setSaving(true);
+    const generation = operationGeneration.current;
     try {
       const payload: Omit<RecipeWritePayload, "cookbook_ids"> &
         Partial<Pick<RecipeWritePayload, "cookbook_ids">> = {
@@ -150,6 +244,9 @@ function RecipeForm({
             federation_mode: "off",
             index_eligible: false,
           },
+          ...(creatorSupport === "ready" && creatorChoice
+            ? { creator_attribution: creatorChoice === "name_claim" ? { kind: "name_claim", name: trimmedCreatorName } : { kind: creatorChoice } }
+            : {}),
         };
       }
       const response = await fetch(
@@ -160,8 +257,10 @@ function RecipeForm({
           body: JSON.stringify(requestPayload),
         },
       );
+      if (generation !== operationGeneration.current) return;
       if (!response.ok) {
         const failure = await response.json().catch(() => ({}));
+        if (generation !== operationGeneration.current) return;
         if (failure.error === "version_conflict")
           throw new Error(
             "This recipe changed elsewhere. Reload it before saving.",
@@ -185,6 +284,7 @@ function RecipeForm({
         );
       }
       let saved = (await response.json()) as Recipe;
+      if (generation !== operationGeneration.current) return;
       if (imageFile) {
         const formData = new FormData();
         formData.append("image", imageFile);
@@ -192,26 +292,31 @@ function RecipeForm({
           method: "PUT",
           body: formData,
         });
+        if (generation !== operationGeneration.current) return;
         if (!imageResponse.ok) {
-          if (!recipe) onCreated(saved);
+          if (!recipe && generation === operationGeneration.current)
+            onCreated(saved);
           throw new Error("Recipe saved, but its image could not be uploaded.");
         }
         const imageResult = (await imageResponse.json()) as {
           image: string;
           version: number;
         };
+        if (generation !== operationGeneration.current) return;
         saved = {
           ...saved,
           image: imageResult.image,
           version: imageResult.version,
         };
       }
+      if (generation !== operationGeneration.current) return;
       if (recipe) onUpdated(saved);
       else onCreated(saved);
     } catch (err: unknown) {
-      setError(errorMessage(err, "Could not save this recipe."));
+      if (generation === operationGeneration.current)
+        setError(errorMessage(err, "Could not save this recipe."));
     } finally {
-      setSaving(false);
+      if (generation === operationGeneration.current) setSaving(false);
     }
   }
   return (
@@ -343,6 +448,35 @@ function RecipeForm({
             <p className="dialog-note">
               Only the recipe owner can change visibility.
             </p>
+          )}
+          {!recipe && (
+            <fieldset className="form-choice-group">
+              {creatorSupport === "checking" && <p role="status">Checking creator-credit support…</p>}
+              {creatorSupport === "error" && <div role="alert"><p>Could not check creator-credit support. No recipe has been sent.</p><button type="button" onClick={() => void retryCreatorSupport()}>Retry support check</button></div>}
+              {creatorSupport === "unsupported" && <>
+                <legend>Creator credit unavailable</legend>
+                <p>This server does not support typed creator credit. Older servers may use your account display name as an unverified recipe byline; that byline follows this recipe’s visibility.</p>
+                <label><input type="checkbox" checked={legacyCreationConfirmed} onChange={(event) => setLegacyCreationConfirmed(event.target.checked)} /> I understand the legacy byline disclosure and want to continue</label>
+              </>}
+              {creatorSupport === "ready" && <>
+                <legend>Who created this recipe? <span aria-hidden="true">*</span></legend>
+                <label htmlFor="creator-attribution">Creator credit</label>
+                <select id="creator-attribution" value={creatorChoice} onChange={(event) => { setCreatorChoice(event.target.value as RecipeCreatorAttribution["kind"] | ""); setError(""); }} required>
+                  <option value="">Choose a creator credit</option>
+                  <option value="local_profile">I created this recipe</option>
+                  <option value="name_claim">Someone else created this recipe</option>
+                  <option value="unknown">I don’t know who created this recipe</option>
+                </select>
+                {creatorChoice === "name_claim" && <>
+                  <label htmlFor="creator-name-claim">Creator name (unverified)</label>
+                  <input id="creator-name-claim" value={creatorName} maxLength={320} onChange={(event) => setCreatorName(event.target.value)} />
+                  <p className="dialog-note">This is unverified text, not a linked profile. A public recipe can expose this name. It follows the recipe’s visibility.</p>
+                </>}
+                {creatorChoice === "local_profile" && <p className="dialog-note">This is a self-asserted credit. A private profile with an empty name is created if needed. This does not publish your profile or recipe.</p>}
+                {creatorChoice === "unknown" && <p className="dialog-note">No creator name or typed creator relation will be recorded.</p>}
+                <p className="dialog-note">Creator credit and profile visibility are separate from recipe visibility.</p>
+              </>}
+            </fieldset>
           )}
           {!recipe && (
             <fieldset className="form-choice-group">

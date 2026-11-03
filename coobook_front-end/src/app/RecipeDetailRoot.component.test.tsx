@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import RecipeDetailRoot from "./RecipeDetailRoot.tsx";
 import { fetchRecipeDetail } from "../features/recipes/recipeDetailApi.ts";
@@ -161,6 +161,52 @@ it("does not choose an anonymous detail endpoint after a transient session error
   expect(calls.filter((url) => url === "/api/auth/me")).toHaveLength(2);
   expect(calls).toContain("/api/recipes/recipe-1");
   expect(calls).not.toContain("/api/public/recipes/recipe-1");
+});
+
+it("discards a pending same-recipe edit when the detail page changes actors", async () => {
+  window.history.replaceState(null, "", "/recipe?id=recipe-1");
+  const pendingUpdate = deferred<Response>();
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse(user));
+    if (url === "/api/recipes/recipe-1" && init?.method === "PUT")
+      return pendingUpdate.promise;
+    if (url === "/api/recipes/recipe-1") return Promise.resolve(jsonResponse(recipe));
+    if (url === "/api/public/recipes/recipe-1")
+      return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+    if (url === "/api/library/bookmarks?limit=24&offset=0")
+      return Promise.resolve(jsonResponse({ items: [], total: 0, limit: 24, offset: 0 }));
+    if (url === "/api/cookbooks") return Promise.resolve(jsonResponse([]));
+    return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<RecipeDetailRoot />);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Edit recipe" }));
+  fireEvent.change(screen.getByLabelText("Title"), {
+    target: { value: "Actor A's update" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  await waitFor(() =>
+    expect(fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/recipes/recipe-1" && init?.method === "PUT",
+    )).toBe(true),
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+  expect(await screen.findByRole("heading", { name: "Recipe unavailable" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "Edit recipe" })).toBeNull();
+  expect(
+    fetchMock.mock.calls.filter(([url]) => String(url) === "/api/public/recipes/recipe-1"),
+  ).toHaveLength(1);
+
+  await act(async () => {
+    pendingUpdate.resolve(jsonResponse({ ...recipe, title: "Actor A's update" }));
+    await pendingUpdate.promise;
+  });
+  expect(screen.getByRole("heading", { name: "Recipe unavailable" })).toBeTruthy();
+  expect(screen.queryByText("Actor A's update")).toBeNull();
 });
 
 it("encodes the recipe ID and never retries the alternate detail endpoint", async () => {

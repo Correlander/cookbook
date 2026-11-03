@@ -7,6 +7,8 @@ const pages = [
   { file: 'auth/confirm.html', route: '/auth/confirm' },
   { file: 'auth/enroll.html', route: '/auth/enroll' },
   { file: 'account/security.html', route: '/account/security' },
+  { file: 'account/creator-profile.html', route: '/account/creator-profile' },
+  { file: 'creator.html', route: '/creator' },
   { file: 'admin.html', route: '/admin' },
   { file: 'admin/settings.html', route: '/admin/settings' },
   { file: 'library.html', route: '/library' },

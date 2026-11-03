@@ -302,6 +302,43 @@ export interface RecipeWritePayload {
   confirm_public_access?: true;
 }
 
+export interface CreatorProfile {
+  id: string;
+  public_name: string;
+  bio: string;
+  visibility: "private" | "instance";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreatorProfileEnvelope {
+  profile: CreatorProfile | null;
+}
+
+export type RecipeCreatorAttribution =
+  | { kind: "local_profile" }
+  | { kind: "name_claim"; name: string }
+  | { kind: "unknown" };
+
+export interface CreatorRecipeItem {
+  recipe: Recipe;
+  role: string;
+  provenance: string;
+}
+
+export interface CreatorCookbookItem {
+  cookbook: Pick<Cookbook, "id" | "title" | "description" | "visibility" | "created_at" | "updated_at">;
+  role: string;
+  provenance: string;
+}
+
+export interface CreatorProfileList<T> {
+  profile: CreatorProfile;
+  items: T[];
+  limit: number;
+  offset: number;
+}
+
 export type PublicationState = "unpublished" | "published" | "withdrawn";
 export type InitialPublicationState = Exclude<PublicationState, "withdrawn">;
 
@@ -315,6 +352,7 @@ export interface InitialPublicationInput {
 
 export interface RecipeCreatePayload extends Omit<RecipeWritePayload, "version"> {
   initial_publication: InitialPublicationInput;
+  creator_attribution?: RecipeCreatorAttribution;
 }
 
 export interface RecipePublicationInput {

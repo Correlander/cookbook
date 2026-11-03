@@ -97,23 +97,36 @@ function HomeApp({ pathname }: { pathname: string }) {
     [confirming, setConfirming] = useState(false),
     [confirmationToken, setConfirmationToken] = useState(""),
     [editRecipe, setEditRecipe] = useState<Recipe | null>(null),
+    [editActorID, setEditActorID] = useState<string | null>(null),
     [createOpen, setCreateOpen] = useState(false),
     [inviteToken, setInviteToken] = useState(""),
     [passkeyPrompt, setPasskeyPrompt] = useState(false),
     [pendingPasskeyOffer, setPendingPasskeyOffer] = useState(false);
   const { state: sessionState, currentUser, refreshSession, clearSession } =
     useAppSession();
+  const currentUserIDRef = useRef<string | null>(currentUser?.id ?? null);
+  currentUserIDRef.current = currentUser?.id ?? null;
   const {
     state: publicAuthConfigState,
     retry: retryPublicAuthConfig,
   } = usePublicAuthConfig();
   const signedIn = Boolean(currentUser);
+  const formActorID = currentUser?.id ?? null;
+  const activeEditRecipe =
+    editActorID === formActorID ? editRecipe : null;
   const feed = useRecipeFeed({ signedIn, query });
+  useEffect(() => {
+    if (editRecipe && editActorID !== formActorID) {
+      setEditRecipe(null);
+      setEditActorID(null);
+    }
+  }, [editActorID, editRecipe, formActorID]);
   const emailDialogRef = useRef<HTMLElement>(null);
   function handleSignedOut() {
     clearSession();
     setCreateOpen(false);
     setEditRecipe(null);
+    setEditActorID(null);
     setSelected(null);
     setSelectedRemote(null);
     setEmailOpen(false);
@@ -463,24 +476,32 @@ function HomeApp({ pathname }: { pathname: string }) {
         onEdit={(recipe) => {
           setSelected(null);
           setEditRecipe(recipe);
+          setEditActorID(formActorID);
         }}
       />
-      {(createOpen || editRecipe) && (
+      {(createOpen || activeEditRecipe) && (
         <RecipeForm
+          key={activeEditRecipe
+            ? `edit:${formActorID ?? "anonymous"}:${activeEditRecipe.id}`
+            : `create:${formActorID ?? "anonymous"}`}
           user={currentUser}
-          recipe={editRecipe}
+          recipe={activeEditRecipe}
           onClose={() => {
             setCreateOpen(false);
             setEditRecipe(null);
+            setEditActorID(null);
           }}
           onSignedOut={handleSignedOut}
           onCreated={(recipe) => {
+            if (currentUserIDRef.current !== formActorID) return;
             feed.addRecipe(recipe);
             setCreateOpen(false);
           }}
           onUpdated={(recipe) => {
+            if (currentUserIDRef.current !== formActorID) return;
             feed.replaceRecipe(recipe);
             setEditRecipe(null);
+            setEditActorID(null);
           }}
         />
       )}

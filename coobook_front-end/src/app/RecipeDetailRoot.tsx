@@ -10,6 +10,11 @@ import useRecipeBookmarks from "../features/library/useRecipeBookmarks.ts";
 import { SessionCheckError } from "./AppSession.tsx";
 
 function RecipeDetailPage() {
+  const { currentUser } = useAppSession();
+  return <RecipeDetailSession key={currentUser?.id ?? "anonymous"} />;
+}
+
+function RecipeDetailSession() {
   const { state, currentUser, refreshSession, clearSession } = useAppSession();
   const [recipeID, setRecipeID] = useState("");
   const [recipe, setRecipe] = useState<RecipeDetailRead | null>(null);

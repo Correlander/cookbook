@@ -167,27 +167,33 @@ test('email sign-in remains explicit, establishes a session, and rejects replay'
       }
     }
   })
-  const response = await request.post('/api/auth/email', {
-    headers: { Origin: origin },
-    data: { email: 'cook@example.test', display_name: 'Browser Cook' },
-  })
-  expect(response.status()).toBe(200)
-  const capturePath = process.env.E2E_EMAIL_CAPTURE
-  if (!capturePath) throw new Error('E2E_EMAIL_CAPTURE is missing')
   let payload: { sign_in_url: string } | undefined
-  for (let attempt = 0; attempt < 50; attempt++) {
-    try { await stat(capturePath); payload = JSON.parse(await readFile(capturePath, 'utf8')); break } catch { /* Wait for the email command to create its private capture. */ }
-    await page.waitForTimeout(50)
-  }
-  expect(Boolean(payload?.sign_in_url)).toBe(true)
-  await unlink(capturePath)
-  try { await page.goto(payload!.sign_in_url) } catch { throw new Error('confirmation page navigation failed') }
-  const confirmationURL = new URL(page.url())
-  expect(confirmationURL.pathname).toBe('/auth/confirm')
-  expect(Boolean(confirmationURL.searchParams.get('token'))).toBe(true)
-  expect((await page.request.get('/api/auth/me')).status()).toBe(401)
-  await page.getByRole('button', { name: /continue to cookbook/i }).click()
-  await expect.poll(async () => (await page.request.get('/api/auth/me')).status()).toBe(200)
+  await test.step('Email delivery', async () => {
+    const response = await request.post('/api/auth/email', {
+      headers: { Origin: origin },
+      data: { email: 'cook@example.test', display_name: 'Browser Cook' },
+    })
+    expect(response.status()).toBe(200)
+    const capturePath = process.env.E2E_EMAIL_CAPTURE
+    if (!capturePath) throw new Error('E2E_EMAIL_CAPTURE is missing')
+    for (let attempt = 0; attempt < 50; attempt++) {
+      try { await stat(capturePath); payload = JSON.parse(await readFile(capturePath, 'utf8')); break } catch { /* Wait for the email command to create its private capture. */ }
+      await page.waitForTimeout(50)
+    }
+    expect(Boolean(payload?.sign_in_url)).toBe(true)
+    await unlink(capturePath)
+  })
+  await test.step('Confirmation page', async () => {
+    await page.goto(payload!.sign_in_url)
+    const confirmationURL = new URL(page.url())
+    expect(confirmationURL.pathname).toBe('/auth/confirm')
+    expect(Boolean(confirmationURL.searchParams.get('token'))).toBe(true)
+    expect((await page.request.get('/api/auth/me')).status()).toBe(401)
+  })
+  await test.step('Session establishment', async () => {
+    await page.getByRole('button', { name: /continue to cookbook/i }).click()
+    await expect.poll(async () => (await page.request.get('/api/auth/me')).status()).toBe(200)
+  })
 
   const passkeyDialog = page.getByRole('dialog', { name: 'Add a passkey?' })
   const passkeyRequests: Array<{ path: string; status?: number }> = []
@@ -202,91 +208,103 @@ test('email sign-in remains explicit, establishes a session, and rejects replay'
       if (found) found.status = response.status()
     }
   })
-  await page.getByRole('button', { name: 'Create passkey' }).click()
-  try {
-    await expect.poll(() => passkeyRequests.find((item) => item.path === '/api/auth/passkey/register/begin')?.status ?? 0, { timeout: 12_000 }).toBeGreaterThan(0)
-  } catch {
-    const diagnostic = await page.evaluate(() => ({
-      passkey: (window as Window & { __passkeyDiagnostic?: unknown }).__passkeyDiagnostic,
-      submit: (() => {
-        const form = document.querySelector('[role="dialog"] form')
-        const input = form?.querySelector('input')
-        return { valid: form instanceof HTMLFormElement ? form.checkValidity() : null, inputRequired: input?.required ?? null, inputValuePresent: Boolean(input?.value) }
-      })(),
-    }))
-    throw new Error(`passkey registration did not begin: ${JSON.stringify({ requests: passkeyRequests, diagnostic })}`)
-  }
-  const beginResponse = passkeyRequests.find((item) => item.path === '/api/auth/passkey/register/begin')
-  if (!beginResponse || beginResponse.status !== 200) throw new Error(`passkey register begin failed: ${JSON.stringify({ requests: passkeyRequests, webauthn: await page.evaluate(() => (window as Window & { __passkeyDiagnostic?: unknown }).__passkeyDiagnostic) })}`)
-  expect(beginResponse.status, 'passkey registration ceremony begins').toBe(200)
-  await expect.poll(async () => (await passkeyDialog.isHidden()) || Boolean(await passkeyDialog.getByRole('alert').textContent()), { timeout: 15_000 }).toBe(true)
-  if (await passkeyDialog.isVisible()) {
-    const message = await passkeyDialog.getByRole('alert').textContent()
-    const webauthn = await page.evaluate(() => (window as Window & { __passkeyDiagnostic?: unknown }).__passkeyDiagnostic)
-    throw new Error(`virtual passkey registration failed: ${JSON.stringify({ message, requests: passkeyRequests, webauthn })}`)
-  }
-  await expect.poll(() => passkeyRequests.find((item) => item.path === '/api/auth/passkey/register/finish')?.status ?? 0).toBe(201)
-  await page.getByRole('button', { name: 'Add a recipe', exact: true }).first().click()
-  const form = page.getByRole('dialog', { name: 'Add a recipe' })
-  await form.getByLabel('Title').fill('Browser private recipe')
-  await form.getByLabel('Description').fill('Created by the browser journey')
-  await form.getByLabel(/Ingredients/).fill('Flour | 1 cup | sifted')
-  await form.locator('textarea[id^="recipe-step-"]').first().fill('Mix')
-  await form.getByRole('button', { name: 'Save private recipe' }).click()
-  await expect(form).toBeHidden()
-  const recipeCard = page.getByRole('button', { name: 'Open Browser private recipe' })
-  await expect(recipeCard).toBeVisible()
-  await recipeCard.click()
-  await page.getByRole('button', { name: 'Edit recipe' }).click()
-  const edit = page.getByRole('dialog', { name: 'Edit recipe' })
-  await edit.getByLabel('Title').fill('Browser private recipe updated')
-  await edit.locator('textarea[id^="recipe-step-"]').first().fill('Mix well')
-  await edit.getByRole('button', { name: 'Save changes' }).click()
-  await expect(edit).toBeHidden()
-  await page.getByRole('button', { name: 'Open Browser private recipe updated' }).click()
-  await page.getByRole('button', { name: 'Version history' }).click()
-  const history = page.getByLabel('Recipe version history')
-  await expect(history.getByText(/Version 1: Browser private recipe/)).toBeVisible()
-  await expect(history.getByText(/Version 2: Browser private recipe updated/)).toBeVisible()
-  page.once('dialog', (dialog) => dialog.accept())
-  await history.getByRole('button', { name: 'Restore' }).click()
-  await expect(page.getByRole('heading', { name: 'Browser private recipe' })).toBeVisible()
-  const recipes = await page.request.get('/api/recipes')
-  const currentRecipes = await recipes.json()
-  const privateRecipe = currentRecipes.find((recipe: { title: string }) => recipe.title === 'Browser private recipe')
-  expect(privateRecipe?.visibility).toBe('private')
-  const recipeID = privateRecipe.id as string
-  const stale = await page.evaluate(async ({ recipeID }) => fetch(`/api/recipes/${recipeID}`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      title: 'Stale overwrite', description: 'stale', servings: 2, prep_time_minutes: 10,
-      cook_time_minutes: 20, tags: [], visibility: 'private', version: 2,
-      ingredients: [{ name: 'Flour', quantity: '1 cup', notes: '' }], steps: [{ text: 'Mix' }],
-    }),
-  }).then((response) => response.status), { recipeID })
-  expect(stale, 'stale recipe update is rejected').toBe(409)
-  const anonymous = await page.context().browser()!.newContext()
-  try { expect((await anonymous.request.get(`${origin}/api/recipes/${recipeID}`)).status(), 'private recipe requires an authenticated session').toBe(401) }
-  finally { await anonymous.close() }
+  await test.step('Passkey registration', async () => {
+    await page.getByRole('button', { name: 'Create passkey' }).click()
+    try {
+      await expect.poll(() => passkeyRequests.find((item) => item.path === '/api/auth/passkey/register/begin')?.status ?? 0, { timeout: 12_000 }).toBeGreaterThan(0)
+    } catch {
+      const diagnostic = await page.evaluate(() => ({
+        passkey: (window as Window & { __passkeyDiagnostic?: unknown }).__passkeyDiagnostic,
+        submit: (() => {
+          const form = document.querySelector('[role="dialog"] form')
+          const input = form?.querySelector('input')
+          return { valid: form instanceof HTMLFormElement ? form.checkValidity() : null, inputRequired: input?.required ?? null, inputValuePresent: Boolean(input?.value) }
+        })(),
+      }))
+      throw new Error(`passkey registration did not begin: ${JSON.stringify({ requests: passkeyRequests, diagnostic })}`)
+    }
+    const beginResponse = passkeyRequests.find((item) => item.path === '/api/auth/passkey/register/begin')
+    if (!beginResponse || beginResponse.status !== 200) throw new Error(`passkey register begin failed: ${JSON.stringify({ requests: passkeyRequests, webauthn: await page.evaluate(() => (window as Window & { __passkeyDiagnostic?: unknown }).__passkeyDiagnostic) })}`)
+    expect(beginResponse.status, 'passkey registration ceremony begins').toBe(200)
+    await expect.poll(async () => (await passkeyDialog.isHidden()) || Boolean(await passkeyDialog.getByRole('alert').textContent()), { timeout: 15_000 }).toBe(true)
+    if (await passkeyDialog.isVisible()) {
+      const message = await passkeyDialog.getByRole('alert').textContent()
+      const webauthn = await page.evaluate(() => (window as Window & { __passkeyDiagnostic?: unknown }).__passkeyDiagnostic)
+      throw new Error(`virtual passkey registration failed: ${JSON.stringify({ message, requests: passkeyRequests, webauthn })}`)
+    }
+    await expect.poll(() => passkeyRequests.find((item) => item.path === '/api/auth/passkey/register/finish')?.status ?? 0).toBe(201)
+  })
+  await test.step('Recipe create and edit', async () => {
+    await page.getByRole('button', { name: 'Add a recipe', exact: true }).first().click()
+    const form = page.getByRole('dialog', { name: 'Add a recipe' })
+    await form.getByLabel('Title').fill('Browser private recipe')
+    await form.getByLabel('Description').fill('Created by the browser journey')
+    await form.getByLabel(/Ingredients/).fill('Flour | 1 cup | sifted')
+    await form.locator('textarea[id^="recipe-step-"]').first().fill('Mix')
+    await form.getByRole('button', { name: 'Save private recipe' }).click()
+    await expect(form).toBeHidden()
+    const recipeCard = page.getByRole('button', { name: 'Open Browser private recipe' })
+    await expect(recipeCard).toBeVisible()
+    await recipeCard.click()
+    await page.getByRole('button', { name: 'Edit recipe' }).click()
+    const edit = page.getByRole('dialog', { name: 'Edit recipe' })
+    await edit.getByLabel('Title').fill('Browser private recipe updated')
+    await edit.locator('textarea[id^="recipe-step-"]').first().fill('Mix well')
+    await edit.getByRole('button', { name: 'Save changes' }).click()
+    await expect(edit).toBeHidden()
+  })
+  await test.step('Recipe history and stale update conflict', async () => {
+    await page.getByRole('button', { name: 'Open Browser private recipe updated' }).click()
+    await page.getByRole('button', { name: 'Version history' }).click()
+    const history = page.getByLabel('Recipe version history')
+    await expect(history.getByText(/Version 1: Browser private recipe/)).toBeVisible()
+    await expect(history.getByText(/Version 2: Browser private recipe updated/)).toBeVisible()
+    page.once('dialog', (dialog) => dialog.accept())
+    await history.getByRole('button', { name: 'Restore' }).click()
+    await expect(page.getByRole('heading', { name: 'Browser private recipe' })).toBeVisible()
+    const recipes = await page.request.get('/api/recipes')
+    const currentRecipes = await recipes.json()
+    const privateRecipe = currentRecipes.find((recipe: { title: string }) => recipe.title === 'Browser private recipe')
+    expect(privateRecipe?.visibility).toBe('private')
+    const recipeID = privateRecipe.id as string
+    const stale = await page.evaluate(async ({ recipeID }) => fetch(`/api/recipes/${recipeID}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: 'Stale overwrite', description: 'stale', servings: 2, prep_time_minutes: 10,
+        cook_time_minutes: 20, tags: [], visibility: 'private', version: 2,
+        ingredients: [{ name: 'Flour', quantity: '1 cup', notes: '' }], steps: [{ text: 'Mix' }],
+      }),
+    }).then((response) => response.status), { recipeID })
+    expect(stale, 'stale recipe update is rejected').toBe(409)
+    const anonymous = await page.context().browser()!.newContext()
+    try { expect((await anonymous.request.get(`${origin}/api/recipes/${recipeID}`)).status(), 'private recipe requires an authenticated session').toBe(401) }
+    finally { await anonymous.close() }
+  })
 
-  await page.getByRole('button', { name: 'Edit recipe' }).click()
-  await page.getByRole('button', { name: 'Sign out' }).click()
-  await expect.poll(async () => (await page.request.get('/api/auth/me')).status()).toBe(401)
-  const editDialog = page.getByRole('dialog', { name: 'Edit recipe' })
-  await expect(editDialog, 'signing out closes the auth-bound editor').toBeHidden()
-  await page.getByRole('button', { name: 'Sign in', exact: true }).click()
-  await page.getByRole('button', { name: 'Sign in with a passkey' }).click()
-  await expect.poll(() => passkeyRequests.find((item) => item.path === '/api/auth/passkey/login/finish')?.status ?? 0).toBe(200)
-  await expect.poll(async () => (await page.request.get('/api/auth/me')).status()).toBe(200)
-  await cdp.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId })
-  await cdp.send('WebAuthn.disable')
+  await test.step('Logout closes the editor', async () => {
+    await page.getByRole('button', { name: 'Edit recipe' }).click()
+    await page.getByRole('button', { name: 'Sign out' }).click()
+    await expect.poll(async () => (await page.request.get('/api/auth/me')).status()).toBe(401)
+    const editDialog = page.getByRole('dialog', { name: 'Edit recipe' })
+    await expect(editDialog, 'signing out closes the auth-bound editor').toBeHidden()
+  })
+  await test.step('Passkey sign-in', async () => {
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+    await page.getByRole('button', { name: 'Sign in with a passkey' }).click()
+    await expect.poll(() => passkeyRequests.find((item) => item.path === '/api/auth/passkey/login/finish')?.status ?? 0).toBe(200)
+    await expect.poll(async () => (await page.request.get('/api/auth/me')).status()).toBe(200)
+    await cdp.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId })
+    await cdp.send('WebAuthn.disable')
+  })
 
-  const token = new URL(payload!.sign_in_url).searchParams.get('token')
-  expect(token).toBeTruthy()
-  await page.request.post('/api/auth/logout', { headers: { Origin: origin } })
-  const replay = await page.request.post('/api/auth/consume', { headers: { Origin: origin }, data: { token } })
-  expect(replay.status()).toBe(400)
-  expect((await replay.json()).error).toBe('invalid_or_expired_token')
+  await test.step('Logout and reject token replay', async () => {
+    const token = new URL(payload!.sign_in_url).searchParams.get('token')
+    expect(token).toBeTruthy()
+    await page.request.post('/api/auth/logout', { headers: { Origin: origin } })
+    const replay = await page.request.post('/api/auth/consume', { headers: { Origin: origin }, data: { token } })
+    expect(replay.status()).toBe(400)
+    expect((await replay.json()).error).toBe('invalid_or_expired_token')
+  })
 })
 
 test('proxies health and API misses without static-index fallback', async ({ request }) => {

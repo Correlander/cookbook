@@ -34,129 +34,144 @@ test("owners can publish and withdraw a public recipe without losing owner acces
   let adminContextChangedPublicSetting = false;
   let originalPublicInstance: boolean | undefined;
   let anonymousContext: BrowserContext | undefined;
+  let anonymousPage: Page | undefined;
+  let title = "";
+  let recipeId = "";
 
   try {
-    await admin.page.goto("/");
-    const adminUser = await signInWithSyntheticEmail(
-      admin.page,
-      admin.page.request,
-      "admin@example.test",
-      "Synthetic Admin",
-    );
-    expect(adminUser.is_admin).toBe(true);
-    const settingsResponse = await admin.page.request.get("/api/admin/settings");
-    expect(settingsResponse.status()).toBe(200);
-    const settings = (await settingsResponse.json()) as {
-      public_instance: boolean;
-    };
-    originalPublicInstance = settings.public_instance;
-    if (!originalPublicInstance) {
-      await updatePublicInstance(admin.page, true);
-      adminContextChangedPublicSetting = true;
-    }
-
-    await signInWithSyntheticEmail(
-      page,
-      page.request,
-      `publication-owner-${Date.now()}@example.test`,
-      "Synthetic Recipe Owner",
-    );
-    await page.getByRole("button", { name: "Add a recipe" }).last().click();
-    await page.getByLabel("Title").fill(`Publication proof ${Date.now()}`);
-    const title = await page.getByLabel("Title").inputValue();
-    await page.getByLabel("Ingredients (name | quantity | notes per line)").fill(
-      "Synthetic tomatoes",
-    );
-    await page.getByLabel("Step 1", { exact: true }).fill("Slice the tomatoes.");
-    await page.getByLabel("Visibility").selectOption("public");
-    await page.getByRole("checkbox", { name: /anyone can read/i }).check();
-    await page
-      .getByRole("checkbox", { name: /not appear in anonymous browsing/i })
-      .check();
-    const createResponsePromise = page.waitForResponse(
-      (response) =>
-        response.request().method() === "POST" &&
-        new URL(response.url()).pathname === "/api/recipes",
-    );
-    await page.getByRole("button", { name: "Save recipe" }).click();
-    const createResponse = await createResponsePromise;
-    expect(createResponse.status()).toBe(200);
-    const createdRecipe = (await createResponse.json()) as {
-      id: string;
-      title: string;
-    };
-    expect(createdRecipe.title).toBe(title);
-    const recipeId = createdRecipe.id;
-
-    anonymousContext = await browser.newContext({ baseURL });
-    const anonymousPage = await anonymousContext.newPage();
-    const anonymousPolicyRequests: string[] = [];
-    anonymousPage.on("request", (request) => {
-      if (request.url().includes(`/api/recipes/${recipeId}/publication`))
-        anonymousPolicyRequests.push(request.url());
+    await test.step("Admin setup and public browsing setting", async () => {
+      await admin.page.goto("/");
+      const adminUser = await signInWithSyntheticEmail(
+        admin.page,
+        admin.page.request,
+        "admin@example.test",
+        "Synthetic Admin",
+      );
+      expect(adminUser.is_admin).toBe(true);
+      const settingsResponse = await admin.page.request.get("/api/admin/settings");
+      expect(settingsResponse.status()).toBe(200);
+      const settings = (await settingsResponse.json()) as {
+        public_instance: boolean;
+      };
+      originalPublicInstance = settings.public_instance;
+      if (!originalPublicInstance) {
+        await updatePublicInstance(admin.page, true);
+        adminContextChangedPublicSetting = true;
+      }
     });
-    const beforePublish = await anonymousPage.request.get(
-      "/api/public/recipes?limit=24&offset=0",
-    );
-    expect(beforePublish.status()).toBe(200);
-    const unpublishedRows = (await beforePublish.json()) as Array<{
-      id: string;
-      title: string;
-    }>;
-    expect(unpublishedRows.some((recipe) => recipe.id === recipeId)).toBe(false);
 
-    await page.getByRole("button", { name: `Open ${title}` }).click();
-    await page.getByRole("button", { name: "Manage publication" }).click();
-    await expect(page.getByText("Current status")).toBeVisible();
-    await expect(page.getByText("Not published", { exact: true })).toBeVisible();
-    await page.getByLabel("Public browsing status").selectOption("published");
-    const publishResponsePromise = page.waitForResponse(
-      (response) =>
-        response.request().method() === "PUT" &&
-        new URL(response.url()).pathname ===
-          `/api/recipes/${recipeId}/publication`,
-    );
-    await page.getByRole("button", { name: "Save publication settings" }).click();
-    expect((await publishResponsePromise).status()).toBe(200);
-    const ownerRead = await page.request.get(`/api/recipes/${recipeId}`);
-    expect(ownerRead.status()).toBe(200);
+    await test.step("Recipe owner sign-in and creation", async () => {
+      await signInWithSyntheticEmail(
+        page,
+        page.request,
+        `publication-owner-${Date.now()}@example.test`,
+        "Synthetic Recipe Owner",
+      );
+      await page.getByRole("button", { name: "Add a recipe" }).last().click();
+      await page.getByLabel("Title").fill(`Publication proof ${Date.now()}`);
+      title = await page.getByLabel("Title").inputValue();
+      await page.getByLabel("Ingredients (name | quantity | notes per line)").fill(
+        "Synthetic tomatoes",
+      );
+      await page.getByLabel("Step 1", { exact: true }).fill("Slice the tomatoes.");
+      await page.getByLabel("Visibility").selectOption("public");
+      await page.getByRole("checkbox", { name: /anyone can read/i }).check();
+      await page
+        .getByRole("checkbox", { name: /not appear in anonymous browsing/i })
+        .check();
+      const createResponsePromise = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          new URL(response.url()).pathname === "/api/recipes",
+      );
+      await page.getByRole("button", { name: "Save recipe" }).click();
+      const createResponse = await createResponsePromise;
+      expect(createResponse.status()).toBe(200);
+      const createdRecipe = (await createResponse.json()) as {
+        id: string;
+        title: string;
+      };
+      expect(createdRecipe.title).toBe(title);
+      recipeId = createdRecipe.id;
 
-    await anonymousPage.goto("/");
-    await expect(
-      anonymousPage.getByRole("button", { name: `Open ${title}` }),
-    ).toBeVisible();
-    await anonymousPage
-      .getByRole("button", { name: `Open ${title}` })
-      .click();
-    await expect(
-      anonymousPage.getByRole("dialog", { name: title }),
-    ).toBeVisible();
-    await expect(
-      anonymousPage.getByRole("button", { name: "Manage publication" }),
-    ).toHaveCount(0);
-    expect(anonymousPolicyRequests).toEqual([]);
+      anonymousContext = await browser.newContext({ baseURL });
+      anonymousPage = await anonymousContext.newPage();
+    });
 
-    await page.getByLabel("Public browsing status").selectOption("withdrawn");
-    await page
-      .getByRole("checkbox", { name: /withdrawal stops new distribution/i })
-      .check();
-    const withdrawResponsePromise = page.waitForResponse(
-      (response) =>
-        response.request().method() === "PUT" &&
-        new URL(response.url()).pathname ===
-          `/api/recipes/${recipeId}/publication`,
-    );
-    await page.getByRole("button", { name: "Save publication settings" }).click();
-    expect((await withdrawResponsePromise).status()).toBe(200);
+    const anonPage = anonymousPage!;
+    const anonymousPolicyRequests: string[] = [];
+    await test.step("Confirm unpublished recipe stays anonymous-hidden", async () => {
+      anonPage.on("request", (request) => {
+        if (request.url().includes(`/api/recipes/${recipeId}/publication`))
+          anonymousPolicyRequests.push(request.url());
+      });
+      const beforePublish = await anonPage.request.get(
+        "/api/public/recipes?limit=24&offset=0",
+      );
+      expect(beforePublish.status()).toBe(200);
+      const unpublishedRows = (await beforePublish.json()) as Array<{
+        id: string;
+        title: string;
+      }>;
+      expect(unpublishedRows.some((recipe) => recipe.id === recipeId)).toBe(false);
+    });
 
-    await anonymousPage.goto("/");
-    await expect(
-      anonymousPage.getByRole("button", { name: `Open ${title}` }),
-    ).toHaveCount(0);
-    expect(
-      (await anonymousPage.request.get("/api/public/recipes?limit=24&offset=0")).status(),
-    ).toBe(200);
-    expect((await page.request.get(`/api/recipes/${recipeId}`)).status()).toBe(200);
+    await test.step("Publish and verify owner and anonymous access", async () => {
+      await page.getByRole("button", { name: `Open ${title}` }).click();
+      await page.getByRole("button", { name: "Manage publication" }).click();
+      await expect(page.getByText("Current status")).toBeVisible();
+      await expect(page.getByText("Not published", { exact: true })).toBeVisible();
+      await page.getByLabel("Public browsing status").selectOption("published");
+      const publishResponsePromise = page.waitForResponse(
+        (response) =>
+          response.request().method() === "PUT" &&
+          new URL(response.url()).pathname ===
+            `/api/recipes/${recipeId}/publication`,
+      );
+      await page.getByRole("button", { name: "Save publication settings" }).click();
+      expect((await publishResponsePromise).status()).toBe(200);
+      const ownerRead = await page.request.get(`/api/recipes/${recipeId}`);
+      expect(ownerRead.status()).toBe(200);
+
+      await anonPage.goto("/");
+      await expect(
+        anonPage.getByRole("button", { name: `Open ${title}` }),
+      ).toBeVisible();
+      await anonPage
+        .getByRole("button", { name: `Open ${title}` })
+        .click();
+      await expect(
+        anonPage.getByRole("dialog", { name: title }),
+      ).toBeVisible();
+      await expect(
+        anonPage.getByRole("button", { name: "Manage publication" }),
+      ).toHaveCount(0);
+      expect(anonymousPolicyRequests).toEqual([]);
+    });
+
+    await test.step("Withdraw and preserve owner access", async () => {
+      await page.getByLabel("Public browsing status").selectOption("withdrawn");
+      await page
+        .getByRole("checkbox", { name: /withdrawal stops new distribution/i })
+        .check();
+      const withdrawResponsePromise = page.waitForResponse(
+        (response) =>
+          response.request().method() === "PUT" &&
+          new URL(response.url()).pathname ===
+            `/api/recipes/${recipeId}/publication`,
+      );
+      await page.getByRole("button", { name: "Save publication settings" }).click();
+      expect((await withdrawResponsePromise).status()).toBe(200);
+
+      await anonPage.goto("/");
+      await expect(
+        anonPage.getByRole("button", { name: `Open ${title}` }),
+      ).toHaveCount(0);
+      expect(
+        (await anonPage.request.get("/api/public/recipes?limit=24&offset=0")).status(),
+      ).toBe(200);
+      expect((await page.request.get(`/api/recipes/${recipeId}`)).status()).toBe(200);
+    });
   } finally {
     try {
       if (adminContextChangedPublicSetting && originalPublicInstance === false) {

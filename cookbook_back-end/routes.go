@@ -45,6 +45,7 @@ func handlerWithAuthConfig(db *sql.DB, auth authHandler, cfg config) http.Handle
 	mux.Handle("DELETE /api/auth/sessions/{id}", csrfProtection(auth.origin, requireSession(db, auditChanges(db, sessions))))
 	mux.Handle("/api/auth/", auth)
 	mux.Handle("GET /api/public/recipes", publicRecipeHandler{db: db})
+	mux.Handle("GET /api/public/recipes/{id}", publicRecipeDetailHandler{db: db})
 	mux.Handle("GET /api/public/remote-recipes", publicFederationRecipesHandler{db: db})
 	mux.Handle("/api/public/cookbooks", publicCookbooksHandler{db: db})
 	mux.Handle("/api/public/cookbooks/{id}/recipes", publicCookbookRecipesHandler{db: db})

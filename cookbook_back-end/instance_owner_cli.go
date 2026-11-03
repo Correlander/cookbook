@@ -13,6 +13,7 @@ import (
 )
 
 const instanceOwnerCLIUsage = `Usage:
+  cookbook-backend instance account create --email <address> --display-name <name>
   cookbook-backend instance account lookup --email <address>
   cookbook-backend instance owner claim --account-id <id>
   cookbook-backend instance owner recover --account-id <id> --reason <reason>
@@ -22,14 +23,15 @@ const instanceOwnerCLIUsage = `Usage:
   cookbook-backend instance recovery verify --database <path> --manifest <path|->
 
 The server must be stopped for all commands. Mutating owner and passkey commands
-also require an interactive confirmation; account lookup is read-only.`
+also require an interactive confirmation. Account creation is a confirmed
+offline operation; account lookup is read-only.`
 
 func runInstanceOwnerCLI(args []string, input io.Reader, output io.Writer) (bool, error) {
 	if len(args) == 0 || args[0] != "instance" {
 		return false, nil
 	}
 	if len(args) > 1 && args[1] == "account" {
-		return runInstanceAccountCLI(args[2:], output)
+		return runInstanceAccountCLI(args[2:], input, output)
 	}
 	if len(args) > 1 && args[1] == "passkey-enrollment" {
 		return runPasskeyEnrollmentCLI(args[2:], input, output)

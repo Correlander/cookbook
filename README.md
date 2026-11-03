@@ -48,9 +48,20 @@ podman compose stop cookbook
 podman compose run --rm --no-deps -T cookbook instance account lookup --email admin@example.test
 ```
 
-The command requires an exact email match and prints the account ID, email, and display name for confirmation. It opens the database read-only, makes no account changes, and does not report or infer email verification or roles. Use the returned ID with the initial passkey enrollment command below; that grant is separately confirmed and does not change account roles.
+The command requires an exact email match and prints the account ID, email, and display name as one JSON line so terminal control characters in stored names are escaped. It opens the database read-only, makes no account changes, and does not report or infer email verification or roles. Use the returned ID with the initial passkey enrollment command below; that grant is separately confirmed and does not change account roles.
 
-The command prompts for an exact confirmation. Claiming changes no administrator role, account credentials, content ownership or private-content access. After claim, only the instance owner can grant or revoke administrator roles or stage/activate the local federation signing-key rotation. Existing administrators retain ordinary admin features and peer management, but lose those instance-identity controls. Before the first claim, existing administrators retain their current role and federation identity controls. The canonical federation origin remains a host-operator startup setting (`COOKBOOK_FEDERATION_ORIGIN`); it is not changed through admin settings.
+To add another household member when email delivery is unavailable, the host operator can create an ordinary account on an already initialized instance. Stop the backend and run:
+
+```sh
+podman compose stop cookbook
+podman compose run --rm --no-deps cookbook instance account create --email member@example.test --display-name "Household Member"
+podman compose run --rm --no-deps cookbook instance passkey-enrollment issue --account-id <account-id>
+podman compose up -d cookbook
+```
+
+Account creation requires typing the exact `CREATE ACCOUNT` confirmation shown and acquiring the exclusive maintenance lock. Create and lookup commands print the identity as one JSON line, escaping terminal control characters in stored or supplied names. The create command uses the host operator's authority to provision one local account from the supplied email and display name; it does not verify mailbox ownership or send email. It rejects a missing or uninitialized database before creating its maintenance-lock file, then rechecks initialized account state after acquiring the lock. The account has no credential, session, administrator or owner role, Person actor, or passkey grant. The separately confirmed passkey-enrollment command creates the one-time grant; give its token to the account holder through a secure channel. If the instance has no accounts yet, create the initial administrator through the first-start `COOKBOOK_ADMIN_EMAIL` setup above; `account create` refuses to replace that bootstrap path.
+
+The owner-claim command prompts for an exact confirmation. Claiming changes no administrator role, account credentials, content ownership or private-content access. After claim, only the instance owner can grant or revoke administrator roles or stage/activate the local federation signing-key rotation. Existing administrators retain ordinary admin features and peer management, but lose those instance-identity controls. Before the first claim, existing administrators retain their current role and federation identity controls. The canonical federation origin remains a host-operator startup setting (`COOKBOOK_FEDERATION_ORIGIN`); it is not changed through admin settings.
 
 Role changes and signing-key rotations serialize with owner-transfer acceptance. A mutation that already holds the database writer lock finishes before the transfer; a request that acquires the lock after acceptance rechecks the new authority and is denied if the caller no longer controls instance identity. This does not cancel requests or sessions; the gate applies to these protected writes.
 

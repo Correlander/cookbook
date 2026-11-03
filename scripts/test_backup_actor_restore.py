@@ -23,6 +23,141 @@ BACKEND = ROOT / "cookbook_back-end"
 RUN_GO = ROOT.parent / "engineering-local" / "tools" / "run-go"
 
 
+def cleanup_owned_images(image_tag, image_id, layer_label, run_command):
+    errors = []
+
+    if image_id:
+        try:
+            inspect = run_command(["podman", "image", "inspect", "--format", "{{.Id}}", image_tag])
+            if inspect.returncode:
+                raise RuntimeError(f"tag inspection failed: {inspect.stderr[-500:]}")
+            if inspect.stdout.strip() != image_id:
+                raise RuntimeError("fixture image tag no longer resolves to the inspected image ID")
+            removal = run_command(["podman", "image", "rm", image_id])
+            if removal.returncode:
+                raise RuntimeError(f"fixture image removal failed: {removal.stderr[-500:]}")
+        except Exception as exc:
+            errors.append(str(exc))
+
+    label_key, separator, label_value = layer_label.partition("=")
+    if not separator or not label_key or not label_value:
+        errors.append("invalid temporary layer label")
+    else:
+        def list_owned_layers():
+            result = run_command([
+                "podman", "image", "ls", "--all", "--no-trunc", "--format", "{{.Id}}",
+                "--filter", f"label={layer_label}",
+            ])
+            if result.returncode:
+                raise RuntimeError(f"owned layer enumeration failed: {result.stderr[-500:]}")
+            image_ids = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+            if any(not re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", image_id) for image_id in image_ids):
+                raise RuntimeError("owned layer enumeration returned an invalid image ID")
+            return image_ids
+
+        try:
+            remaining = list_owned_layers()
+            removal_errors = {}
+            while remaining:
+                before = remaining
+                for owned_id in sorted(before):
+                    if owned_id not in list_owned_layers():
+                        removal_errors.pop(owned_id, None)
+                        continue
+                    template = '{{.Id}}|{{index .Config.Labels "' + label_key + '"}}'
+                    verification = run_command(["podman", "image", "inspect", "--format", template, owned_id])
+                    if verification.returncode:
+                        if owned_id in list_owned_layers():
+                            removal_errors[owned_id] = f"ownership verification failed: {verification.stderr[-500:]}"
+                        else:
+                            removal_errors.pop(owned_id, None)
+                        continue
+                    verified_id, separator, verified_label = verification.stdout.strip().partition("|")
+                    if not separator or verified_id.removeprefix("sha256:") != owned_id.removeprefix("sha256:") or verified_label != label_value:
+                        removal_errors[owned_id] = "ownership verification failed; image left untouched"
+                        continue
+                    removal = run_command(["podman", "image", "rm", owned_id])
+                    still_owned = owned_id in list_owned_layers()
+                    if removal.returncode and still_owned:
+                        removal_errors[owned_id] = f"image removal failed: {removal.stderr[-500:]}"
+                    elif not removal.returncode and still_owned:
+                        removal_errors[owned_id] = "image removal returned success but the labeled image remains"
+                    else:
+                        removal_errors.pop(owned_id, None)
+                remaining = list_owned_layers()
+                if remaining and remaining == before:
+                    break
+            if remaining:
+                details = [f"{image_id}: {removal_errors.get(image_id, 'removal made no progress')}" for image_id in sorted(remaining)]
+                errors.append("owned layers remain after cleanup: " + "; ".join(details))
+        except Exception as exc:
+            errors.append(str(exc))
+
+    if errors:
+        raise RuntimeError("; ".join(errors))
+
+
+class _FakeImageEngine:
+    def __init__(self, labels, *, fail_query=False, fail_removals=()):
+        self.labels = dict(labels)
+        self.fail_query = fail_query
+        self.fail_removals = set(fail_removals)
+        self.commands = []
+        self.removed = []
+
+    def __call__(self, args):
+        self.commands.append(args)
+        if args[:3] == ["podman", "image", "ls"]:
+            if "--all" not in args:
+                return subprocess.CompletedProcess(args, 2, "", "missing --all")
+            if self.fail_query:
+                return subprocess.CompletedProcess(args, 125, "", "injected image query failure")
+            label_filter = next((item for item in args if item.startswith("label=")), "")
+            wanted = label_filter.removeprefix("label=")
+            ids = sorted(image_id for image_id, label in self.labels.items() if label == wanted)
+            return subprocess.CompletedProcess(args, 0, "\n".join(ids), "")
+        if args[:3] == ["podman", "image", "inspect"]:
+            image_id = args[-1]
+            if image_id not in self.labels:
+                return subprocess.CompletedProcess(args, 1, "", "image not found")
+            label = self.labels[image_id]
+            return subprocess.CompletedProcess(args, 0, f'{image_id}|{label.split("=", 1)[1]}', "")
+        if args[:3] == ["podman", "image", "rm"]:
+            image_id = args[3]
+            if image_id in self.fail_removals:
+                return subprocess.CompletedProcess(args, 125, "", "injected image removal failure")
+            self.removed.append(image_id)
+            self.labels.pop(image_id, None)
+            return subprocess.CompletedProcess(args, 0, image_id, "")
+        return subprocess.CompletedProcess(args, 2, "", "unexpected fake Podman command")
+
+
+class OwnedImageCleanupTests(unittest.TestCase):
+    def test_cleanup_uses_all_layers_and_preserves_unrelated_images(self):
+        run_label = "com.cookbook.test-run=run-123"
+        engine = _FakeImageEngine({
+            "sha256:" + "a" * 64: run_label,
+            "sha256:" + "b" * 64: run_label,
+            "sha256:" + "c" * 64: "com.cookbook.test-run=other-run",
+        })
+        cleanup_owned_images("unused", None, run_label, engine)
+        self.assertEqual(set(engine.removed), {"sha256:" + "a" * 64, "sha256:" + "b" * 64})
+        self.assertIn("sha256:" + "c" * 64, engine.labels)
+        self.assertTrue(all("--all" in command for command in engine.commands if command[:3] == ["podman", "image", "ls"]))
+
+    def test_cleanup_surfaces_owned_image_query_failure(self):
+        engine = _FakeImageEngine({}, fail_query=True)
+        with self.assertRaisesRegex(RuntimeError, "owned layer enumeration failed"):
+            cleanup_owned_images("unused", None, "com.cookbook.test-run=run-123", engine)
+
+    def test_cleanup_surfaces_intermediate_image_removal_failure(self):
+        run_label = "com.cookbook.test-run=run-123"
+        image_id = "sha256:" + "a" * 64
+        engine = _FakeImageEngine({image_id: run_label}, fail_removals={image_id})
+        with self.assertRaisesRegex(RuntimeError, "image removal failed"):
+            cleanup_owned_images("unused", None, run_label, engine)
+
+
 @unittest.skipUnless(os.environ.get("COOKBOOK_RUN_BACKUP_ACTOR_RESTORE") == "1",
                      "set COOKBOOK_RUN_BACKUP_ACTOR_RESTORE=1 to run the disposable Podman proof")
 class ActorColdRestoreProof(unittest.TestCase):
@@ -32,6 +167,7 @@ class ActorColdRestoreProof(unittest.TestCase):
         suffix = uuid.uuid4().hex[:16]
         project = f"cookbookactor{suffix}"
         image_tag = f"localhost/cookbook-backup-actor-proof:{suffix}"
+        layer_label = f"com.cookbook.test-run={suffix}"
         image_id = None
         temporary = tempfile.TemporaryDirectory(prefix="cookbook-actor-proof-")
         root = Path(temporary.name)
@@ -63,7 +199,8 @@ class ActorColdRestoreProof(unittest.TestCase):
 
         try:
             # Build this exact checkout as a private local fixture image. The build is offline.
-            run(["podman", "build", "--pull=never", "--network=none", "--tag", image_tag, "-f", "Dockerfile", "."],
+            run(["podman", "build", "--pull=never", "--network=none", "--layer-label", layer_label,
+                 "--tag", image_tag, "-f", "Dockerfile", "."],
                 cwd=build_context, timeout=600)
             image_id = run(["podman", "image", "inspect", "--format", "{{.Id}}", image_tag])
             if not re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", image_id):
@@ -98,9 +235,39 @@ func TestBackupActorFixture(t *testing.T) {
             connection = sqlite3.connect(database)
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA wal_autocheckpoint=0")
+            connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("CREATE TABLE proof_marker(value TEXT NOT NULL)")
             connection.execute("INSERT INTO proof_marker VALUES('cold-restore-proof')")
             connection.execute("UPDATE person_actor_ids SET state='retired',retired_at='proof' WHERE actor_id=(SELECT actor_id FROM person_actors WHERE user_id='fixture-retired')")
+            profile_id = "a" * 32
+            local_attribution_id = "b" * 32
+            foreign_source_id = "c" * 32
+            foreign_creator_id = "d" * 32
+            external_attribution_id = "e" * 32
+            connection.execute(
+                """INSERT INTO creator_profiles
+                   (creator_id,user_id,public_name,bio,visibility,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (profile_id, "fixture-user", "Restored Creator", "v7 profile proof", "private", "created", "updated"),
+            )
+            connection.execute(
+                """INSERT INTO recipes
+                   (id,owner_id,creator_name,title,visibility,edit_policy,version,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                ("profile-proof-recipe", "fixture-user", "", "Profile recovery proof", "private", "owner_only", 1, "created", "updated"),
+            )
+            connection.execute(
+                """INSERT INTO content_attributions
+                   (id,recipe_id,subject_kind,creator_id,role,provenance,created_at)
+                   VALUES(?,?,'local',?,'creator','self_asserted_at_creation','created')""",
+                (local_attribution_id, "profile-proof-recipe", profile_id),
+            )
+            connection.execute(
+                """INSERT INTO content_attributions
+                   (id,recipe_id,subject_kind,claim_source_instance_id,claim_creator_id,claim_name,role,provenance,created_at)
+                   VALUES(?,?,'external_claim',?,?,?,'contributor','portable_import','created')""",
+                (external_attribution_id, "profile-proof-recipe", foreign_source_id, foreign_creator_id, "Foreign Claim"),
+            )
             connection.commit()
             if not Path(str(database) + "-wal").is_file():
                 self.fail("fixture did not produce the required SQLite WAL")
@@ -190,18 +357,65 @@ volumes:
             with sqlite3.connect(recovered_snapshot / "cookbook.db") as restored_db:
                 marker = restored_db.execute("SELECT value FROM proof_marker").fetchone()
             self.assertEqual(marker, ("cold-restore-proof",))
+            with sqlite3.connect(recovered_snapshot / "cookbook.db") as restored_db:
+                restored_db.execute("PRAGMA foreign_keys=ON")
+                tables = {row[0] for row in restored_db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                self.assertTrue({"creator_profiles", "content_attributions"}.issubset(tables))
+                profile = restored_db.execute(
+                    "SELECT creator_id,user_id,public_name,bio,visibility,created_at,updated_at "
+                    "FROM creator_profiles WHERE creator_id=?", (profile_id,),
+                ).fetchone()
+                self.assertEqual(profile, (profile_id, "fixture-user", "Restored Creator", "v7 profile proof", "private", "created", "updated"))
+                local_attribution = restored_db.execute(
+                    "SELECT recipe_id,cookbook_id,subject_kind,creator_id,role,provenance "
+                    "FROM content_attributions WHERE id=?", (local_attribution_id,),
+                ).fetchone()
+                self.assertEqual(local_attribution, ("profile-proof-recipe", None, "local", profile_id, "creator", "self_asserted_at_creation"))
+                external_attribution = restored_db.execute(
+                    "SELECT recipe_id,cookbook_id,subject_kind,creator_id,claim_source_instance_id,claim_creator_id,claim_name,role,provenance "
+                    "FROM content_attributions WHERE id=?", (external_attribution_id,),
+                ).fetchone()
+                self.assertEqual(
+                    external_attribution,
+                    ("profile-proof-recipe", None, "external_claim", None, foreign_source_id, foreign_creator_id, "Foreign Claim", "contributor", "portable_import"),
+                )
+                self.assertEqual(restored_db.execute("PRAGMA foreign_key_check").fetchall(), [])
+                with self.assertRaises(sqlite3.IntegrityError):
+                    restored_db.execute("DELETE FROM creator_profiles WHERE creator_id=?", (profile_id,))
+                with self.assertRaises(sqlite3.IntegrityError):
+                    restored_db.execute(
+                        """INSERT INTO content_attributions
+                           (id,subject_kind,creator_id,role,provenance,created_at)
+                           VALUES(?,'local',?,'creator','self_asserted_at_creation','created')""",
+                        ("f" * 32, profile_id),
+                    )
+                with self.assertRaises(sqlite3.IntegrityError):
+                    restored_db.execute(
+                        """INSERT INTO content_attributions
+                           (id,recipe_id,subject_kind,creator_id,role,provenance,created_at)
+                           VALUES(?,?,'local',?,'creator','self_asserted_at_creation','created')""",
+                        ("f" * 32, "profile-proof-recipe", profile_id),
+                    )
+                self.assertEqual(
+                    restored_db.execute("SELECT COUNT(*) FROM creator_profiles WHERE creator_id=?", (profile_id,)).fetchone(),
+                    (1,),
+                )
             self.assertEqual(run(["podman", "compose", "ps", "--status", "running", "--services"]), "cookbook")
         finally:
             try:
-                subprocess.run(["podman", "compose", "down", "--volumes", "--remove-orphans"], cwd=ROOT,
-                               env=env, capture_output=True, timeout=60, check=False)
+                if compose_file.exists():
+                    stopped = subprocess.run(["podman", "compose", "down", "--volumes", "--remove-orphans"], cwd=ROOT,
+                                             env=env, capture_output=True, text=True, timeout=60, check=False)
+                    if stopped.returncode:
+                        raise RuntimeError(f"fixture compose cleanup failed: {stopped.stderr[-1000:]}")
             finally:
-                if image_id:
-                    current = subprocess.run(["podman", "image", "inspect", "--format", "{{.Id}}", image_tag],
-                                             capture_output=True, text=True, timeout=20, check=False)
-                    if current.returncode == 0 and current.stdout.strip() == image_id:
-                        subprocess.run(["podman", "image", "rm", image_id], capture_output=True, timeout=30, check=False)
-                temporary.cleanup()
+                try:
+                    cleanup_owned_images(
+                        image_tag, image_id, layer_label,
+                        lambda args: subprocess.run(args, capture_output=True, text=True, timeout=30),
+                    )
+                finally:
+                    temporary.cleanup()
 
 
 if __name__ == "__main__":

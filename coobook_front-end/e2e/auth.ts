@@ -33,10 +33,29 @@ export async function signInWithSyntheticEmail(
     throw new Error("synthetic sign-in link was not captured");
   await unlink(capturePath);
   await page.goto(payload.sign_in_url);
+  const passkeysResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname === "/api/auth/passkeys",
+  );
   await page.getByRole("button", { name: /continue to cookbook/i }).click();
   await expect
     .poll(async () => (await page.request.get("/api/auth/me")).status())
     .toBe(200);
+  const passkeysResponse = await passkeysResponsePromise;
+  const shouldOfferPasskeySetup = passkeysResponse.ok()
+    ? ((await passkeysResponse.json()) as unknown[]).length === 0
+    : false;
+  const confirmationDialog = page.getByRole("dialog", {
+    name: "Confirm your sign-in",
+  });
+  await expect(confirmationDialog).toBeHidden();
+  const passkeyPrompt = page.getByRole("dialog", { name: "Add a passkey?" });
+  if (shouldOfferPasskeySetup) {
+    await expect(passkeyPrompt).toBeVisible();
+    await passkeyPrompt.getByRole("button", { name: "Not now" }).click();
+  }
+  await expect(passkeyPrompt).toBeHidden();
   return (await page.request.get("/api/auth/me").then((result) =>
     result.json(),
   )) as { is_admin: boolean };

@@ -18,6 +18,40 @@ const browserDefaults = parseArgs([...imageArgs, '--browser'])
 assert.equal(browserDefaults.timeoutMs, 240000)
 assert.equal(browserDefaults.commandTimeoutMs, 120000)
 
+const workerTemplatePath = fileURLToPath(new URL('../../deploy/cloudflare/worker.js.template', import.meta.url))
+const workerTemplate = await readFile(workerTemplatePath, 'utf8')
+const workerModule = await import(`data:text/javascript;base64,${Buffer.from(workerTemplate).toString('base64')}`)
+assert.ok(workerTemplate.indexOf("if (url.pathname.startsWith('/api/')") < workerTemplate.indexOf('const assetPath = staticDocuments.get(url.pathname)'), 'Worker must proxy API and health routes before static document mapping')
+const playwrightConfig = await readFile(new URL('../e2e/playwright.config.ts', import.meta.url), 'utf8')
+const creatorProfileSpec = await readFile(new URL('../e2e/creator-profile.spec.ts', import.meta.url), 'utf8')
+assert.match(playwrightConfig, /testMatch:\s*'\*\*\/\*\.spec\.ts'/, 'Caddy browser suite must use the shared all-spec discovery config')
+assert.match(creatorProfileSpec, /creator profile static roots/, 'creator profile route coverage must remain a discoverable Playwright spec')
+const caddyfilePath = fileURLToPath(new URL('../../deploy/Caddyfile', import.meta.url))
+const caddyfile = await readFile(caddyfilePath, 'utf8')
+assert.ok(caddyfile.indexOf('handle @api') < caddyfile.indexOf('import /etc/caddy/static-csp.caddy'), 'Caddy must keep API and health proxy handling before static headers and file serving')
+assert.ok(caddyfile.includes('try_files {path} {path}.html'), 'Caddy must serve extensionless Astro documents from their .html output')
+const assetRequests = []
+const workerEnv = {
+  ASSETS: {
+    async fetch(request) {
+      assetRequests.push(new URL(request.url))
+      return new Response(request.url, { status: 200, headers: { 'content-type': 'text/html' } })
+    },
+  },
+}
+for (const [route, asset] of [
+  ['/creator', '/creator.html'],
+  ['/creator.html', '/creator.html'],
+  ['/account/creator-profile', '/account/creator-profile.html'],
+  ['/account/creator-profile.html', '/account/creator-profile.html'],
+]) {
+  const response = await workerModule.default.fetch(new Request(`https://cookbook.example${route}?id=synthetic`), workerEnv)
+  assert.equal(response.status, 200)
+  const assetRequest = assetRequests.at(-1)
+  assert.equal(assetRequest.pathname, asset)
+  assert.equal(assetRequest.search, '?id=synthetic')
+}
+
 for (const timeoutArgs of [
   ['--timeout-ms', '45000', '--command-timeout-ms', '30000', '--browser'],
   ['--browser', '--timeout-ms', '45000', '--command-timeout-ms', '30000'],
@@ -201,6 +235,7 @@ const specs = failed ? [
   spec('opaque auth title', 'unexpected', 'e2e/auth.ts', 221, 14, 'Error', [{ name: 'TimeoutError', message: 'secondary failure; /private/secret/e2e/static-host.spec.ts:321:4' }]),
   spec('unknown source title', 'unexpected', '/tmp/attacker/e2e/auth.ts', 2, 4),
   spec('out of range title', 'unexpected', 'e2e/static-host.spec.ts', 9999999, 1),
+  spec('private creator profile source title', 'unexpected', 'e2e/creator-profile.spec.ts', 18, 7),
   spec('interleaved skipped case', 'skipped', 'e2e/static-host.spec.ts', 11, 1),
 ] : [
   spec('direct route serves built page', 'expected', 'e2e/static-host.spec.ts', 5, 1),
@@ -214,7 +249,7 @@ if (reportMode === 'all-skipped' || reportMode === 'skipped-passed-result') {
   specs.splice(0, specs.length, spec('skipped only', 'skipped', 'e2e/static-host.spec.ts', 7, 1))
 }
 let report = {
-  stats: { expected: 1, unexpected: failed ? 4 : 0, skipped: 1, flaky: 0 },
+  stats: { expected: 1, unexpected: failed ? 5 : 0, skipped: 1, flaky: 0 },
   suites: [{ title: 'e2e', file: '/private/secret/e2e', line: 0, column: 0, specs }],
 }
 if (reportMode === 'empty') report = {}
@@ -317,8 +352,14 @@ async function runBrowserFixture({ directory, statePath, engine }, port, { fail 
   return result
 }
 
-async function withHttpFixture(run, { redirectRoot = false, oversizeRoot = false } = {}) {
+async function withHttpFixture(run, { redirectRoot = false, oversizeRoot = false, creatorFault = '' } = {}) {
   const csp = "default-src 'self'; script-src 'self'; style-src 'self'"
+  const creatorPages = new Map([
+    ['/creator', 'View a local creator profile on this Cookbook instance.'],
+    ['/creator.html', 'View a local creator profile on this Cookbook instance.'],
+    ['/account/creator-profile', 'Manage your local creator profile on this Cookbook instance.'],
+    ['/account/creator-profile.html', 'Manage your local creator profile on this Cookbook instance.'],
+  ])
   const server = createServer((request, response) => {
     if (redirectRoot && request.url === '/') {
       response.writeHead(302, { location: 'http://example.invalid/redirect-target' }).end()
@@ -339,6 +380,19 @@ async function withHttpFixture(run, { redirectRoot = false, oversizeRoot = false
     } else if (request.url?.startsWith('/auth/confirm?')) {
       response.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store', 'content-security-policy': csp })
         .end('<!doctype html><html><title>Confirm</title></html>')
+    } else if (creatorPages.has(new URL(request.url ?? '/', 'http://localhost').pathname)) {
+      const path = new URL(request.url ?? '/', 'http://localhost').pathname
+      const description = creatorPages.get(path)
+      const route = path.startsWith('/account/') ? 'account/creator-profile' : 'creator'
+      const headers = {
+        'content-type': 'text/html', 'cache-control': 'no-store',
+        'content-security-policy': csp, 'referrer-policy': 'no-referrer',
+      }
+      if (creatorFault === 'missing-csp') delete headers['content-security-policy']
+      if (creatorFault === 'cacheable') headers['cache-control'] = 'public, max-age=60'
+      if (creatorFault === 'missing-referrer') delete headers['referrer-policy']
+      const bodyRoute = creatorFault === 'wrong-alias' && path.endsWith('.html') ? 'other-page' : route
+      response.writeHead(200, headers).end(`<!doctype html><html><head><title>Creator profile — Cookbook</title><meta name="description" content="${description}"></head><body>${bodyRoute}</body></html>`)
     } else if (request.url === '/_astro/app.js') {
       response.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'public, max-age=31536000, immutable' }).end('')
     } else if (request.url === '/api/auth/consume' && request.method === 'POST') {
@@ -507,6 +561,39 @@ await withHttpFixture(async (port) => withFakeEngine(async ({ statePath, engine 
   assert.equal(state.networks.length, 0)
 }), { oversizeRoot: true })
 
+await withHttpFixture(async (port) => withFakeEngine(async ({ statePath, engine }) => {
+  const result = await runRunner([
+    '--engine', engine,
+    '--frontend-image', 'frontend:fixture',
+    '--backend-image', 'backend:fixture',
+  ], { CADDY_TEST_STATE: statePath, CADDY_TEST_PORT: String(port) })
+  assert.equal(result.code, 0, result.stdout + result.stderr)
+  assert.match(result.stdout, /Caddy\/Go proxy smoke passed/)
+  const state = await loadState(statePath)
+  assert.equal(state.containers.length, 0)
+  assert.equal(state.networks.length, 0)
+}))
+
+for (const [creatorFault, expected] of [
+  ['missing-csp', /generated CSP/],
+  ['cacheable', /not no-store/],
+  ['missing-referrer', /Referrer-Policy/],
+  ['wrong-alias', /did not serve the canonical document/],
+]) {
+  await withHttpFixture(async (port) => withFakeEngine(async ({ statePath, engine }) => {
+    const result = await runRunner([
+      '--engine', engine,
+      '--frontend-image', 'frontend:fixture',
+      '--backend-image', 'backend:fixture',
+    ], { CADDY_TEST_STATE: statePath, CADDY_TEST_PORT: String(port) })
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, expected)
+    const state = await loadState(statePath)
+    assert.equal(state.containers.length, 0)
+    assert.equal(state.networks.length, 0)
+  }), { creatorFault })
+}
+
 await withFakeEngine(async ({ statePath, engine }) => {
   const execution = startRunner([
     '--engine', engine,
@@ -558,13 +645,14 @@ for (const reportMode of ['missing', 'malformed', 'oversized']) {
 await withHttpFixture(async (port) => withFakeEngine(async (context) => {
   const result = await runBrowserFixture(context, port, { fail: true, actionability: 'pointer_interception' })
   assert.equal(result.code, 1, result.stdout + result.stderr)
-  assert.match(result.stderr, /Playwright failed: 1 passed, 4 failed, 1 skipped/)
+  assert.match(result.stderr, /Playwright failed: 1 passed, 5 failed, 1 skipped/)
   assert.match(result.stderr, /failed test #1 \(unknown; source=publication-spec; line=47; column=9\)/)
   assert.match(result.stderr, /phase=open_owner_recipe_dialog/)
   assert.match(result.stderr, /actionability=pointer_interception=true,instability=false,detachment=false,invisibility=false,disabled=false,outside_viewport=false/)
   assert.match(result.stderr, /failed test #3 \(Error; source=auth-helper; line=221; column=14\)/)
   assert.match(result.stderr, /failed test #4 \(Error; source=unknown; line=unknown; column=unknown\)/)
   assert.match(result.stderr, /failed test #5 \(Error; source=unknown; line=unknown; column=unknown\)/)
+  assert.match(result.stderr, /failed test #6 \(Error; source=creator-profile-spec; line=18; column=7\)/)
   assert.doesNotMatch(result.stderr, /opaque publication title|opaque auth title|unknown source title|out of range title|https:\/\/|\/private\/secret|token=|PrivateTokenError|TimeoutError|attacker|9999999|888:2|dialog-backdrop|text-link|private link text|<div/)
 }))
 

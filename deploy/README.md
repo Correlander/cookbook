@@ -5,9 +5,9 @@
 Compose builds two independent images:
 
 - Root `Dockerfile` compiles and runs only the Go API. It does not copy Astro files or claim that the API serves the website.
-- `deploy/Dockerfile.frontend` builds Astro static output, generates CSP headers from each built page's CSP meta, and packages only `dist/` with Caddy. Caddy resolves `/auth/confirm` from the standard `auth/confirm.html` file without consuming or dropping query parameters.
+- `deploy/Dockerfile.frontend` builds Astro static output, generates CSP headers from each built page's CSP meta, and packages only `dist/` with Caddy. Caddy resolves extensionless canonical page routes and their `.html` aliases, including `/creator` and `/account/creator-profile`, from the generated static files without consuming or dropping query parameters.
 
-Caddy serves the browser origin and proxies `/api/*` plus `/healthz` to Go. It preserves the incoming public Host and Origin and passes Go response headers/status/body through. API errors and unknown API routes never fall back to the static root. Static HTML is `no-store`; only hashed `/_astro/` assets receive long-lived immutable caching. The root Compose port is loopback-only at 8080. Use `podman compose up --build` and stop with `podman compose down`; the named database volume persists.
+Caddy serves the browser origin and proxies `/api/*` plus `/healthz` to Go. It preserves the incoming public Host and Origin and passes Go response headers/status/body through. API errors and unknown API routes never fall back to the static root. Every HTML canonical route and `.html` alias receives its generated page CSP, `Cache-Control: no-store`, and `Referrer-Policy: no-referrer`; only hashed `/_astro/` assets receive long-lived immutable caching. The root Compose port is loopback-only at 8080. Use `podman compose up --build` and stop with `podman compose down`; the named database volume persists.
 
 ## Frontend build and CSP
 

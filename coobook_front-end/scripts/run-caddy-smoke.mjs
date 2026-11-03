@@ -200,6 +200,35 @@ async function checkSmoke(origin) {
   assert(confirmationCsp === homeCsp || (confirmationCsp.includes("default-src 'self'") && confirmationCsp.includes("script-src 'self'")), 'confirmation route CSP is missing')
   assert(!confirmationHtml.includes('synthetic-invalid-token'), 'confirmation query token leaked into static HTML')
 
+  const creatorPages = [
+    { route: '/creator', description: 'View a local creator profile on this Cookbook instance.' },
+    { route: '/account/creator-profile', description: 'Manage your local creator profile on this Cookbook instance.' },
+  ]
+  for (const page of creatorPages) {
+    let canonicalHtml
+    let canonicalCsp
+    for (const path of [page.route, `${page.route}.html`]) {
+      const response = await request(`${origin}${path}?static-route-check=creator`)
+      const html = await responseText(response, 2 * 1024 * 1024, `static page ${path}`)
+      const csp = response.headers.get('content-security-policy') ?? ''
+      assert(response.status === 200 && (response.headers.get('content-type') ?? '').includes('text/html'), `static page ${path} did not return HTML`)
+      assert(response.headers.get('cache-control') === 'no-store', `static page ${path} is not no-store`)
+      assert(response.headers.get('referrer-policy') === 'no-referrer', `static page ${path} is missing Referrer-Policy`)
+      assert(csp.includes("default-src 'self'") && csp.includes("script-src 'self'"), `static page ${path} is missing its generated CSP`)
+      assert(!/unsafe-inline|unsafe-eval/.test(csp), `static page ${path} CSP permits unsafe execution`)
+      assert(html.includes('<title>Creator profile — Cookbook</title>'), `static page ${path} served the wrong document title`)
+      assert(html.includes(page.description), `static page ${path} served the wrong creator document`)
+      assert(!html.includes('static-route-check'), `static page ${path} leaked its request query into the document`)
+      if (path === page.route) {
+        canonicalHtml = html
+        canonicalCsp = csp
+      } else {
+        assert(html === canonicalHtml, `static alias ${path} did not serve the canonical document`)
+        assert(csp === canonicalCsp, `static alias ${path} did not use the canonical generated CSP`)
+      }
+    }
+  }
+
   const assetPath = homeHtml.match(/(?:src|href)="(\/_astro\/[^"?#]+)"/)?.[1]
   assert(assetPath, 'static root did not reference a built Astro asset')
   const asset = await request(new URL(assetPath, origin))
@@ -248,6 +277,7 @@ function safeErrorClass(candidate) {
 
 const safeFailureSources = new Map([
   ['e2e/recipe-publication.spec.ts', 'publication-spec'],
+  ['e2e/creator-profile.spec.ts', 'creator-profile-spec'],
   ['e2e/static-host.spec.ts', 'static-host-spec'],
   ['e2e/auth.ts', 'auth-helper'],
 ])

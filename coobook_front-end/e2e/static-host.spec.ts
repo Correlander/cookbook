@@ -67,7 +67,9 @@ test('serves direct account and admin route aliases with private CSP and anonymo
   const policies = JSON.parse(await readFile(`${process.env.PLAYWRIGHT_DIST}/static-csp.json`, 'utf8')) as Array<{ route: string; policy: string }>
   const routes = [
     { route: '/account/security', title: /Account security/ },
+    { route: '/account/creator-profile', title: /Creator profile/, description: 'Manage your local creator profile on this Cookbook instance.' },
     { route: '/admin/settings', title: /Instance settings/ },
+    { route: '/creator', title: /Creator profile/, description: 'View a local creator profile on this Cookbook instance.' },
   ]
 
   for (const route of routes) {
@@ -81,8 +83,10 @@ test('serves direct account and admin route aliases with private CSP and anonymo
       expect(response?.status(), path).toBe(200)
       expect(response?.headers()['cache-control'], path).toBe('no-store')
       expect(response?.headers()['content-security-policy'], path).toBe(policy)
+      expect(response?.headers()['referrer-policy'], path).toBe('no-referrer')
       await expect(page).toHaveURL(new RegExp(`${path.replaceAll('/', '\\/')}$`))
       await expect(page).toHaveTitle(route.title)
+      if (route.description) await expect(page.locator('meta[name="description"]')).toHaveAttribute('content', route.description)
       await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', 'noindex,nofollow')
       await expect(page.getByRole('heading', { name: 'Sign in to continue' })).toBeVisible()
     }

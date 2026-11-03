@@ -1,5 +1,20 @@
 // Optional infrastructure-only proxy template. Static asset requests fall through
 // to the Workers Static Assets binding; API and health requests pass through to Go.
+const staticDocuments = new Map([
+  ['/', '/index.html'],
+  ['/auth/confirm', '/auth/confirm.html'],
+  ['/auth/enroll', '/auth/enroll.html'],
+  ['/account/security', '/account/security.html'],
+  ['/account/creator-profile', '/account/creator-profile.html'],
+  ['/creator', '/creator.html'],
+  ['/admin', '/admin.html'],
+  ['/admin/settings', '/admin/settings.html'],
+  ['/library', '/library.html'],
+  ['/recipe', '/recipe.html'],
+  ['/cookbooks', '/cookbooks.html'],
+  ['/cookbook', '/cookbook.html'],
+])
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url)
@@ -10,6 +25,13 @@ export default {
       const proxied = new Request(request)
       return fetch(proxied, { cf: { resolveOverride: env.GO_API_ORIGIN_HOST } })
     }
+
+    const assetPath = staticDocuments.get(url.pathname)
+    if (assetPath && (request.method === 'GET' || request.method === 'HEAD')) {
+      url.pathname = assetPath
+      return env.ASSETS.fetch(new Request(url, request))
+    }
+
     return env.ASSETS.fetch(request)
   },
 }

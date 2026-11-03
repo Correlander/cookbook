@@ -3,11 +3,14 @@ export interface ApiFailure {
   message?: string;
 }
 
-export interface UserSummary {
+export interface AuthenticatedUser {
   id: string;
   email: string;
   display_name: string;
   is_admin: boolean;
+}
+
+export interface AdminUser extends AuthenticatedUser {
   created_at: string;
 }
 
@@ -52,8 +55,6 @@ export interface AdminSettingsModel {
   public_recipes: number;
   public_courses: number;
 }
-
-export type AdminUser = UserSummary;
 
 export interface Course {
   id: string;

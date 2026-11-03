@@ -7,9 +7,10 @@ import { fetchRecipeDetail } from "../features/recipes/recipeDetailApi.ts";
 import type { Recipe } from "../apiModels";
 import type { RecipeDetailRead } from "../features/recipes/recipeDetailApi.ts";
 import useRecipeBookmarks from "../features/library/useRecipeBookmarks.ts";
+import { SessionCheckError } from "./AppSession.tsx";
 
 function RecipeDetailPage() {
-  const { currentUser, loading: sessionLoading, clearSession } = useAppSession();
+  const { state, currentUser, refreshSession, clearSession } = useAppSession();
   const [recipeID, setRecipeID] = useState("");
   const [recipe, setRecipe] = useState<RecipeDetailRead | null>(null);
   const [loading, setLoading] = useState(true);
@@ -17,8 +18,8 @@ function RecipeDetailPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const bookmarks = useRecipeBookmarks(
-    currentUser?.id ?? null,
-    Boolean(currentUser && recipe),
+    state.status === "authenticated" ? state.currentUser.id : null,
+    state.status === "authenticated" && Boolean(recipe),
   );
 
   useEffect(() => {
@@ -26,16 +27,23 @@ function RecipeDetailPage() {
   }, []);
 
   useEffect(() => {
-    if (sessionLoading || !recipeID) {
-      setLoading(sessionLoading);
-      if (!recipeID && !sessionLoading) setUnavailable(true);
+    if (state.status === "loading" || state.status === "error") {
+      setLoading(state.status === "loading");
+      setUnavailable(false);
+      setRecipe(null);
+      return;
+    }
+    if (!recipeID) {
+      setLoading(false);
+      setUnavailable(true);
+      setRecipe(null);
       return;
     }
     let active = true;
     setLoading(true);
     setUnavailable(false);
     setRecipe(null);
-    void fetchRecipeDetail(recipeID, Boolean(currentUser))
+    void fetchRecipeDetail(recipeID, state.status === "authenticated")
       .then((result) => {
         if (active) setRecipe(result);
       })
@@ -48,7 +56,7 @@ function RecipeDetailPage() {
     return () => {
       active = false;
     };
-  }, [currentUser, recipeID, sessionLoading]);
+  }, [currentUser, recipeID, state.status]);
 
   const localRecipe = recipe && "can_edit" in recipe ? recipe : null;
   const isPublicRead = Boolean(recipe && !localRecipe);
@@ -60,12 +68,26 @@ function RecipeDetailPage() {
 
   return (
     <div className="app-content">
-      <AppNavigation currentUser={currentUser} pathname="/recipe" />
+      <AppNavigation
+        currentUser={currentUser}
+        pathname="/recipe"
+        sessionStatus={state.status}
+        onRetrySession={() => void refreshSession()}
+      />
       <main id="home" tabIndex={-1}>
         <section className="cookbook-dashboard" aria-label="Recipe detail navigation">
           <a className="text-link" href="/library">Back to Library</a>
         </section>
-        {loading ? (
+        {state.status === "error" ? (
+          <SessionCheckError
+            message={state.message}
+            onRetry={() => void refreshSession()}
+          />
+        ) : state.status === "loading" ? (
+          <p className="cookbook-dashboard" role="status">
+            Checking your session…
+          </p>
+        ) : loading ? (
           <p className="cookbook-dashboard" role="status">Loading recipe…</p>
         ) : unavailable || !recipe ? (
           <section className="cookbook-dashboard" aria-labelledby="recipe-unavailable-title">

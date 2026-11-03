@@ -6,7 +6,7 @@ import type {
   Recipe,
   RecipeCreatePayload,
   RecipeWritePayload,
-  UserSummary,
+  AuthenticatedUser,
 } from "../../apiModels";
 import { errorMessage } from "../../apiModels";
 import { createStep } from "../../steps.ts";
@@ -16,7 +16,7 @@ import Icon from "./RecipeIcon.tsx";
 const StepListEditor = lazy(() => import("../../StepListEditor.tsx"));
 
 interface RecipeFormProps {
-  user: UserSummary | null;
+  user: AuthenticatedUser | null;
   recipe: Recipe | null;
   onClose: () => void;
   onCreated: (recipe: Recipe) => void;

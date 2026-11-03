@@ -23,9 +23,10 @@ import type {
   Recipe,
   RemoteRecipeListItem,
   TrashedRecipe,
-  UserSummary,
+  AuthenticatedUser,
 } from "./apiModels";
 import { errorMessage } from "./apiModels";
+import { SessionCheckError } from "./app/AppSession.tsx";
 import usePublicAuthConfig from "./features/auth/usePublicAuthConfig.ts";
 
 const PasskeySetupPrompt = lazy(() => import("./PasskeySetupPrompt.tsx"));
@@ -108,7 +109,8 @@ function HomeApp({ pathname }: { pathname: string }) {
     [inviteToken, setInviteToken] = useState(""),
     [passkeyPrompt, setPasskeyPrompt] = useState(false),
     [pendingPasskeyOffer, setPendingPasskeyOffer] = useState(false);
-  const { currentUser, refreshSession, clearSession } = useAppSession();
+  const { state: sessionState, currentUser, refreshSession, clearSession } =
+    useAppSession();
   const {
     state: publicAuthConfigState,
     retry: retryPublicAuthConfig,
@@ -249,6 +251,8 @@ function HomeApp({ pathname }: { pathname: string }) {
     <div className="app-content">
       <AppNavigation
         currentUser={currentUser}
+        sessionStatus={sessionState.status}
+        onRetrySession={() => void refreshSession()}
         pathname={pathname}
         query={query}
         onQueryChange={setQuery}
@@ -256,6 +260,12 @@ function HomeApp({ pathname }: { pathname: string }) {
         onAction={() => (signedIn ? setCreateOpen(true) : setEmailOpen(true))}
       />
       <main id="home" tabIndex={-1}>
+        {sessionState.status === "error" && (
+          <SessionCheckError
+            message={sessionState.message}
+            onRetry={() => void refreshSession()}
+          />
+        )}
         {signedIn ? (
           <section className="dashboard-welcome">
             <div>
@@ -648,7 +658,7 @@ export default function App({
 }
 
 interface CookbookDashboardProps {
-  user: UserSummary | null;
+  user: AuthenticatedUser | null;
   onRecipeRestored: (recipe: Recipe) => void;
   onOpenRecipe: (recipe: Recipe) => void;
 }

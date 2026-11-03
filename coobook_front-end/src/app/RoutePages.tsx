@@ -1,8 +1,12 @@
 import { lazy } from "react";
 import type { ReactNode } from "react";
 import FeatureIsland from "../components/FeatureIsland.tsx";
-import type { UserSummary } from "../apiModels";
-import { useAppSession } from "./AppSession.tsx";
+import type { AuthenticatedUser } from "../apiModels";
+import {
+  SessionCheckError,
+  useAppSession,
+} from "./AppSession.tsx";
+import type { AppSessionStatus } from "./AppSession.tsx";
 import AppNavigation from "./AppNavigation.tsx";
 
 const AccountSecurity = lazy(() => import("../AccountSecurity.tsx"));
@@ -11,15 +15,24 @@ const AdminSettings = lazy(() => import("../AdminSettings.tsx"));
 function AppRouteFrame({
   pathname,
   currentUser,
+  sessionStatus,
+  onRetrySession,
   children,
 }: {
   pathname: string;
-  currentUser: UserSummary | null;
+  currentUser: AuthenticatedUser | null;
+  sessionStatus: AppSessionStatus;
+  onRetrySession: () => void;
   children: ReactNode;
 }) {
   return (
     <div className="app-content">
-      <AppNavigation currentUser={currentUser} pathname={pathname} />
+      <AppNavigation
+        currentUser={currentUser}
+        pathname={pathname}
+        sessionStatus={sessionStatus}
+        onRetrySession={onRetrySession}
+      />
       <main id="home" tabIndex={-1}>
         <section className="dashboard-welcome">
           <div>
@@ -63,12 +76,22 @@ function AdminRequired() {
 }
 
 export function AccountSecurityPage() {
-  const { currentUser, loading } = useAppSession();
+  const { state, currentUser, refreshSession } = useAppSession();
   return (
-    <AppRouteFrame pathname="/account/security" currentUser={currentUser}>
-      {loading ? (
+    <AppRouteFrame
+      pathname="/account/security"
+      currentUser={currentUser}
+      sessionStatus={state.status}
+      onRetrySession={() => void refreshSession()}
+    >
+      {state.status === "loading" ? (
         <p className="cookbook-dashboard" role="status">Checking your session…</p>
-      ) : currentUser ? (
+      ) : state.status === "error" ? (
+        <SessionCheckError
+          message={state.message}
+          onRetry={() => void refreshSession()}
+        />
+      ) : state.status === "authenticated" ? (
         <FeatureIsland name="Account security" loading="account security">
           <AccountSecurity />
         </FeatureIsland>
@@ -80,14 +103,24 @@ export function AccountSecurityPage() {
 }
 
 export function AdminSettingsPage() {
-  const { currentUser, loading } = useAppSession();
+  const { state, currentUser, refreshSession } = useAppSession();
   return (
-    <AppRouteFrame pathname="/admin/settings" currentUser={currentUser}>
-      {loading ? (
+    <AppRouteFrame
+      pathname="/admin/settings"
+      currentUser={currentUser}
+      sessionStatus={state.status}
+      onRetrySession={() => void refreshSession()}
+    >
+      {state.status === "loading" ? (
         <p className="cookbook-dashboard" role="status">Checking your session…</p>
-      ) : !currentUser ? (
+      ) : state.status === "error" ? (
+        <SessionCheckError
+          message={state.message}
+          onRetry={() => void refreshSession()}
+        />
+      ) : state.status === "anonymous" ? (
         <SignInRequired />
-      ) : !currentUser.is_admin ? (
+      ) : !currentUser?.is_admin ? (
         <AdminRequired />
       ) : (
         <FeatureIsland name="Instance settings" loading="instance settings">

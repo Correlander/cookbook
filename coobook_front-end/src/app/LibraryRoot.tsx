@@ -11,6 +11,7 @@ import useRecipeFeed from "../features/recipes/useRecipeFeed.ts";
 import type { RemoteRecipe } from "../features/recipes/recipeUiTypes.ts";
 import BookmarkAction from "../features/library/BookmarkAction.tsx";
 import useRecipeBookmarks from "../features/library/useRecipeBookmarks.ts";
+import { SessionCheckError } from "./AppSession.tsx";
 
 function SignInRequired() {
   return (
@@ -25,10 +26,15 @@ function SignInRequired() {
 }
 
 function LibraryPage() {
-  const { currentUser, loading } = useAppSession();
+  const { state, currentUser, refreshSession } = useAppSession();
   return (
     <div className="app-content">
-      <AppNavigation currentUser={currentUser} pathname="/library" />
+      <AppNavigation
+        currentUser={currentUser}
+        pathname="/library"
+        sessionStatus={state.status}
+        onRetrySession={() => void refreshSession()}
+      />
       <main id="home" tabIndex={-1}>
         <section className="dashboard-welcome">
           <div>
@@ -37,12 +43,17 @@ function LibraryPage() {
             <p>Recipes you can access and references you have saved.</p>
           </div>
         </section>
-        {loading ? (
+        {state.status === "loading" ? (
           <p className="cookbook-dashboard" role="status">
             Checking your session…
           </p>
-        ) : currentUser ? (
-          <LibraryContent userID={currentUser.id} />
+        ) : state.status === "error" ? (
+          <SessionCheckError
+            message={state.message}
+            onRetry={() => void refreshSession()}
+          />
+        ) : state.status === "authenticated" ? (
+          <LibraryContent userID={state.currentUser.id} />
         ) : (
           <SignInRequired />
         )}

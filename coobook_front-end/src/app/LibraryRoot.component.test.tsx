@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import LibraryRoot from "./LibraryRoot.tsx";
 import {
@@ -12,7 +12,6 @@ const user = {
   email: "reader@example.test",
   display_name: "Reader",
   is_admin: false,
-  created_at: "2026-01-01T00:00:00Z",
 };
 
 const accessibleRecipe = {
@@ -51,6 +50,14 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -66,7 +73,55 @@ it("does not request the private Library for a signed-out visitor", async () => 
     await screen.findByRole("heading", { name: "Sign in to see your Library" }),
   ).toBeTruthy();
   expect(fetchMock).toHaveBeenCalledTimes(1);
-  expect(fetchMock).toHaveBeenCalledWith("/api/auth/me");
+  expect(fetchMock).toHaveBeenCalledWith("/api/auth/me", { cache: "no-store" });
+});
+
+it("keeps Library reads stopped on a transient session error and retries before loading private data", async () => {
+  const calls: string[] = [];
+  const initialSession = deferred<Response>();
+  let sessionChecks = 0;
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    calls.push(url);
+    if (url === "/api/auth/me") {
+      sessionChecks += 1;
+      return Promise.resolve(
+        sessionChecks === 1
+          ? initialSession.promise
+          : jsonResponse({
+              id: "reader-1",
+              email: "reader@example.test",
+              display_name: "Reader",
+              is_admin: false,
+            }),
+      );
+    }
+    if (url === "/api/recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/library/bookmarks?limit=24&offset=0")
+      return Promise.resolve(jsonResponse({ items: [], total: 0, limit: 24, offset: 0 }));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<LibraryRoot />);
+
+  expect(await screen.findByText("Checking your session…")).toBeTruthy();
+  expect(calls).toEqual(["/api/auth/me"]);
+  await act(async () => {
+    initialSession.resolve(jsonResponse({}, 503));
+    await initialSession.promise;
+  });
+  expect(await screen.findByRole("heading", { name: "Could not check your session" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "Sign in to see your Library" })).toBeNull();
+  expect(calls).toEqual(["/api/auth/me"]);
+
+  fireEvent.click(screen.getByRole("button", { name: "Retry session check" }));
+  expect(await screen.findByRole("heading", { name: "Recipes you can access" })).toBeTruthy();
+  expect(calls.filter((url) => url === "/api/auth/me")).toHaveLength(2);
+  expect(calls).toContain("/api/recipes?limit=24&offset=0");
+  expect(calls).toContain("/api/library/bookmarks?limit=24&offset=0");
+  expect(calls).not.toContain("/api/public/recipes?limit=24&offset=0");
 });
 
 it("shows the accessible feed separately from saved references and removes only an unavailable bookmark", async () => {

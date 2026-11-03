@@ -64,6 +64,41 @@ it("serves the account route directly and requires a signed-in session", async (
   expect(screen.getByRole("main").getAttribute("id")).toBe("home");
 });
 
+it("shows a retryable session error on the account route instead of signed-out UI", async () => {
+  let sessionChecks = 0;
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/auth/me") {
+      sessionChecks += 1;
+      return Promise.resolve(
+        sessionChecks === 1
+          ? jsonResponse({}, 503)
+          : jsonResponse({
+              id: "user-1",
+              email: "cook@example.test",
+              display_name: "Cook",
+              is_admin: false,
+            }),
+      );
+    }
+    if (url === "/api/auth/passkeys" || url === "/api/auth/sessions")
+      return Promise.resolve(jsonResponse([]));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp("account-security", "/account/security");
+
+  expect(await screen.findByRole("heading", { name: "Could not check your session" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "Sign in to continue" })).toBeNull();
+  expect(screen.queryByRole("link", { name: "Sign in" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Retry session" })).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("button", { name: "Retry session check" }));
+  expect(await screen.findByRole("heading", { name: "Browser sessions" })).toBeTruthy();
+  expect(fetchMock).toHaveBeenCalledWith("/api/auth/me", { cache: "no-store" });
+});
+
 it("keeps instance settings behind the administrator check", async () => {
   vi.stubGlobal(
     "fetch",

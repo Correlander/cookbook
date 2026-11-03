@@ -1,7 +1,10 @@
-import type { UserSummary } from "../apiModels";
+import type { AuthenticatedUser } from "../apiModels";
+import type { AppSessionStatus } from "./AppSession.tsx";
 
 interface AppNavigationProps {
-  currentUser: UserSummary | null;
+  currentUser: AuthenticatedUser | null;
+  sessionStatus: AppSessionStatus;
+  onRetrySession: () => void;
   pathname: string;
   query?: string;
   onQueryChange?: (query: string) => void;
@@ -30,6 +33,8 @@ function ChefMark() {
 
 export default function AppNavigation({
   currentUser,
+  sessionStatus,
+  onRetrySession,
   pathname,
   query,
   onQueryChange,
@@ -97,11 +102,23 @@ export default function AppNavigation({
           />
         </label>
       ) : null}
-      {actionLabel && onAction ? (
+      {sessionStatus === "loading" ? (
+        <button className="signin-button" type="button" disabled>
+          Checking session…
+        </button>
+      ) : sessionStatus === "error" ? (
+        <button
+          className="signin-button"
+          type="button"
+          onClick={onRetrySession}
+        >
+          Retry session
+        </button>
+      ) : actionLabel && onAction ? (
         <button className="signin-button" type="button" onClick={onAction}>
           {actionLabel}
         </button>
-      ) : !currentUser ? (
+      ) : sessionStatus === "anonymous" ? (
         <a className="signin-button" href="/?signin=1">
           Sign in
         </a>

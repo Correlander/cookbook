@@ -12,7 +12,7 @@ Local accounts authenticate through email links when email delivery is configure
 
 Person-actor identity persistence is present: an existing account can have one optional actor with a pinned canonical origin, opaque stable ID, and Ed25519 key material. Public actor documents, actor routes, and ActivityPub publishing are not implemented. The actor-aware backup/recovery gate required before public actor publication is also not complete; current backup checksums and key fingerprints do not prove a database-to-key identity relationship.
 
-Recipe reads use a typed query boundary. The API applies owner, cookbook-membership, instance, visibility, deletion, and publication policy before returning recipe data. Cookbook ownership alone does not grant access to another account’s private recipe; editor rights remain subject to the recipe’s edit policy. Admin status does not bypass content privacy. Attribution and source references are claims, not verified identity.
+Recipe reads use a typed query boundary. The API applies owner, cookbook-membership, instance, visibility, deletion, and publication policy before returning recipe data. Authenticated recipe read projections include `owner_id` only for the recipe owner; authorized non-owners retain their `can_edit`, `can_delete`, `can_manage_sharing`, cookbook, and source-link projections without receiving the owner account ID. These response fields do not change persisted ownership or authorize requests. Cookbook ownership alone does not grant access to another account’s private recipe; editor rights remain subject to the recipe’s edit policy. Admin status does not bypass content privacy. Attribution and source references are claims, not verified identity.
 
 ### Independent content controls
 

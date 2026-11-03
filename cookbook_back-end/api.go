@@ -913,7 +913,7 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 		it.CanEdit = canEditRecipe(uid, access{ownerID: it.OwnerID, memberRole: member}, it.EditPolicy)
 		it.CanDelete = uid != "" && uid == it.OwnerID
 		it.CanManageSharing = canManageRecipeSharing(uid, it.OwnerID)
-		visibleItems = append(visibleItems, it)
+		visibleItems = append(visibleItems, projectRecipeForActor(it, uid))
 	}
 	writeJSON(w, 200, visibleItems)
 }

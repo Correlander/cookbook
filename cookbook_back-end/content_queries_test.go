@@ -36,12 +36,14 @@ func TestReadRecipeDetailUsesLocalAccountAndRecipeACL(t *testing.T) {
 	insertRecipeQueryFixture(t, db)
 
 	for _, test := range []struct {
-		name       string
-		accountID  string
-		wantEdit   bool
-		wantDelete bool
+		name              string
+		accountID         string
+		wantEdit          bool
+		wantDelete        bool
+		wantOwnerID       string
+		wantManageSharing bool
 	}{
-		{name: "owner", accountID: "owner", wantEdit: true, wantDelete: true},
+		{name: "owner", accountID: "owner", wantEdit: true, wantDelete: true, wantOwnerID: "owner", wantManageSharing: true},
 		{name: "viewer", accountID: "viewer"},
 		{name: "editor", accountID: "editor", wantEdit: true},
 	} {
@@ -50,11 +52,11 @@ func TestReadRecipeDetailUsesLocalAccountAndRecipeACL(t *testing.T) {
 			if err != nil {
 				t.Fatalf("readRecipeDetail() error = %v", err)
 			}
-			if got.ID != "private-recipe" || got.OwnerID != "owner" || got.CreatorName != "Grandma" || got.Version != 1 {
+			if got.ID != "private-recipe" || got.OwnerID != test.wantOwnerID || got.CreatorName != "Grandma" || got.Version != 1 {
 				t.Fatalf("recipe identity/history projection = %+v", got)
 			}
-			if got.CanEdit != test.wantEdit || got.CanDelete != test.wantDelete {
-				t.Fatalf("capabilities edit=%v delete=%v, want %v/%v", got.CanEdit, got.CanDelete, test.wantEdit, test.wantDelete)
+			if got.CanEdit != test.wantEdit || got.CanDelete != test.wantDelete || got.CanManageSharing != test.wantManageSharing {
+				t.Fatalf("capabilities edit=%v delete=%v sharing=%v, want %v/%v/%v", got.CanEdit, got.CanDelete, got.CanManageSharing, test.wantEdit, test.wantDelete, test.wantManageSharing)
 			}
 			if test.accountID == "viewer" || test.accountID == "editor" {
 				if len(got.CookbookIDs) != 1 || got.CookbookIDs[0] != "book" {
@@ -84,7 +86,7 @@ func TestReadRecipeDetailUsesLocalAccountAndRecipeACL(t *testing.T) {
 		t.Fatal(err)
 	}
 	public, err := readRecipeDetail(context.Background(), db, ContentActor{}, "private-recipe")
-	if err != nil || public.CanEdit || public.CanDelete {
+	if err != nil || public.OwnerID != "" || public.CanEdit || public.CanDelete || public.CanManageSharing {
 		t.Fatalf("anonymous public read = %+v, err=%v", public, err)
 	}
 }
@@ -109,8 +111,14 @@ func TestRecipeDetailGETAndReadAfterWriteUseTypedQuery(t *testing.T) {
 	get := httptest.NewRecorder()
 	h.ServeHTTP(get, requestForUser(http.MethodGet, "/api/recipes/private-recipe", "editor"))
 	var detail recipe
-	if get.Code != http.StatusOK || json.Unmarshal(get.Body.Bytes(), &detail) != nil || detail.CreatorName != "Grandma" || !detail.CanEdit || detail.CanDelete {
+	if get.Code != http.StatusOK || json.Unmarshal(get.Body.Bytes(), &detail) != nil || detail.OwnerID != "" || detail.CreatorName != "Grandma" || !detail.CanEdit || detail.CanDelete || detail.CanManageSharing || strings.Contains(get.Body.String(), `"owner_id"`) || !strings.Contains(get.Body.String(), `"can_edit":true`) {
 		t.Fatalf("recipe GET = %d %s, parsed=%+v", get.Code, get.Body, detail)
+	}
+	list := httptest.NewRecorder()
+	h.ServeHTTP(list, requestForUser(http.MethodGet, "/api/recipes?limit=24&offset=0", "editor"))
+	var listed []recipe
+	if list.Code != http.StatusOK || json.Unmarshal(list.Body.Bytes(), &listed) != nil || len(listed) != 1 || listed[0].OwnerID != "" || !listed[0].CanEdit || listed[0].CanDelete || listed[0].CanManageSharing || strings.Contains(list.Body.String(), `"owner_id"`) || !strings.Contains(list.Body.String(), `"can_edit":true`) {
+		t.Fatalf("recipe list = %d %s, parsed=%+v", list.Code, list.Body, listed)
 	}
 
 	create := httptest.NewRecorder()

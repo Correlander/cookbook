@@ -51,8 +51,11 @@ func TestRecipeBookmarksArePerAccountAndReauthorizeLocalReads(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &saved); err != nil {
 		t.Fatal(err)
 	}
-	if saved.Availability != "available" || saved.TargetKind != "local" || saved.Target == nil || saved.LocalRecipe == nil || saved.LocalRecipe.ID != "shared" || saved.RemoteRecipe != nil {
+	if saved.Availability != "available" || saved.TargetKind != "local" || saved.Target == nil || saved.LocalRecipe == nil || saved.LocalRecipe.ID != "shared" || saved.LocalRecipe.OwnerID != "" || saved.LocalRecipe.CanEdit || saved.LocalRecipe.CanDelete || saved.LocalRecipe.CanManageSharing || saved.RemoteRecipe != nil {
 		t.Fatalf("saved local projection=%+v", saved)
+	}
+	if strings.Contains(response.Body.String(), `"owner_id"`) || !strings.Contains(response.Body.String(), `"can_edit":false`) {
+		t.Fatalf("saved local projection lost its canonical capability discriminator or leaked owner ID: %s", response.Body)
 	}
 	duplicate := doBookmarkRequest(t, h, "viewer", http.MethodPost, "/api/library/bookmarks", localTarget)
 	if duplicate.Code != http.StatusOK {

@@ -60,6 +60,9 @@ func TestPublicationPolicyGatesPublicRecipeReadProjections(t *testing.T) {
 	if publicList.Code != http.StatusOK || json.Unmarshal(publicList.Body.Bytes(), &publicItems) != nil || len(publicItems) != 1 || publicItems[0].ID != "published" {
 		t.Fatalf("anonymous list included unpublished content or hid published row: %d %s", publicList.Code, publicList.Body)
 	}
+	if publicItems[0].OwnerID != "" || publicItems[0].CanEdit || publicItems[0].CanDelete || publicItems[0].CanManageSharing || strings.Contains(publicList.Body.String(), `"owner_id"`) {
+		t.Fatalf("anonymous list exposed owner identity or capabilities: %+v body=%s", publicItems[0], publicList.Body)
+	}
 	withdrawnSearch := callAPI(handler, http.MethodGet, "/api/public/recipes?q=WITHDRAWN_MARKER", nil, nil)
 	if withdrawnSearch.Code != http.StatusOK || withdrawnSearch.Body.String() != "[]\n" {
 		t.Fatalf("anonymous search disclosed withdrawn snippet: %d %s", withdrawnSearch.Code, withdrawnSearch.Body)
@@ -81,6 +84,15 @@ func TestPublicationPolicyGatesPublicRecipeReadProjections(t *testing.T) {
 		var items []recipe
 		if list.Code != http.StatusOK || json.Unmarshal(list.Body.Bytes(), &items) != nil || len(items) != 1 || items[0].ID != "published" {
 			t.Errorf("%s public branch did not enforce publication: %d %s", name, list.Code, list.Body)
+		} else if items[0].OwnerID != "" || items[0].CanEdit || items[0].CanDelete || items[0].CanManageSharing || strings.Contains(list.Body.String(), `"owner_id"`) {
+			t.Errorf("%s public list exposed owner identity or capabilities: %+v body=%s", name, items[0], list.Body)
+		}
+		detail := callAPI(handler, http.MethodGet, "/api/recipes/published", nil, cookie)
+		var publicDetail recipe
+		if detail.Code != http.StatusOK || json.Unmarshal(detail.Body.Bytes(), &publicDetail) != nil {
+			t.Errorf("%s public detail status=%d body=%s", name, detail.Code, detail.Body)
+		} else if publicDetail.OwnerID != "" || publicDetail.CanEdit || publicDetail.CanDelete || publicDetail.CanManageSharing || strings.Contains(detail.Body.String(), `"owner_id"`) {
+			t.Errorf("%s public detail exposed owner identity or capabilities: %+v body=%s", name, publicDetail, detail.Body)
 		}
 		for _, id := range []string{"unpublished", "withdrawn", "private", "unlisted", "deleted"} {
 			response := callAPI(handler, http.MethodGet, "/api/recipes/"+id, nil, cookie)
@@ -99,12 +111,27 @@ func TestPublicationPolicyGatesPublicRecipeReadProjections(t *testing.T) {
 		response := callAPI(handler, http.MethodGet, "/api/recipes/"+id, nil, ownerCookie)
 		if response.Code != http.StatusOK {
 			t.Errorf("owner local read of %s lost access: %d %s", id, response.Code, response.Body)
+		} else if id == "unpublished" {
+			var owned recipe
+			if err := json.Unmarshal(response.Body.Bytes(), &owned); err != nil || owned.OwnerID != "owner" || !owned.CanEdit || !owned.CanDelete || !owned.CanManageSharing {
+				t.Errorf("owner public-unpublished detail projection=%+v err=%v", owned, err)
+			}
 		}
 	}
 	ownerList := callAPI(handler, http.MethodGet, "/api/recipes?limit=24&offset=0", nil, ownerCookie)
 	var owned []recipe
 	if ownerList.Code != http.StatusOK || json.Unmarshal(ownerList.Body.Bytes(), &owned) != nil || len(owned) != 5 {
 		t.Fatalf("owner local list lost withdrawn/private content: %d %s", ownerList.Code, ownerList.Body)
+	}
+	var ownedUnpublished *recipe
+	for index := range owned {
+		if owned[index].ID == "unpublished" {
+			ownedUnpublished = &owned[index]
+			break
+		}
+	}
+	if ownedUnpublished == nil || ownedUnpublished.OwnerID != "owner" || !ownedUnpublished.CanEdit || !ownedUnpublished.CanDelete || !ownedUnpublished.CanManageSharing {
+		t.Fatalf("owner public-unpublished list projection=%+v", ownedUnpublished)
 	}
 
 	memberToken, _, err := issueSession(db, "member")
@@ -114,6 +141,10 @@ func TestPublicationPolicyGatesPublicRecipeReadProjections(t *testing.T) {
 	memberRead := callAPI(handler, http.MethodGet, "/api/recipes/withdrawn", nil, &http.Cookie{Name: sessionCookie, Value: memberToken})
 	if memberRead.Code != http.StatusOK {
 		t.Fatalf("authorized cookbook member lost withdrawn local access: %d %s", memberRead.Code, memberRead.Body)
+	}
+	var memberView recipe
+	if err := json.Unmarshal(memberRead.Body.Bytes(), &memberView); err != nil || memberView.OwnerID != "" || memberView.CanEdit || memberView.CanDelete || memberView.CanManageSharing || len(memberView.CookbookIDs) != 2 || memberView.CookbookIDs[0] != "member-book" || memberView.CookbookIDs[1] != "public-book" || strings.Contains(memberRead.Body.String(), `"owner_id"`) {
+		t.Fatalf("readonly member projection=%+v err=%v", memberView, err)
 	}
 
 	books := callAPI(handler, http.MethodGet, "/api/public/cookbooks", nil, nil)
@@ -226,6 +257,9 @@ func TestPublicRecipeProjectionsRedactInternalSourceRecipeID(t *testing.T) {
 		if strings.Contains(response.Body.String(), `"source_recipe_id"`) {
 			t.Errorf("%s emitted source_recipe_id field: %s", name, response.Body)
 		}
+		if strings.Contains(response.Body.String(), `"owner_id"`) {
+			t.Errorf("%s exposed recipe owner ID: %s", name, response.Body)
+		}
 		if name == "public cookbook list" {
 			var books []publicCookbook
 			if json.Unmarshal(response.Body.Bytes(), &books) != nil || len(books) != 1 || books[0].RecipeCount != 1 {
@@ -233,13 +267,15 @@ func TestPublicRecipeProjectionsRedactInternalSourceRecipeID(t *testing.T) {
 			}
 		} else if name == "unrelated authenticated detail" {
 			var item recipe
-			if json.Unmarshal(response.Body.Bytes(), &item) != nil || item.ID != "public-fork" {
+			if json.Unmarshal(response.Body.Bytes(), &item) != nil || item.ID != "public-fork" || item.OwnerID != "" || item.CanEdit || item.CanDelete || item.CanManageSharing || !strings.Contains(response.Body.String(), `"can_edit":false`) {
 				t.Errorf("unrelated public detail omitted fork: %d %s", response.Code, response.Body)
 			}
 		} else {
 			var items []recipe
 			if json.Unmarshal(response.Body.Bytes(), &items) != nil || len(items) != 1 || items[0].ID != "public-fork" {
 				t.Errorf("%s omitted public fork: %d %s", name, response.Code, response.Body)
+			} else if name == "unrelated authenticated list" && (items[0].OwnerID != "" || items[0].CanEdit || items[0].CanDelete || items[0].CanManageSharing || !strings.Contains(response.Body.String(), `"can_edit":false`)) {
+				t.Errorf("unrelated public list lost local discriminator/capabilities or retained owner ID: %+v %s", items[0], response.Body)
 			}
 		}
 	}
@@ -249,7 +285,8 @@ func TestPublicRecipeProjectionsRedactInternalSourceRecipeID(t *testing.T) {
 	} {
 		response := callAPI(handler, http.MethodGet, "/api/recipes/public-fork", nil, cookie)
 		var item recipe
-		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &item) != nil || item.SourceRecipeID != "private-source" {
+		wantOwner := name == "owner"
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &item) != nil || item.SourceRecipeID != "private-source" || (item.OwnerID == "owner") != wantOwner || item.CanEdit != wantOwner || item.CanManageSharing != wantOwner || item.CanDelete != wantOwner {
 			t.Errorf("authorized %s lost local source history: %d %s", name, response.Code, response.Body)
 		}
 	}

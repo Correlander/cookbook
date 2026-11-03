@@ -209,7 +209,7 @@ func TestForkCreatesPrivateOwnedCopyAndPreservesAttribution(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &copied); err != nil {
 		t.Fatal(err)
 	}
-	if copied.ID == "source" || copied.OwnerID != "forker" || copied.CreatorName != "Original creator" || copied.SourceRecipeID != "source" || copied.Visibility != visibilityPrivate || copied.EditPolicy != "owner_only" || copied.Title != "Pie (copy)" {
+	if copied.ID == "source" || copied.OwnerID != "forker" || copied.CreatorName != "Original creator" || copied.SourceRecipeID != "source" || copied.Visibility != visibilityPrivate || copied.EditPolicy != "owner_only" || copied.Title != "Pie (copy)" || !copied.CanEdit || !copied.CanDelete {
 		t.Fatalf("fork response=%+v", copied)
 	}
 	var creator, visibilityValue, editPolicy string

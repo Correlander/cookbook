@@ -77,7 +77,17 @@ func readRecipeDetail(ctx context.Context, queryer contentQueryer, actor Content
 	item.CanEdit = canEditRecipe(actor.AccountID, access{ownerID: item.OwnerID, memberRole: memberRole}, item.EditPolicy)
 	item.CanDelete = actor.AccountID != "" && actor.AccountID == item.OwnerID
 	item.CanManageSharing = canManageRecipeSharing(actor.AccountID, item.OwnerID)
-	return item, nil
+	return projectRecipeForActor(item, actor.AccountID), nil
+}
+
+// projectRecipeForActor retains the internal owner account ID only for its
+// owner. Call after access and capability evaluation so this response-only
+// minimization cannot affect authorization, membership, or persisted facts.
+func projectRecipeForActor(item recipe, accountID string) recipe {
+	if accountID != item.OwnerID {
+		item.OwnerID = ""
+	}
+	return item
 }
 
 func hasLocalRecipeRead(accountID, ownerID string, memberRole role) bool {

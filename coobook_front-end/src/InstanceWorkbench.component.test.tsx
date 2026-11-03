@@ -49,9 +49,65 @@ it("does not request the account list for an ordinary account without an incomin
 
   expect(await screen.findByRole("heading", { name: "No instance actions are available" })).toBeTruthy();
   expect(calls.some(({ url }) => url.startsWith("/api/admin/users?"))).toBe(false);
+  expect(calls.some(({ url }) => url.startsWith("/api/admin/invitations"))).toBe(false);
+  expect(calls.some(({ url }) => url.startsWith("/api/admin/audit"))).toBe(false);
   expect(screen.queryByRole("link", { name: "Instance" })).toBeNull();
   expect(calls.filter(({ url }) => url === "/api/instance/owner-transfers")
     .every(({ init }) => init?.cache === "no-store")).toBe(true);
+});
+
+it("loads administrator panels only after current authority confirms an administrator", async () => {
+  const calls: string[] = [];
+  const adminAuthority = {
+    is_instance_owner: false,
+    is_admin: true,
+    owner_claimed: false,
+    can_manage_instance_roles: true,
+  };
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    calls.push(url);
+    if (url === "/api/auth/me")
+      return Promise.resolve(response({
+        id: "admin-1",
+        email: "admin@example.test",
+        display_name: "Administrator",
+        is_admin: true,
+      }));
+    if (url === "/api/instance/authority") return Promise.resolve(response(adminAuthority));
+    if (url === "/api/instance/owner-transfers")
+      return Promise.resolve(response({ transfers: [] }));
+    if (url === "/api/admin/users?limit=100&offset=0") return Promise.resolve(response([]));
+    if (url === "/api/admin/invitations")
+      return Promise.resolve(response([{
+        id: "invite-1",
+        email: "invitee@example.test",
+        expires_at: "2026-11-10T10:00:00Z",
+      }]));
+    if (url === "/api/admin/audit?limit=24&offset=0")
+      return Promise.resolve(response([{
+        id: "audit-1",
+        actor_name: "Administrator",
+        action: "role.changed",
+        resource_type: "account",
+        resource_id: "account-1",
+        created_at: "2026-11-03T10:00:00Z",
+        response_status: 200,
+      }]));
+    return Promise.resolve(response({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<InstanceWorkbenchRoot />);
+
+  expect(await screen.findByText("invitee@example.test")).toBeTruthy();
+  expect(await screen.findByText("Administrator · role.changed account/account-1")).toBeTruthy();
+  const authorityIndex = calls.indexOf("/api/instance/authority");
+  expect(authorityIndex).toBeGreaterThanOrEqual(0);
+  expect(calls.indexOf("/api/admin/invitations")).toBeGreaterThan(authorityIndex);
+  expect(calls.indexOf("/api/admin/audit?limit=24&offset=0")).toBeGreaterThan(authorityIndex);
+  expect(screen.getByRole("heading", { name: "Invitations" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Audit log" })).toBeTruthy();
 });
 
 it("creates a named transfer from the existing paginated account row and refreshes current state", async () => {
@@ -115,6 +171,8 @@ it("creates a named transfer from the existing paginated account row and refresh
   expect(postBodies).toEqual(['{"target_user_id":"member-1"}']);
   expect(screen.getByText(/Request sent to Member/)).toBeTruthy();
   expect(calls.filter((url) => url === "/api/admin/users?limit=100&offset=0")).toHaveLength(1);
+  expect(calls.some((url) => url.startsWith("/api/admin/invitations"))).toBe(false);
+  expect(calls.some((url) => url.startsWith("/api/admin/audit"))).toBe(false);
   expect(screen.queryByRole("button", { name: /Decline/ })).toBeNull();
 });
 

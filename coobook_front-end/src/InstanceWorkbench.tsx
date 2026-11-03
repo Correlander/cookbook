@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, useEffect, useRef, useState } from "react";
 import type { AdminUser } from "./apiModels";
 import AdminUsers from "./AdminUsers.tsx";
 import AppNavigation from "./app/AppNavigation.tsx";
+import FeatureIsland from "./components/FeatureIsland.tsx";
 import {
   SessionCheckError,
   useAppSession,
@@ -15,6 +16,9 @@ import {
 } from "./features/instance/ownerTransferApi.ts";
 import type { OwnerTransfer } from "./features/instance/ownerTransferApi.ts";
 import useOwnerTransfers from "./features/instance/useOwnerTransfers.ts";
+
+const AdminInvitations = lazy(() => import("./features/instance/AdminInvitations.tsx"));
+const AdminAuditLog = lazy(() => import("./features/instance/AdminAuditLog.tsx"));
 
 function SignInRequired() {
   return (
@@ -323,6 +327,17 @@ export default function InstanceWorkbench() {
               <p className="admin-settings-note">
                 <a className="text-link" href="/admin/settings">Open Admin Settings</a>
               </p>
+            )}
+
+            {authorityValue.is_admin && (
+              <>
+                <FeatureIsland name="Invitations" loading="invitations">
+                  <AdminInvitations />
+                </FeatureIsland>
+                <FeatureIsland name="Audit log" loading="audit log">
+                  <AdminAuditLog />
+                </FeatureIsland>
+              </>
             )}
 
             {!canViewAccounts && !incoming && transfers.state.status === "ready" && (

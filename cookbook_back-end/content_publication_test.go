@@ -156,7 +156,7 @@ func TestRecipePublicationOwnerRouteAndFailClosedReads(t *testing.T) {
 	if etag != `"sha256:`+hex.EncodeToString(digest[:])+`"` || len(etag) != len(`"sha256:`)+64+1 {
 		t.Fatalf("unexpected canonical ETag %q", etag)
 	}
-	if view.RecipeID != testFederationID || view.PublicationState != RecipePublicationUnpublished || view.FederationMode != RecipeFederationOff || view.IndexEligible || view.UpdatedBy == nil || *view.UpdatedBy != "owner" || view.Visibility != visibilityPrivate || view.PublicInstance != true || view.FederationEnabled || responseCacheControl(t, env) != "private, no-store" {
+	if view.RecipeID != testFederationID || view.PublicationState != RecipePublicationUnpublished || view.FederationMode != RecipeFederationOff || view.IndexEligible || view.UpdatedBy == nil || *view.UpdatedBy != "owner" || view.Visibility != visibilityPrivate || view.PublicInstance != true || view.FederationEnabled || responseCacheControl(t, env) != "private, no-store, no-transform" {
 		t.Fatalf("unexpected owner publication view: %+v", view)
 	}
 	if _, err := env.db.Exec(`DELETE FROM recipe_publication_policy WHERE recipe_id='0123456789abcdef0123456789abcdef'`); err != nil {
@@ -208,8 +208,8 @@ func TestRecipePublicationIfMatchNoOpAndConcurrentPrecondition(t *testing.T) {
 	if missingField.Code != http.StatusBadRequest || !strings.Contains(missingField.Body.String(), "invalid_json") {
 		t.Fatalf("incomplete policy tuple=%d %s", missingField.Code, missingField.Body)
 	}
-	if response := publicationPUT(t, env, env.owner, etag, input); response.Code != http.StatusOK || response.Header().Get("ETag") != etag {
-		t.Fatalf("no-op PUT=%d etag=%q body=%s", response.Code, response.Header().Get("ETag"), response.Body)
+	if response := publicationPUT(t, env, env.owner, etag, input); response.Code != http.StatusOK || response.Header().Get("ETag") != etag || response.Header().Get("Cache-Control") != "private, no-store, no-transform" || response.Body.String() != string(envPublicationBytes(t, env)) {
+		t.Fatalf("no-op PUT=%d cache-control=%q etag=%q body=%s", response.Code, response.Header().Get("Cache-Control"), response.Header().Get("ETag"), response.Body)
 	}
 	var audits, outbox int
 	if err := env.db.QueryRow(`SELECT COUNT(*) FROM audit_events`).Scan(&audits); err != nil {
@@ -245,6 +245,21 @@ func TestRecipePublicationIfMatchNoOpAndConcurrentPrecondition(t *testing.T) {
 	current, currentETag := publicationGET(t, env)
 	if current.PublicationState != RecipePublicationPublished || current.PublishedAt == nil || currentETag == etag {
 		t.Fatalf("publication transition did not advance state/ETag: view=%+v tag=%s", current, currentETag)
+	}
+	for _, response := range responses {
+		if response.Code == http.StatusPreconditionFailed {
+			if response.Header().Get("Cache-Control") != "private, no-store, no-transform" || response.Header().Get("ETag") != currentETag || response.Body.String() != "{\"error\":\"precondition_failed\"}\n" {
+				t.Fatalf("stale concurrent PUT=%d cache-control=%q etag=%q body=%s", response.Code, response.Header().Get("Cache-Control"), response.Header().Get("ETag"), response.Body)
+			}
+			continue
+		}
+		if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "private, no-store, no-transform" || response.Header().Get("ETag") != currentETag || response.Body.String() != string(envPublicationBytes(t, env)) {
+			t.Fatalf("successful concurrent PUT=%d cache-control=%q etag=%q body=%s", response.Code, response.Header().Get("Cache-Control"), response.Header().Get("ETag"), response.Body)
+		}
+	}
+	stale := publicationPUT(t, env, env.owner, etag, input)
+	if stale.Code != http.StatusPreconditionFailed || stale.Header().Get("Cache-Control") != "private, no-store, no-transform" || stale.Header().Get("ETag") != currentETag || stale.Body.String() != "{\"error\":\"precondition_failed\"}\n" {
+		t.Fatalf("stale PUT=%d cache-control=%q etag=%q body=%s", stale.Code, stale.Header().Get("Cache-Control"), stale.Header().Get("ETag"), stale.Body)
 	}
 	var version, revisions, actionCount int
 	if err := env.db.QueryRow(`SELECT version FROM recipes WHERE id='0123456789abcdef0123456789abcdef'`).Scan(&version); err != nil {

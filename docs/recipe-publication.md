@@ -58,7 +58,7 @@ Only the current recipe owner can read or change its publication policy. Non-own
 - `GET /api/recipes/{id}/publication` returns the owner’s policy view.
 - `PUT /api/recipes/{id}/publication` replaces the complete writable policy tuple. It does not update recipe body, visibility, or recipe version.
 
-Both successful responses return `200`, `Cache-Control: private, no-store`, and the same canonical JSON representation shape. The view includes read-only visibility and instance-gate context so a change to those gates changes the ETag. `updated_by` is included only in this owner-only representation.
+Both successful responses return `200`, `Cache-Control: private, no-store, no-transform`, and the same canonical JSON representation shape. The view includes read-only visibility and instance-gate context so a change to those gates changes the ETag. `updated_by` is included only in this owner-only representation.
 
 A successful GET response has this shape:
 
@@ -78,7 +78,7 @@ A successful GET response has this shape:
 }
 ```
 
-The response includes a strong ETag exactly shaped as `"sha256:<64-lowercase-hex-digits>"`. The digest covers the exact canonical response bytes. Send that header value unchanged on PUT:
+The response includes a strong ETag exactly shaped as `"sha256:<64-lowercase-hex-digits>"`. The digest covers the exact canonical response bytes. Responses carrying this ETag use `Cache-Control: private, no-store, no-transform`; a stale `If-Match` response also carries the current ETag with this directive. Under [RFC 9111 §5.2.2.6](https://www.rfc-editor.org/rfc/rfc9111.html#section-5.2.2.6), an intermediary MUST NOT transform content when the response contains `no-transform`. This preserves the representation to which the origin ETag applies. Send the ETag value unchanged on PUT:
 
 ```http
 If-Match: "sha256:<etag-from-the-current-GET>"

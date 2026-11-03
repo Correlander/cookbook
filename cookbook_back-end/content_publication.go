@@ -227,7 +227,7 @@ func writeRecipePublicationView(w http.ResponseWriter, view recipePublicationVie
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("Cache-Control", "private, no-store, no-transform")
 	w.Header().Set("ETag", etag)
 	w.WriteHeader(http.StatusOK)
 	_, err = w.Write(body)
@@ -443,6 +443,7 @@ func (h apiHandler) updateRecipePublication(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if ifMatch != currentETag {
+		w.Header().Set("Cache-Control", "private, no-store, no-transform")
 		w.Header().Set("ETag", currentETag)
 		writeError(w, http.StatusPreconditionFailed, "precondition_failed")
 		return
@@ -517,6 +518,7 @@ func (h apiHandler) updateRecipePublication(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		w.Header().Set("ETag", latestETag)
+		w.Header().Set("Cache-Control", "private, no-store, no-transform")
 		writeError(w, http.StatusPreconditionFailed, "precondition_failed")
 		return
 	}

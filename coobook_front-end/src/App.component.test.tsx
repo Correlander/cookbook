@@ -10,13 +10,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import App from "./App.tsx";
 import { AppSessionProvider } from "./app/AppSession.tsx";
 
-function renderApp(
-  route: "home" | "account-security" | "admin-settings" = "home",
-  pathname = route === "home" ? "/" : `/${route}`,
-) {
+function renderApp(pathname = "/") {
   return render(
     <AppSessionProvider>
-      <App route={route} pathname={pathname} />
+      <App pathname={pathname} />
     </AppSessionProvider>,
   );
 }
@@ -47,115 +44,6 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
-
-it("serves the account route directly and requires a signed-in session", async () => {
-  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse({}, 401))));
-
-  renderApp("account-security", "/account/security");
-
-  expect(
-    await screen.findByRole("heading", { name: "Sign in to continue" }),
-  ).toBeTruthy();
-  expect(
-    screen
-      .getAllByRole("link", { name: "Sign in" })
-      .every((link) => link.getAttribute("href") === "/?signin=1"),
-  ).toBe(true);
-  expect(screen.getByRole("main").getAttribute("id")).toBe("home");
-});
-
-it("shows a retryable session error on the account route instead of signed-out UI", async () => {
-  let sessionChecks = 0;
-  const fetchMock = vi.fn((input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url === "/api/auth/me") {
-      sessionChecks += 1;
-      return Promise.resolve(
-        sessionChecks === 1
-          ? jsonResponse({}, 503)
-          : jsonResponse({
-              id: "user-1",
-              email: "cook@example.test",
-              display_name: "Cook",
-              is_admin: false,
-            }),
-      );
-    }
-    if (url === "/api/auth/passkeys" || url === "/api/auth/sessions")
-      return Promise.resolve(jsonResponse([]));
-    return Promise.resolve(jsonResponse({}, 404));
-  });
-  vi.stubGlobal("fetch", fetchMock);
-
-  renderApp("account-security", "/account/security");
-
-  expect(await screen.findByRole("heading", { name: "Could not check your session" })).toBeTruthy();
-  expect(screen.queryByRole("heading", { name: "Sign in to continue" })).toBeNull();
-  expect(screen.queryByRole("link", { name: "Sign in" })).toBeNull();
-  expect(screen.getByRole("button", { name: "Retry session" })).toBeTruthy();
-
-  fireEvent.click(screen.getByRole("button", { name: "Retry session check" }));
-  expect(await screen.findByRole("heading", { name: "Browser sessions" })).toBeTruthy();
-  expect(fetchMock).toHaveBeenCalledWith("/api/auth/me", { cache: "no-store" });
-});
-
-it("keeps instance settings behind the administrator check", async () => {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn((input: RequestInfo | URL) => {
-      if (String(input) === "/api/auth/me")
-        return Promise.resolve(
-          jsonResponse({
-            id: "user-1",
-            email: "cook@example.test",
-            display_name: "Cook",
-            is_admin: false,
-            created_at: "2026-01-01T00:00:00Z",
-          }),
-        );
-      return Promise.resolve(jsonResponse({}, 404));
-    }),
-  );
-
-  renderApp("admin-settings", "/admin/settings");
-
-  expect(
-    await screen.findByRole("heading", {
-      name: "Administrator access required",
-    }),
-  ).toBeTruthy();
-  expect(fetch).not.toHaveBeenCalledWith("/api/admin/settings");
-});
-
-it("hides instance settings when Go rejects an administrator session", async () => {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn((input: RequestInfo | URL) => {
-      if (String(input) === "/api/auth/me")
-        return Promise.resolve(
-          jsonResponse({
-            id: "user-1",
-            email: "admin@example.test",
-            display_name: "Admin",
-            is_admin: true,
-            created_at: "2026-01-01T00:00:00Z",
-          }),
-        );
-      if (String(input) === "/api/admin/settings")
-        return Promise.resolve(jsonResponse({}, 403));
-      return Promise.resolve(jsonResponse({}, 404));
-    }),
-  );
-
-  renderApp("admin-settings", "/admin/settings");
-
-  expect(
-    await screen.findByRole("heading", { name: "Instance administration" }),
-  ).toBeTruthy();
-  await waitFor(() =>
-    expect(screen.queryByLabelText("Enable public browsing")).toBeNull(),
-  );
-});
 
 it("preserves hidden cookbook references when an editor cannot manage sharing", async () => {
   const recipe = {

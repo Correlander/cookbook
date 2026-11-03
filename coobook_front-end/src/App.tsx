@@ -25,17 +25,6 @@ import usePublicAuthConfig from "./features/auth/usePublicAuthConfig.ts";
 
 const PasskeySetupPrompt = lazy(() => import("./PasskeySetupPrompt.tsx"));
 const Courses = lazy(() => import("./Courses.tsx"));
-const AccountSecurityPage = lazy(() =>
-  import("./app/RoutePages.tsx").then((module) => ({
-    default: module.AccountSecurityPage,
-  })),
-);
-const AdminSettingsPage = lazy(() =>
-  import("./app/RoutePages.tsx").then((module) => ({
-    default: module.AdminSettingsPage,
-  })),
-);
-
 type RecipeCardItem = {
   id: string;
   title: string;
@@ -639,29 +628,7 @@ function HomeApp({ pathname }: { pathname: string }) {
   );
 }
 
-type AppRoute = "home" | "account-security" | "admin-settings";
-
-export default function App({
-  route = "home",
-  pathname = "/",
-}: {
-  route?: AppRoute;
-  pathname?: string;
-}) {
-  if (route === "account-security") {
-    return (
-      <FeatureIsland name="Account security page" loading="account security page">
-        <AccountSecurityPage />
-      </FeatureIsland>
-    );
-  }
-  if (route === "admin-settings") {
-    return (
-      <FeatureIsland name="Instance settings page" loading="instance settings page">
-        <AdminSettingsPage />
-      </FeatureIsland>
-    );
-  }
+export default function App({ pathname = "/" }: { pathname?: string }) {
   return <HomeApp pathname={pathname} />;
 }
 

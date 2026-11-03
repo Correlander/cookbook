@@ -2,11 +2,10 @@
 import AppRoot from '../app/AppRoot.tsx'
 
 interface Props {
-  route?: 'home' | 'account-security' | 'admin-settings'
   pathname?: string
 }
 
-const { route = 'home', pathname = '/' } = Astro.props
+const { pathname = '/' } = Astro.props
 ---
 
-<AppRoot route={route} pathname={pathname} client:load />
+<AppRoot pathname={pathname} client:load />

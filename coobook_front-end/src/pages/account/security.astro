@@ -1,11 +1,11 @@
 ---
 import BaseLayout from '../../layouts/BaseLayout.astro'
-import AppIsland from '../../components/AppIsland.astro'
+import AccountSecurityRoot from '../../app/AccountSecurityRoot.tsx'
 
 const title = 'Account security — Cookbook'
 const description = 'Manage your Cookbook sign-in methods, browser sessions, and personal data.'
 ---
 
 <BaseLayout title={title} description={description} robots="noindex,nofollow">
-  <AppIsland route="account-security" pathname="/account/security" />
+  <AccountSecurityRoot client:load />
 </BaseLayout>

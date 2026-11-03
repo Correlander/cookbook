@@ -363,4 +363,44 @@ describe("RecipeCollection", () => {
     result.resolve(jsonResponse([{ id: 1, title: "Apple pie" }]));
     await waitFor(() => expect(status.textContent).toBe("1 recipe loaded."));
   });
+
+  it("cancels delayed announcements from rapid edits and reports only the settled query", async () => {
+    const oldQuery = deferred<Response>();
+    const requests: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        requests.push(url);
+        if (url.includes("q=old")) return oldQuery.promise;
+        if (url.includes("q=new"))
+          return Promise.resolve(jsonResponse([{ id: 2, title: "New recipe" }]));
+        if (url.endsWith("offset=0"))
+          return Promise.resolve(jsonResponse([{ id: 1, title: "Initial recipe" }]));
+        return Promise.resolve(jsonResponse([]));
+      }),
+    );
+    render(<Harness />);
+    const status = screen.getByRole("status");
+    await waitFor(() => expect(status.textContent).toBe("1 recipe loaded."));
+    const search = screen.getByRole("textbox", { name: "Search recipes" });
+
+    fireEvent.change(search, { target: { value: "o" } });
+    fireEvent.change(search, { target: { value: "ol" } });
+    fireEvent.change(search, { target: { value: "old" } });
+    await waitFor(() =>
+      expect(requests).toContain("/api/public/recipes?limit=24&offset=0&q=old"),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    expect(status.textContent).toBe("1 recipe loaded.");
+
+    fireEvent.change(search, { target: { value: "new" } });
+    await screen.findByRole("button", { name: "New recipe" });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(status.textContent).toBe("1 recipe loaded.");
+    await waitFor(() =>
+      expect(status.textContent).toBe("1 recipe found for new."),
+    );
+    expect(status.textContent).not.toContain("old");
+  });
 });

@@ -1,39 +1,68 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AdminUser } from "./apiModels";
+import type { InstanceAuthorityState } from "./features/auth/useInstanceAuthority";
 
 const PAGE_SIZE = 100;
 
 interface AdminUsersProps {
   currentUser?: Pick<AdminUser, "id"> | null;
+  authorityState: InstanceAuthorityState;
+  onRetryAuthority: () => void;
+  onRoleChanged: () => void;
 }
 
-export default function AdminUsers({ currentUser }: AdminUsersProps) {
+export default function AdminUsers({
+  currentUser,
+  authorityState,
+  onRetryAuthority,
+  onRoleChanged,
+}: AdminUsersProps) {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [authorized, setAuthorized] = useState<boolean | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [savingID, setSavingID] = useState("");
   const [error, setError] = useState("");
+  const [usersForUserID, setUsersForUserID] = useState("");
+  const listRequestID = useRef(0);
+  const userID = currentUser?.id ?? "";
+  const currentListReady = usersForUserID === userID;
+  const visibleUsers = currentListReady ? users : [];
+  const canManageRoles = Boolean(
+    currentUser &&
+      authorityState.status === "ready" &&
+      authorityState.userID === currentUser.id &&
+      authorityState.authority.can_manage_instance_roles,
+  );
 
   useEffect(() => {
+    const requestID = ++listRequestID.current;
+    setUsers([]);
+    setUsersForUserID("");
+    setAuthorized(null);
+    setHasMore(false);
+    setLoadingMore(false);
+    setError("");
     let active = true;
     fetch(`/api/admin/users?limit=${PAGE_SIZE}&offset=0`)
       .then(async (response) => {
         if (response.status === 401 || response.status === 403) {
-          if (active) setAuthorized(false);
+          if (active && listRequestID.current === requestID)
+            setAuthorized(false);
           return null;
         }
         if (!response.ok) throw new Error("Could not load instance accounts.");
         return response.json() as Promise<AdminUser[]>;
       })
       .then((items) => {
-        if (!active || !items) return;
+        if (!active || listRequestID.current !== requestID || !items) return;
         setUsers(items);
+        setUsersForUserID(userID);
         setHasMore(items.length === PAGE_SIZE);
         setAuthorized(true);
       })
       .catch((loadError: unknown) => {
-        if (active)
+        if (active && listRequestID.current === requestID)
           setError(
             loadError instanceof Error
               ? loadError.message
@@ -42,11 +71,14 @@ export default function AdminUsers({ currentUser }: AdminUsersProps) {
       });
     return () => {
       active = false;
+      if (listRequestID.current === requestID)
+        listRequestID.current += 1;
     };
-  }, []);
+  }, [userID]);
 
   async function loadMore() {
-    if (loadingMore) return;
+    if (loadingMore || !currentListReady || !userID) return;
+    const requestID = listRequestID.current;
     setLoadingMore(true);
     setError("");
     try {
@@ -55,16 +87,18 @@ export default function AdminUsers({ currentUser }: AdminUsersProps) {
       );
       if (!response.ok) throw new Error("Could not load more accounts.");
       const items = (await response.json()) as AdminUser[];
+      if (listRequestID.current !== requestID) return;
       setUsers((current) => [...current, ...items]);
       setHasMore(items.length === PAGE_SIZE);
     } catch (loadError) {
-      setError(
-        loadError instanceof Error
-          ? loadError.message
-          : "Could not load more accounts.",
-      );
+      if (listRequestID.current === requestID)
+        setError(
+          loadError instanceof Error
+            ? loadError.message
+            : "Could not load more accounts.",
+        );
     } finally {
-      setLoadingMore(false);
+      if (listRequestID.current === requestID) setLoadingMore(false);
     }
   }
 
@@ -89,7 +123,7 @@ export default function AdminUsers({ currentUser }: AdminUsersProps) {
       });
       if (response.status === 409) {
         throw new Error(
-          "The last administrator must remain assigned. Ask another administrator to make this change.",
+          "At least one administrator must remain assigned. Ask another eligible account to make this change.",
         );
       }
       if (!response.ok) {
@@ -104,6 +138,7 @@ export default function AdminUsers({ currentUser }: AdminUsersProps) {
       setUsers((current) =>
         current.map((item) => (item.id === updated.id ? updated : item)),
       );
+      onRoleChanged();
     } catch (saveError) {
       setError(
         saveError instanceof Error
@@ -115,7 +150,12 @@ export default function AdminUsers({ currentUser }: AdminUsersProps) {
     }
   }
 
-  if (authorized === false || (authorized === null && !error)) return null;
+  if (
+    authorized === false ||
+    (!currentListReady && !error) ||
+    (authorized === null && !error)
+  )
+    return null;
   return (
     <section
       className="cookbook-dashboard"
@@ -128,15 +168,36 @@ export default function AdminUsers({ currentUser }: AdminUsersProps) {
         </div>
       </div>
       <p className="admin-settings-note">
-        Administrator access includes account and instance settings. Another
-        administrator must change your role.
+        {canManageRoles
+          ? "You can change account roles under the current instance policy."
+          : authorityState.status === "ready" &&
+              authorityState.userID === userID
+            ? "This account cannot change roles under the current instance authority."
+            : "Role permissions are not confirmed yet; role controls are unavailable while they are checked."}
       </p>
+      {authorityState.status === "loading" && (
+        <p role="status">Checking role permissions…</p>
+      )}
+      {authorityState.status === "error" && (
+        <div>
+          <p className="form-message" role="alert">
+            {authorityState.message}
+          </p>
+          <button
+            className="text-link"
+            type="button"
+            onClick={onRetryAuthority}
+          >
+            Retry role permissions
+          </button>
+        </div>
+      )}
       {error && (
         <p className="form-message" role="alert">
           {error}
         </p>
       )}
-      {users.map((account) => (
+      {visibleUsers.map((account) => (
         <div className="passkey-row" key={account.id}>
           <span>
             {account.display_name}
@@ -146,23 +207,24 @@ export default function AdminUsers({ currentUser }: AdminUsersProps) {
               · joined {new Date(account.created_at).toLocaleDateString()}
             </small>
           </span>
-          {account.id !== currentUser?.id && (
-            <button
-              className="text-link"
-              type="button"
-              disabled={Boolean(savingID)}
-              onClick={() => setRole(account)}
-            >
-              {savingID === account.id
-                ? "Saving…"
-                : account.is_admin
-                  ? "Remove administrator"
-                  : "Make administrator"}
-            </button>
-          )}
+          {account.id !== currentUser?.id &&
+            canManageRoles && (
+              <button
+                className="text-link"
+                type="button"
+                disabled={Boolean(savingID)}
+                onClick={() => setRole(account)}
+              >
+                {savingID === account.id
+                  ? "Saving…"
+                  : account.is_admin
+                    ? "Remove administrator"
+                    : "Make administrator"}
+              </button>
+            )}
         </div>
       ))}
-      {hasMore && (
+      {currentListReady && hasMore && (
         <button
           className="text-link"
           type="button"

@@ -28,6 +28,7 @@ import type {
 import { errorMessage } from "./apiModels";
 import { SessionCheckError } from "./app/AppSession.tsx";
 import usePublicAuthConfig from "./features/auth/usePublicAuthConfig.ts";
+import useInstanceAuthority from "./features/auth/useInstanceAuthority.ts";
 
 const PasskeySetupPrompt = lazy(() => import("./PasskeySetupPrompt.tsx"));
 const FederationAdmin = lazy(() => import("./FederationAdmin.tsx"));
@@ -111,6 +112,10 @@ function HomeApp({ pathname }: { pathname: string }) {
     [pendingPasskeyOffer, setPendingPasskeyOffer] = useState(false);
   const { state: sessionState, currentUser, refreshSession, clearSession } =
     useAppSession();
+  const authority = useInstanceAuthority(
+    sessionState.status === "authenticated" ? sessionState.currentUser.id : null,
+    sessionState.status === "authenticated",
+  );
   const {
     state: publicAuthConfigState,
     retry: retryPublicAuthConfig,
@@ -343,12 +348,20 @@ function HomeApp({ pathname }: { pathname: string }) {
             <FederationAdmin />
           </FeatureIsland>
         )}
-        {signedIn && (
+        {sessionState.status === "authenticated" && (
           <FeatureIsland
             name="User administration"
             loading="user administration"
           >
-            <AdminUsers currentUser={currentUser} />
+            <AdminUsers
+              currentUser={currentUser}
+              authorityState={authority.state}
+              onRetryAuthority={authority.retry}
+              onRoleChanged={() => {
+                void refreshSession();
+                authority.retry();
+              }}
+            />
           </FeatureIsland>
         )}
         {signedIn && (

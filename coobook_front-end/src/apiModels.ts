@@ -14,6 +14,13 @@ export interface AdminUser extends AuthenticatedUser {
   created_at: string;
 }
 
+export interface InstanceAuthority {
+  is_instance_owner: boolean;
+  is_admin: boolean;
+  owner_claimed: boolean;
+  can_manage_instance_roles: boolean;
+}
+
 export interface Passkey {
   id: string;
   name: string;

@@ -653,6 +653,259 @@ it("sends only local-access confirmation on a visibility-expanding update", asyn
   expect(updateBody).not.toHaveProperty("initial_publication");
 });
 
+it("shows role controls to a non-admin owner without adding Administration navigation", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/auth/me")
+      return Promise.resolve(
+        jsonResponse({
+          id: "owner-1",
+          email: "owner@example.test",
+          display_name: "Owner",
+          is_admin: false,
+        }),
+      );
+    if (url === "/api/instance/authority")
+      return Promise.resolve(
+        jsonResponse({
+          is_instance_owner: true,
+          is_admin: false,
+          owner_claimed: true,
+          can_manage_instance_roles: true,
+        }),
+      );
+    if (url.startsWith("/api/admin/users?"))
+      return Promise.resolve(
+        jsonResponse([
+          {
+            id: "member-1",
+            email: "member@example.test",
+            display_name: "Member",
+            is_admin: false,
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ]),
+      );
+    return Promise.resolve(jsonResponse([], 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+
+  expect(
+    await screen.findByRole("button", { name: "Make administrator" }),
+  ).toBeTruthy();
+  expect(screen.queryByRole("link", { name: "Administration" })).toBeNull();
+});
+
+it("keeps Administration navigation for an admin owner-excluded account without role controls", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/auth/me")
+        return Promise.resolve(
+          jsonResponse({
+            id: "admin-1",
+            email: "admin@example.test",
+            display_name: "Admin",
+            is_admin: true,
+          }),
+        );
+      if (url === "/api/instance/authority")
+        return Promise.resolve(
+          jsonResponse({
+            is_instance_owner: false,
+            is_admin: true,
+            owner_claimed: true,
+            can_manage_instance_roles: false,
+          }),
+        );
+      if (url.startsWith("/api/admin/users?"))
+        return Promise.resolve(
+          jsonResponse([
+            {
+              id: "member-1",
+              email: "member@example.test",
+              display_name: "Member",
+              is_admin: false,
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]),
+        );
+      return Promise.resolve(jsonResponse([], 404));
+    }),
+  );
+
+  renderApp();
+
+  expect(
+    await screen.findByRole("link", { name: "Administration" }),
+  ).toBeTruthy();
+  expect(await screen.findByText("Member")).toBeTruthy();
+  expect(
+    screen.queryByRole("button", { name: "Make administrator" }),
+  ).toBeNull();
+});
+
+it("honors the pre-claim server fallback that grants role controls to administrators", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/auth/me")
+        return Promise.resolve(
+          jsonResponse({
+            id: "admin-1",
+            email: "admin@example.test",
+            display_name: "Admin",
+            is_admin: true,
+          }),
+        );
+      if (url === "/api/instance/authority")
+        return Promise.resolve(
+          jsonResponse({
+            is_instance_owner: false,
+            is_admin: true,
+            owner_claimed: false,
+            can_manage_instance_roles: true,
+          }),
+        );
+      if (url.startsWith("/api/admin/users?"))
+        return Promise.resolve(
+          jsonResponse([
+            {
+              id: "member-1",
+              email: "member@example.test",
+              display_name: "Member",
+              is_admin: false,
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]),
+        );
+      return Promise.resolve(jsonResponse([], 404));
+    }),
+  );
+
+  renderApp();
+
+  expect(
+    await screen.findByRole("button", { name: "Make administrator" }),
+  ).toBeTruthy();
+});
+
+it("keeps role controls unavailable on authority errors without signing out", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/auth/me")
+        return Promise.resolve(
+          jsonResponse({
+            id: "admin-1",
+            email: "admin@example.test",
+            display_name: "Admin",
+            is_admin: true,
+          }),
+        );
+      if (url === "/api/instance/authority")
+        return Promise.resolve(jsonResponse({}, 500));
+      if (url.startsWith("/api/admin/users?"))
+        return Promise.resolve(
+          jsonResponse([
+            {
+              id: "member-1",
+              email: "member@example.test",
+              display_name: "Member",
+              is_admin: false,
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]),
+        );
+      return Promise.resolve(jsonResponse([], 404));
+    }),
+  );
+
+  renderApp();
+
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(await screen.findByText("Welcome back, Admin.")).toBeTruthy();
+  expect(
+    screen.queryByRole("heading", { name: "Sign in to continue" }),
+  ).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "Make administrator" }),
+  ).toBeNull();
+  expect(
+    screen.getByRole("button", { name: "Retry role permissions" }),
+  ).toBeTruthy();
+});
+
+it("refreshes session and server authority after a role mutation", async () => {
+  let sessionRequests = 0;
+  let authorityRequests = 0;
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/auth/me") {
+      sessionRequests += 1;
+      return Promise.resolve(
+        jsonResponse({
+          id: "owner-1",
+          email: "owner@example.test",
+          display_name: "Owner",
+          is_admin: false,
+        }),
+      );
+    }
+    if (url === "/api/instance/authority") {
+      authorityRequests += 1;
+      return Promise.resolve(
+        jsonResponse({
+          is_instance_owner: true,
+          is_admin: false,
+          owner_claimed: true,
+          can_manage_instance_roles: true,
+        }),
+      );
+    }
+    if (url.startsWith("/api/admin/users?") && !init?.method)
+      return Promise.resolve(
+        jsonResponse([
+          {
+            id: "member-1",
+            email: "member@example.test",
+            display_name: "Member",
+            is_admin: false,
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ]),
+      );
+    if (url === "/api/admin/users/member-1" && init?.method === "PATCH")
+      return Promise.resolve(
+        jsonResponse({
+          id: "member-1",
+          email: "member@example.test",
+          display_name: "Member",
+          is_admin: true,
+          created_at: "2026-01-01T00:00:00Z",
+        }),
+      );
+    return Promise.resolve(jsonResponse([], 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("confirm", vi.fn(() => true));
+
+  renderApp();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Make administrator" }),
+  );
+
+  await waitFor(() => {
+    expect(sessionRequests).toBeGreaterThan(1);
+    expect(authorityRequests).toBeGreaterThan(1);
+  });
+});
+
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status });
 }

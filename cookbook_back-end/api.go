@@ -189,28 +189,29 @@ type recipeStep struct {
 	Text string `json:"text"`
 }
 type recipe struct {
-	OwnerID        string       `json:"owner_id,omitempty"`
-	ID             string       `json:"id"`
-	CreatorName    string       `json:"creator_name"`
-	SourceRecipeID string       `json:"source_recipe_id,omitempty"`
-	Title          string       `json:"title"`
-	Description    string       `json:"description"`
-	Ingredients    []ingredient `json:"ingredients"`
-	Steps          []recipeStep `json:"steps"`
-	Servings       int          `json:"servings"`
-	PrepTime       int          `json:"prep_time_minutes"`
-	CookTime       int          `json:"cook_time_minutes"`
-	Tags           []string     `json:"tags"`
-	Visibility     visibility   `json:"visibility"`
-	EditPolicy     string       `json:"edit_policy,omitempty"`
-	CanEdit        bool         `json:"can_edit"`
-	CanDelete      bool         `json:"can_delete"`
-	Version        int          `json:"version"`
-	CookbookIDs    []string     `json:"cookbook_ids,omitempty"`
-	CreatedAt      string       `json:"created_at"`
-	UpdatedAt      string       `json:"updated_at"`
-	DeletedAt      string       `json:"deleted_at,omitempty"`
-	Image          string       `json:"image,omitempty"`
+	OwnerID          string       `json:"owner_id,omitempty"`
+	ID               string       `json:"id"`
+	CreatorName      string       `json:"creator_name"`
+	SourceRecipeID   string       `json:"source_recipe_id,omitempty"`
+	Title            string       `json:"title"`
+	Description      string       `json:"description"`
+	Ingredients      []ingredient `json:"ingredients"`
+	Steps            []recipeStep `json:"steps"`
+	Servings         int          `json:"servings"`
+	PrepTime         int          `json:"prep_time_minutes"`
+	CookTime         int          `json:"cook_time_minutes"`
+	Tags             []string     `json:"tags"`
+	Visibility       visibility   `json:"visibility"`
+	EditPolicy       string       `json:"edit_policy,omitempty"`
+	CanEdit          bool         `json:"can_edit"`
+	CanDelete        bool         `json:"can_delete"`
+	CanManageSharing bool         `json:"can_manage_sharing"`
+	Version          int          `json:"version"`
+	CookbookIDs      []string     `json:"cookbook_ids,omitempty"`
+	CreatedAt        string       `json:"created_at"`
+	UpdatedAt        string       `json:"updated_at"`
+	DeletedAt        string       `json:"deleted_at,omitempty"`
+	Image            string       `json:"image,omitempty"`
 }
 
 func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -757,7 +758,7 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 500, "storage_error")
 			return
 		}
-		if err = replaceCookbookRefs(tx, id, in.OwnerID, in.CookbookIDs); err != nil {
+		if err = replaceCookbookRefs(tx, id, in.OwnerID, in.cookbookIDs()); err != nil {
 			_ = tx.Rollback()
 			writeError(w, 403, "cookbook_access_denied")
 			return
@@ -865,6 +866,7 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 		it.CookbookIDs = h.recipeCookbooks(it.ID, uid)
 		it.CanEdit = canEditRecipe(uid, access{ownerID: it.OwnerID, memberRole: member}, it.EditPolicy)
 		it.CanDelete = uid != "" && uid == it.OwnerID
+		it.CanManageSharing = canManageRecipeSharing(uid, it.OwnerID)
 		visibleItems = append(visibleItems, it)
 	}
 	writeJSON(w, 200, visibleItems)
@@ -883,8 +885,15 @@ type recipeInput struct {
 	Tags        []string     `json:"tags"`
 	Visibility  visibility   `json:"visibility"`
 	EditPolicy  string       `json:"edit_policy"`
-	CookbookIDs []string     `json:"cookbook_ids"`
+	CookbookIDs *[]string    `json:"cookbook_ids"`
 	Version     int          `json:"version"`
+}
+
+func (in recipeInput) cookbookIDs() []string {
+	if in.CookbookIDs == nil {
+		return nil
+	}
+	return *in.CookbookIDs
 }
 
 func (in *recipeInput) validate() error {
@@ -931,7 +940,7 @@ func (in *recipeInput) validate() error {
 		cleanTags = append(cleanTags, tag)
 	}
 	in.Tags = cleanTags
-	if len(in.Ingredients) > 200 || len(in.Steps) > 200 || len(in.CookbookIDs) > 50 {
+	if len(in.Ingredients) > 200 || len(in.Steps) > 200 || len(in.cookbookIDs()) > 50 {
 		return errors.New("recipe too large")
 	}
 	for i := range in.Ingredients {
@@ -1041,10 +1050,22 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 			StepsJSON: stepsJSON, Servings: in.Servings, PrepTime: in.PrepTime,
 			CookTime: in.CookTime, TagsJSON: tagsJSON, Visibility: in.Visibility,
 		},
-		CookbookIDs: in.CookbookIDs, ReplaceCookbookRefs: true,
+		CookbookIDs: in.cookbookIDs(), ReplaceCookbookRefs: in.CookbookIDs != nil || in.UserID == owner,
 	})
 	if errors.Is(err, errRecipeMutationConflict) {
 		writeError(w, http.StatusConflict, "version_conflict")
+		return
+	}
+	if errors.Is(err, errRecipeMutationNotFound) {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if errors.Is(err, errRecipeMutationVisibility) {
+		writeError(w, http.StatusForbidden, "visibility_owner_only")
+		return
+	}
+	if errors.Is(err, errRecipeMutationDenied) {
+		writeError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	if errors.Is(err, errRecipeMutationCookbookRefs) {
@@ -1329,6 +1350,18 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusConflict, "version_conflict")
 		return
 	}
+	if errors.Is(err, errRecipeMutationNotFound) {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if errors.Is(err, errRecipeMutationVisibility) {
+		writeError(w, http.StatusForbidden, "visibility_owner_only")
+		return
+	}
+	if errors.Is(err, errRecipeMutationDenied) {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
 	if errors.Is(err, errRecipeMutationFederation) {
 		writeError(w, http.StatusServiceUnavailable, "federation_queue_unavailable")
 		return
@@ -1374,6 +1407,22 @@ func (h apiHandler) setRecipeCookbooks(recipeID, userID string, ids []string) er
 	return tx.Commit()
 }
 func replaceCookbookRefs(tx *sql.Tx, recipeID, userID string, ids []string) error {
+	var recipeOwnerID string
+	if err := tx.QueryRow(`SELECT owner_id FROM recipes WHERE id=? AND deleted_at IS NULL`, recipeID).Scan(&recipeOwnerID); err != nil {
+		return err
+	}
+	if !canManageRecipeSharing(userID, recipeOwnerID) {
+		visibleIDs, err := visibleRecipeCookbookIDsTx(tx, recipeID, userID)
+		if err != nil {
+			return err
+		}
+		if !sameCookbookIDs(ids, visibleIDs) {
+			return errors.New("recipe sharing requires owner permission")
+		}
+		// Non-owners may echo the references visible to them for compatibility,
+		// but must not replace the complete link set: other links may be hidden.
+		return nil
+	}
 	if _, err := tx.Exec(`DELETE FROM cookbook_recipes WHERE recipe_id=? AND cookbook_id IN (SELECT id FROM cookbooks WHERE owner_id=?)`, recipeID, userID); err != nil {
 		return err
 	}
@@ -1394,6 +1443,43 @@ func replaceCookbookRefs(tx *sql.Tx, recipeID, userID string, ids []string) erro
 		}
 	}
 	return nil
+}
+
+func visibleRecipeCookbookIDsTx(tx *sql.Tx, recipeID, userID string) ([]string, error) {
+	rows, err := tx.Query(`SELECT cr.cookbook_id FROM cookbook_recipes cr JOIN cookbooks c ON c.id=cr.cookbook_id JOIN instance_settings s ON s.id=1 WHERE cr.recipe_id=? AND (c.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_memberships m WHERE m.cookbook_id=c.id AND m.user_id=?) OR (s.public_instance=1 AND c.visibility='public')) ORDER BY cr.cookbook_id`, recipeID, userID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func sameCookbookIDs(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(left))
+	for _, id := range left {
+		if _, exists := seen[id]; exists {
+			return false
+		}
+		seen[id] = struct{}{}
+	}
+	for _, id := range right {
+		if _, exists := seen[id]; !exists {
+			return false
+		}
+		delete(seen, id)
+	}
+	return len(seen) == 0
 }
 func (h apiHandler) recipeCookbooks(id, userID string) []string {
 	rows, err := h.db.Query(`SELECT cr.cookbook_id FROM cookbook_recipes cr JOIN cookbooks c ON c.id=cr.cookbook_id JOIN instance_settings s ON s.id=1 WHERE cr.recipe_id=? AND (c.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_memberships m WHERE m.cookbook_id=c.id AND m.user_id=?) OR (s.public_instance=1 AND c.visibility='public')) ORDER BY cr.cookbook_id`, id, userID, userID)

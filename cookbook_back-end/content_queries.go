@@ -61,7 +61,12 @@ func readRecipeDetail(ctx context.Context, db *sql.DB, actor ContentActor, recip
 	}
 	item.CanEdit = canEditRecipe(actor.AccountID, access{ownerID: item.OwnerID, memberRole: memberRole}, item.EditPolicy)
 	item.CanDelete = actor.AccountID != "" && actor.AccountID == item.OwnerID
+	item.CanManageSharing = canManageRecipeSharing(actor.AccountID, item.OwnerID)
 	return item, nil
+}
+
+func canManageRecipeSharing(accountID, recipeOwnerID string) bool {
+	return accountID != "" && accountID == recipeOwnerID
 }
 
 func recipeMemberRoleContext(ctx context.Context, db *sql.DB, recipeID, accountID string) (role, error) {

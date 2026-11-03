@@ -9,6 +9,9 @@ var (
 	errRecipeMutationConflict     = errors.New("recipe mutation version conflict")
 	errRecipeMutationCookbookRefs = errors.New("recipe cookbook reference denied")
 	errRecipeMutationFederation   = errors.New("recipe federation queue unavailable")
+	errRecipeMutationNotFound     = errors.New("recipe mutation target not found")
+	errRecipeMutationDenied       = errors.New("recipe mutation authorization denied")
+	errRecipeMutationVisibility   = errors.New("recipe visibility is owner-only")
 )
 
 type recipeMutationSnapshot struct {
@@ -47,6 +50,9 @@ func commitRecipeMutation(db *sql.DB, mutation recipeMutation) (int, error) {
 		return 0, err
 	}
 	defer tx.Rollback()
+	if err := authorizeRecipeMutationTx(tx, mutation); err != nil {
+		return 0, err
+	}
 
 	updatedAt := timestamp()
 	var result sql.Result
@@ -87,4 +93,32 @@ func commitRecipeMutation(db *sql.DB, mutation recipeMutation) (int, error) {
 		return 0, err
 	}
 	return newVersion, nil
+}
+
+func authorizeRecipeMutationTx(tx *sql.Tx, mutation recipeMutation) error {
+	var ownerID string
+	var editPolicy string
+	var currentVisibility visibility
+	err := tx.QueryRow(`SELECT owner_id,edit_policy,visibility FROM recipes WHERE id=? AND deleted_at IS NULL`, mutation.RecipeID).Scan(&ownerID, &editPolicy, &currentVisibility)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errRecipeMutationNotFound
+	}
+	if err != nil {
+		return err
+	}
+
+	var memberRole role
+	if mutation.ActorID != "" && mutation.ActorID != ownerID {
+		err := tx.QueryRow(`SELECT m.role FROM cookbook_memberships m JOIN cookbook_recipes cr ON cr.cookbook_id=m.cookbook_id WHERE cr.recipe_id=? AND m.user_id=? ORDER BY CASE m.role WHEN 'editor' THEN 0 ELSE 1 END LIMIT 1`, mutation.RecipeID, mutation.ActorID).Scan(&memberRole)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	if !canEditRecipe(mutation.ActorID, access{ownerID: ownerID, memberRole: memberRole}, editPolicy) {
+		return errRecipeMutationDenied
+	}
+	if mutation.ActorID != ownerID && mutation.Snapshot.Visibility != currentVisibility {
+		return errRecipeMutationVisibility
+	}
+	return nil
 }

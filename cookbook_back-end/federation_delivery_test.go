@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -81,6 +82,10 @@ func TestTwoDatabaseFederationPublishUpdateDuplicateAndUnpublish(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := senderDB.Exec(`INSERT INTO recipes(id,owner_id,creator_name,title,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at) VALUES(?, 'owner','Source cook','First title','[]','[]','[]','public','owner_only','now','now')`, testFederationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := senderDB.Exec(`INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at)
+		VALUES(?,'published','followers',0,'now')`, testFederationID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := senderDB.Exec(`UPDATE instance_settings SET public_instance=1,federation_enabled=1,federation_origin=? WHERE id=1`, senderOrigin); err != nil {
@@ -247,8 +252,27 @@ func (t *federationRedirectTransport) RoundTrip(*http.Request) (*http.Response, 
 	return &http.Response{StatusCode: http.StatusTemporaryRedirect, Header: http.Header{"Location": []string{"https://other.example.org/inbox"}}, Body: io.NopCloser(strings.NewReader(""))}, nil
 }
 
+func insertOptedInFederationDeliverySource(t *testing.T, db *sql.DB, origin string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('delivery-owner','delivery@example.org','Owner','now')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO recipes(id,owner_id,creator_name,title,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at)
+		VALUES(?, 'delivery-owner','Creator','Dish','[]','[]','[]','public','owner_only','now','now')`, testFederationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at)
+		VALUES(?,'published','followers',0,'now')`, testFederationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1,federation_enabled=1,federation_origin=? WHERE id=1`, origin); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFederationWorkerRetriesAndDeletesAcknowledgedItems(t *testing.T) {
 	db := testDatabase(t)
+	insertOptedInFederationDeliverySource(t, db, testFederationOrigin)
 	if err := registerFederationPeer(db, "https://peer.example.org", true); err != nil {
 		t.Fatal(err)
 	}
@@ -297,6 +321,7 @@ func TestFederationOutboxSurvivesDatabaseRestartAndExpiredLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	insertOptedInFederationDeliverySource(t, db, testFederationOrigin)
 	if err := registerFederationPeer(db, "https://peer.example.org", true); err != nil {
 		t.Fatal(err)
 	}

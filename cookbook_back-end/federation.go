@@ -210,6 +210,129 @@ func enqueueFederationChange(tx *sql.Tx, recipeID string) error {
 	return enqueueFederationChangeForPeer(tx, recipeID, "", false)
 }
 
+func federationRecipePublicationEligible(ctx context.Context, queryer recipePolicyQueryer, recipeID, expectedOrigin string) (bool, error) {
+	readFacts, err := readRecipePublicReadFacts(ctx, queryer, recipeID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	var federation int
+	var origin, mode string
+	err = queryer.QueryRowContext(ctx, `SELECT s.federation_enabled,s.federation_origin,p.federation_mode
+		FROM instance_settings s JOIN recipe_publication_policy p ON p.recipe_id=? WHERE s.id=1`, recipeID).
+		Scan(&federation, &origin, &mode)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	canonicalOrigin, err := canonicalFederationOrigin(origin)
+	if err != nil || canonicalOrigin != origin || (expectedOrigin != "" && expectedOrigin != origin) {
+		return false, nil
+	}
+	return readFacts.AnonymousEligible() && federation == 1 && mode == string(RecipeFederationFollowers), nil
+}
+
+func federationObjectRecipeID(origin, objectID string) (string, bool) {
+	const marker = "/federation/recipes/"
+	if !strings.HasPrefix(objectID, origin+marker) {
+		return "", false
+	}
+	recipeID := strings.TrimPrefix(objectID, origin+marker)
+	if strings.Contains(recipeID, "/") || !isFederationID(recipeID) {
+		return "", false
+	}
+	return recipeID, true
+}
+
+func validFederationEgressOrigin(origin string) bool {
+	canonical, err := canonicalFederationOrigin(origin)
+	return err == nil && canonical == origin
+}
+
+func hasPendingFederationContentForRecipe(tx *sql.Tx, peer, recipeID string) (bool, error) {
+	rows, err := tx.Query(`SELECT payload FROM federation_outbox WHERE peer_origin=? AND object_id LIKE ? ORDER BY sequence,id`, peer, "%/federation/recipes/"+recipeID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return false, err
+		}
+		event, _, err := decodeFederationEvent(payload)
+		if err != nil {
+			return false, err
+		}
+		if strings.HasSuffix(event.ObjectID, "/federation/recipes/"+recipeID) &&
+			(event.EventType == federationEventSnapshot || event.EventType == federationEventUpdate) {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+func reconcilePendingFederationRows(tx *sql.Tx, peer, objectID string, now int64, prune bool) (int64, int64, error) {
+	rows, err := tx.Query(`SELECT id,payload,lease_until FROM federation_outbox WHERE peer_origin=? AND object_id=? ORDER BY sequence,id`, peer, objectID)
+	if err != nil {
+		return 0, 0, err
+	}
+	type staleRow struct {
+		id       string
+		payload  []byte
+		leaseEnd sql.NullInt64
+	}
+	var highestContentSequence, highestTombstoneSequence int64
+	var remove []string
+	for rows.Next() {
+		var row staleRow
+		if err := rows.Scan(&row.id, &row.payload, &row.leaseEnd); err != nil {
+			rows.Close()
+			return 0, 0, err
+		}
+		event, _, err := decodeFederationEvent(row.payload)
+		if err != nil {
+			rows.Close()
+			return 0, 0, err
+		}
+		if event.EventType == federationEventTombstone {
+			if event.Sequence > highestTombstoneSequence {
+				highestTombstoneSequence = event.Sequence
+			}
+			continue
+		}
+		if event.EventType != federationEventSnapshot && event.EventType != federationEventUpdate {
+			continue
+		}
+		if event.Sequence > highestContentSequence {
+			highestContentSequence = event.Sequence
+		}
+		if prune && (!row.leaseEnd.Valid || row.leaseEnd.Int64 < now) {
+			remove = append(remove, row.id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, 0, err
+	}
+	for _, id := range remove {
+		if _, err := tx.Exec(`DELETE FROM federation_outbox WHERE id=?`, id); err != nil {
+			return 0, 0, err
+		}
+	}
+	return highestContentSequence, highestTombstoneSequence, nil
+}
+
 func enqueueFederationChangeForPeer(tx *sql.Tx, recipeID, targetPeer string, forceSnapshot bool) error {
 	var federation, instancePublic int
 	var origin string
@@ -221,39 +344,51 @@ func enqueueFederationChangeForPeer(tx *sql.Tx, recipeID, targetPeer string, for
 	if err := tx.QueryRow(`SELECT id,owner_id,creator_name,source_recipe_id,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,image_path,COALESCE(deleted_at,'') FROM recipes WHERE id=?`, recipeID).Scan(&source.ID, &source.OwnerID, &source.CreatorName, &source.SourceRecipeID, &source.Title, &source.Description, &ingredientsJSON, &stepsJSON, &source.Servings, &source.PrepTime, &source.CookTime, &tagsJSON, &source.Visibility, &source.ImagePath, &deletedAt); err != nil {
 		return err
 	}
-	if err := json.Unmarshal([]byte(ingredientsJSON), &source.Ingredients); err != nil {
-		return err
-	}
-	if err := json.Unmarshal([]byte(stepsJSON), &source.Steps); err != nil {
-		return err
-	}
-	if err := json.Unmarshal([]byte(tagsJSON), &source.Tags); err != nil {
-		return err
-	}
 	source.Deleted = deletedAt != ""
 	var sequence int64
 	err := tx.QueryRow(`SELECT sequence FROM federation_local_objects WHERE recipe_id=?`, recipeID).Scan(&sequence)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	eligible := federation == 1 && instancePublic == 1 && origin != "" && source.Visibility == visibilityPublic && !source.Deleted
-	peerQuery := `SELECT origin FROM federation_peers WHERE enabled=1 ORDER BY origin`
+	policyEligible, err := federationRecipePublicationEligible(context.Background(), tx, recipeID, origin)
+	if err != nil {
+		return err
+	}
+	eligible := policyEligible && federation == 1 && instancePublic == 1 && origin != "" && source.Visibility == visibilityPublic && !source.Deleted
+	if eligible {
+		if err := json.Unmarshal([]byte(ingredientsJSON), &source.Ingredients); err != nil {
+			return err
+		}
+		if err := json.Unmarshal([]byte(stepsJSON), &source.Steps); err != nil {
+			return err
+		}
+		if err := json.Unmarshal([]byte(tagsJSON), &source.Tags); err != nil {
+			return err
+		}
+	}
+	peerQuery := `SELECT origin,enabled FROM federation_peers ORDER BY origin`
 	peerArgs := []any{}
 	if targetPeer != "" {
-		peerQuery = `SELECT origin FROM federation_peers WHERE enabled=1 AND origin=? ORDER BY origin`
+		peerQuery = `SELECT origin,enabled FROM federation_peers WHERE origin=? ORDER BY origin`
 		peerArgs = append(peerArgs, targetPeer)
 	}
 	rows, err := tx.Query(peerQuery, peerArgs...)
 	if err != nil {
 		return err
 	}
-	var peers []string
+	type federationPeer struct {
+		origin  string
+		enabled bool
+	}
+	var peers []federationPeer
 	for rows.Next() {
-		var peer string
-		if err := rows.Scan(&peer); err != nil {
+		var peer federationPeer
+		var enabled int
+		if err := rows.Scan(&peer.origin, &enabled); err != nil {
 			rows.Close()
 			return err
 		}
+		peer.enabled = enabled == 1
 		peers = append(peers, peer)
 	}
 	if err := rows.Err(); err != nil {
@@ -263,29 +398,76 @@ func enqueueFederationChangeForPeer(tx *sql.Tx, recipeID, targetPeer string, for
 	if err := rows.Close(); err != nil {
 		return err
 	}
+	if targetPeer != "" && (len(peers) != 1 || !peers[0].enabled) {
+		return errors.New("federation peer is not enabled")
+	}
 	type eventTarget struct {
 		peer      string
 		eventType string
 	}
 	targets := make([]eventTarget, 0, len(peers))
+	var objectID string
+	objectIDReady := false
+	ensureObjectID := func() error {
+		if objectIDReady {
+			return nil
+		}
+		if !validFederationEgressOrigin(origin) {
+			return errors.New("federation origin is required for pending publication state")
+		}
+		var err error
+		objectID, err = federationRecipeObjectID(origin, recipeID)
+		if err != nil {
+			return err
+		}
+		objectIDReady = true
+		return nil
+	}
 	for _, peer := range peers {
 		var peerPublished int
-		peerErr := tx.QueryRow(`SELECT published FROM federation_local_peer_objects WHERE peer_origin=? AND recipe_id=?`, peer, recipeID).Scan(&peerPublished)
+		peerErr := tx.QueryRow(`SELECT published FROM federation_local_peer_objects WHERE peer_origin=? AND recipe_id=?`, peer.origin, recipeID).Scan(&peerPublished)
 		if peerErr != nil && !errors.Is(peerErr, sql.ErrNoRows) {
 			return peerErr
 		}
 		eventType := ""
 		if eligible {
-			if (targetPeer == peer && forceSnapshot) || peerPublished == 0 {
-				eventType = federationEventSnapshot
-			} else {
-				eventType = federationEventUpdate
+			if peer.enabled {
+				if err := ensureObjectID(); err != nil {
+					return err
+				}
+				if (targetPeer == peer.origin && forceSnapshot) || peerPublished == 0 {
+					eventType = federationEventSnapshot
+				} else {
+					eventType = federationEventUpdate
+				}
 			}
-		} else if peerPublished == 1 {
-			eventType = federationEventTombstone
+		} else {
+			if validFederationEgressOrigin(origin) {
+				if err := ensureObjectID(); err != nil {
+					return err
+				}
+				pendingContentSequence, pendingTombstoneSequence, err := reconcilePendingFederationRows(tx, peer.origin, objectID, time.Now().Unix(), true)
+				if err != nil {
+					return err
+				}
+				if peerPublished == 1 || pendingContentSequence > pendingTombstoneSequence {
+					eventType = federationEventTombstone
+				}
+			} else {
+				if peerPublished == 1 {
+					return errors.New("federation origin is required to withdraw a published object")
+				}
+				pendingContent, err := hasPendingFederationContentForRecipe(tx, peer.origin, recipeID)
+				if err != nil {
+					return err
+				}
+				if pendingContent {
+					return errors.New("federation origin is required to reconcile pending content")
+				}
+			}
 		}
 		if eventType != "" {
-			targets = append(targets, eventTarget{peer: peer, eventType: eventType})
+			targets = append(targets, eventTarget{peer: peer.origin, eventType: eventType})
 		}
 	}
 	if len(targets) == 0 {

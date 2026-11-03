@@ -278,6 +278,10 @@ func TestFederationOutboxSharesRecipeTransactions(t *testing.T) {
 	if _, err := tx.Exec(`UPDATE recipes SET visibility='public' WHERE id=?`, testFederationID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := tx.Exec(`INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at)
+		VALUES(?,'published','followers',0,'now')`, testFederationID); err != nil {
+		t.Fatal(err)
+	}
 	if err := enqueueFederationChange(tx, testFederationID); err != nil {
 		t.Fatal(err)
 	}
@@ -302,9 +306,48 @@ func TestFederationOutboxSharesRecipeTransactions(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	assertQueue(2)
-	if err := db.QueryRow(`SELECT json_extract(CAST(payload AS TEXT),'$.event_type') FROM federation_outbox ORDER BY created_at DESC,id DESC LIMIT 1`).Scan(&eventType); err != nil || eventType != federationEventTombstone {
-		t.Fatalf("queued event=%q err=%v", eventType, err)
+	assertQueue(1)
+	var payload []byte
+	if err := db.QueryRow(`SELECT payload FROM federation_outbox`).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	tombstone, _, err := decodeFederationEvent(payload)
+	if err != nil || tombstone.EventType != federationEventTombstone || tombstone.Sequence != 2 {
+		t.Fatalf("queued event=%+v err=%v", tombstone, err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER reject_federation_snapshot BEFORE INSERT ON federation_outbox
+		WHEN json_extract(CAST(NEW.payload AS TEXT),'$.event_type')='recipe.snapshot'
+		BEGIN SELECT RAISE(ABORT,'injected snapshot failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE recipes SET visibility='public' WHERE id=?`, testFederationID); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := enqueueFederationChange(tx, testFederationID); err == nil {
+		_ = tx.Rollback()
+		t.Fatal("expected the injected snapshot insert failure")
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	var visibilityValue visibility
+	var sequence int64
+	var published int
+	if err := db.QueryRow(`SELECT r.visibility,l.sequence,l.published FROM recipes r JOIN federation_local_objects l ON l.recipe_id=r.id WHERE r.id=?`, testFederationID).Scan(&visibilityValue, &sequence, &published); err != nil {
+		t.Fatal(err)
+	}
+	if visibilityValue != visibilityPrivate || sequence != 2 || published != 0 {
+		t.Fatalf("failed snapshot transaction changed source state: visibility=%q sequence=%d published=%d", visibilityValue, sequence, published)
+	}
+	assertQueue(1)
+	var peerPublished int
+	if err := db.QueryRow(`SELECT published FROM federation_local_peer_objects WHERE recipe_id=?`, testFederationID).Scan(&peerPublished); err != nil || peerPublished != 0 {
+		t.Fatalf("failed snapshot transaction changed peer state: published=%d err=%v", peerPublished, err)
 	}
 }
 
@@ -314,6 +357,10 @@ func TestFederationSettingQueuesSnapshotAndDisableTombstone(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO recipes(id,owner_id,creator_name,title,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at) VALUES(?, 'owner','Owner','Dish','[]','[]','[]','public','owner_only','now','now')`, testFederationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at)
+		VALUES(?,'published','followers',0,'now')`, testFederationID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1,federation_origin=? WHERE id=1`, testFederationOrigin); err != nil {
@@ -454,6 +501,10 @@ func TestDisabledPeerDropsQueueAndResynchronizesTombstonesAndSnapshots(t *testin
 	publicID := "22222222222222222222222222222222"
 	for _, id := range []string{privateID, publicID} {
 		if _, err := db.Exec(`INSERT INTO recipes(id,owner_id,creator_name,title,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at) VALUES(?,'owner','Owner','Dish','[]','[]','[]','public','owner_only','now','now')`, id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at)
+			VALUES(?,'published','followers',0,'now')`, id); err != nil {
 			t.Fatal(err)
 		}
 	}

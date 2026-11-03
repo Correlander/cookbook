@@ -92,6 +92,8 @@ describe("RecipeCollection", () => {
     render(<Harness onOpenRecipe={onOpenRecipe} />);
 
     expect(screen.getByText("Loading recipes…")).toBeTruthy();
+    const status = screen.getByRole("status");
+    await waitFor(() => expect(status.textContent).toBe("1 recipe loaded."));
     expect(
       await screen.findByRole("button", { name: "Apple pie" }),
     ).toBeTruthy();
@@ -304,11 +306,12 @@ describe("RecipeCollection", () => {
   it("renders an initial failure", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
     render(<Harness />);
-    expect(
-      await screen.findByText(
+    const status = screen.getByRole("status");
+    await waitFor(() =>
+      expect(status.textContent).toBe(
         "Recipes are unavailable right now. Please try again later.",
       ),
-    ).toBeTruthy();
+    );
   });
 
   it("reports a load-more failure", async () => {
@@ -336,9 +339,28 @@ describe("RecipeCollection", () => {
 
   it("renders the empty search state", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse([])));
-    render(<Harness />);
+    const { container } = render(<Harness />);
+    const status = screen.getByRole("status");
+    await waitFor(() =>
+      expect(status.textContent).toBe("No recipes are available."),
+    );
     expect(
-      await screen.findByText("No recipes match “”. Try another search."),
+      screen.getByText("No recipes match “”. Try another search."),
     ).toBeTruthy();
+    expect(container.querySelectorAll('[role="status"]')).toHaveLength(1);
+  });
+
+  it("keeps one empty polite status region and announces a slow load then results", async () => {
+    const result = deferred<Response>();
+    vi.stubGlobal("fetch", vi.fn(() => result.promise));
+    const { container } = render(<Harness />);
+    const status = screen.getByRole("status");
+
+    expect(status.textContent).toBe("");
+    expect(container.querySelectorAll('[role="status"]')).toHaveLength(1);
+    await waitFor(() => expect(status.textContent).toBe("Loading recipes…"));
+
+    result.resolve(jsonResponse([{ id: 1, title: "Apple pie" }]));
+    await waitFor(() => expect(status.textContent).toBe("1 recipe loaded."));
   });
 });

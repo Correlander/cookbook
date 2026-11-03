@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { RecipeFeed } from "./useRecipeFeed.ts";
 import type { RecipeFeedEntry } from "./recipeFeedApi.ts";
 
@@ -26,8 +26,31 @@ export default function RecipeCollection({
   addIcon,
   searchIcon,
 }: RecipeCollectionProps) {
+  const [announcement, setAnnouncement] = useState("");
+  const normalizedQuery = query.trim();
+
+  useEffect(() => {
+    const message = feed.loading
+      ? "Loading recipes…"
+      : feed.loadError
+        ? "Recipes are unavailable right now. Please try again later."
+        : feed.items.length
+          ? `${feed.items.length} ${feed.items.length === 1 ? "recipe" : "recipes"} ${normalizedQuery ? `found for ${normalizedQuery}` : "loaded"}.`
+          : normalizedQuery
+            ? `No recipes match “${normalizedQuery}”.`
+            : "No recipes are available.";
+    const timeout = window.setTimeout(
+      () => setAnnouncement(message),
+      feed.loading ? 600 : 400,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [feed.items.length, feed.loadError, feed.loading, normalizedQuery]);
+
   return (
     <section className="recipe-section" id="recipes">
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {announcement}
+      </p>
       <div className="section-heading">
         <div>
           <span className="eyebrow">

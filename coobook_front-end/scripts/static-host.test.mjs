@@ -42,8 +42,8 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
     const staticPort = await port()
     const dist = join(temp, 'dist')
     await mkdir(join(dist, 'auth'), { recursive: true })
-    await writeFile(join(dist, 'index.html'), '<!doctype html><title>Root</title>')
-    await writeFile(join(dist, 'auth/confirm.html'), '<!doctype html><title>Confirm</title>')
+    await writeFile(join(dist, 'index.html'), '<!doctype html><html><head><title>Root</title></head></html>')
+    await writeFile(join(dist, 'auth/confirm.html'), '<!doctype html><html><head><meta name="robots" content="noindex,follow"><title>Confirm</title></head></html>')
     await writeFile(join(dist, 'static-csp.json'), JSON.stringify([
       { route: '/', policy: "default-src 'self'" },
       { route: '/auth/confirm', policy: "default-src 'self'" },
@@ -63,8 +63,13 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
     assert.equal(ready, true, hostError)
     const confirm = await fetch(`${base}/auth/confirm?token=opaque-test-value`)
     assert.equal(confirm.status, 200)
-    assert.match(await confirm.text(), /Confirm/)
+    const confirmHTML = await confirm.text()
+    assert.match(confirmHTML, /Confirm/)
+    assert.match(confirmHTML, /<meta name="robots" content="noindex,follow">/)
     assert.equal(confirm.headers.get('cache-control'), 'no-store')
+    const rootPage = await fetch(base)
+    assert.equal(rootPage.status, 200)
+    assert.doesNotMatch(await rootPage.text(), /<meta name="robots"/)
     const origin = `${base}`
     const apiResponse = await fetch(`${base}/api/probe?invite=opaque-test-value`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: '{"probe":true}' })
     assert.equal(apiResponse.status, 418)

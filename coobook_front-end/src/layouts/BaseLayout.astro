@@ -5,9 +5,10 @@ import SiteFooter from '../components/SiteFooter.astro'
 interface Props {
   title: string
   description: string
+  robots?: string
 }
 
-const { title, description } = Astro.props
+const { title, description, robots } = Astro.props
 ---
 
 <!doctype html>
@@ -17,6 +18,7 @@ const { title, description } = Astro.props
     <meta name="referrer" content="no-referrer" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f4f0e6" />
+    {robots && <meta name="robots" content={robots} />}
     <meta name="description" content={description} />
     <meta property="og:type" content="website" />
     <meta property="og:title" content={title} />

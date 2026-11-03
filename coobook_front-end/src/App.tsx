@@ -17,8 +17,10 @@ import type {
   Cookbook,
   CookbookInvitation,
   CookbookMember,
+  InitialPublicationInput,
   PublicRecipeContent,
   Recipe,
+  RecipeCreatePayload,
   RecipeRevision,
   RecipeRevisionDiff,
   RecipeWritePayload,
@@ -43,6 +45,9 @@ const AdminSettingsPage = lazy(() =>
   import("./app/RoutePages.tsx").then((module) => ({
     default: module.AdminSettingsPage,
   })),
+);
+const RecipePublicationPanel = lazy(
+  () => import("./features/recipes/RecipePublicationPanel.tsx"),
 );
 
 type IconName =
@@ -300,6 +305,7 @@ function RecipeCard<T extends RecipeCardItem>({
 }
 interface RecipeDialogProps {
   recipe: Recipe | RemoteRecipe | null;
+  currentUserID: string | null;
   onClose: () => void;
   onEdit: (recipe: Recipe) => void;
   onRestored: (recipe: Recipe) => void;
@@ -312,6 +318,7 @@ interface RecipeDialogProps {
 
 function RecipeDialog({
   recipe,
+  currentUserID,
   onClose,
   onEdit,
   onRestored,
@@ -336,9 +343,11 @@ function RecipeDialog({
     [cookingOpen, setCookingOpen] = useState(false),
     [deleteError, setDeleteError] = useState(""),
     [deleting, setDeleting] = useState(false),
-    [targetServings, setTargetServings] = useState("");
+    [targetServings, setTargetServings] = useState(""),
+    [publicationOpen, setPublicationOpen] = useState(false);
   useEffect(() => {
     setHistoryOpen(false);
+    setPublicationOpen(false);
     setDeleteError("");
     setTargetServings(recipe?.servings ? String(recipe.servings) : "");
   }, [recipe?.id, recipe?.servings]);
@@ -431,6 +440,31 @@ function RecipeDialog({
               Edit recipe
             </button>
           )}
+          {"version" in recipe &&
+            Boolean(currentUserID) &&
+            recipe.owner_id === currentUserID && (
+              <button
+                className="text-link"
+                type="button"
+                onClick={() => setPublicationOpen(true)}
+              >
+                Manage publication
+              </button>
+            )}
+          {publicationOpen &&
+            "version" in recipe &&
+            Boolean(currentUserID) &&
+            recipe.owner_id === currentUserID && (
+              <FeatureIsland name="Recipe publication" loading="publication settings">
+                <RecipePublicationPanel
+                  recipeId={recipe.id}
+                  isOwner
+                  isRemote={false}
+                  open
+                  onClose={() => setPublicationOpen(false)}
+                />
+              </FeatureIsland>
+            )}
           {canFork && !canDelete && (
             <button
               className="text-link"
@@ -943,6 +977,7 @@ function HomeApp({ pathname }: { pathname: string }) {
       )}
       <RecipeDialog
         recipe={selectedRemote || selected}
+        currentUserID={currentUser?.id ?? null}
         onTransfer={(id) => {
           feed.removeRecipe(id);
           setSelected(null);
@@ -1145,6 +1180,12 @@ function RecipeForm({
     [cookTime, setCookTime] = useState(String(recipe?.cook_time_minutes || "")),
     [tags, setTags] = useState((recipe?.tags || []).join(", ")),
     [visibility, setVisibility] = useState(recipe?.visibility || "private"),
+    [initialPublicationState, setInitialPublicationState] = useState<
+      InitialPublicationInput["publication_state"]
+    >("unpublished"),
+    [publicAccessConfirmed, setPublicAccessConfirmed] = useState(false),
+    [unpublishedPublicAcknowledged, setUnpublishedPublicAcknowledged] =
+      useState(false),
     [cookbooks, setCookbooks] = useState<Cookbook[]>([]),
     [cookbookIDs, setCookbookIDs] = useState<string[]>(
       recipe?.cookbook_ids || [],
@@ -1176,6 +1217,24 @@ function RecipeForm({
       );
       return;
     }
+    const confirmsPublicAccess =
+      (!recipe && visibility === "public") ||
+      Boolean(
+        recipe && recipe.visibility !== "public" && visibility === "public",
+      );
+    if (confirmsPublicAccess && !publicAccessConfirmed) {
+      setError("Confirm that anyone can read this recipe on a public instance.");
+      return;
+    }
+    if (
+      !recipe &&
+      visibility === "public" &&
+      initialPublicationState === "unpublished" &&
+      !unpublishedPublicAcknowledged
+    ) {
+      setError("Confirm that this public recipe will stay hidden from anonymous browsing until you publish it.");
+      return;
+    }
     setSaving(true);
     try {
       const payload: Omit<RecipeWritePayload, "cookbook_ids"> &
@@ -1204,21 +1263,43 @@ function RecipeForm({
         steps: steps
           .map((step) => ({ text: step.text.trim() }))
           .filter((item) => item.text),
+        ...(confirmsPublicAccess && publicAccessConfirmed
+          ? { confirm_public_access: true }
+          : {}),
       };
+      let requestPayload: RecipeWritePayload | RecipeCreatePayload = payload;
       if (recipe) payload.version = recipe.version;
+      else {
+        requestPayload = {
+          ...payload,
+          initial_publication: {
+            publication_state: initialPublicationState,
+            federation_mode: "off",
+            index_eligible: false,
+          },
+        };
+      }
       const response = await fetch(
         recipe ? `/api/recipes/${recipe.id}` : "/api/recipes",
         {
           method: recipe ? "PUT" : "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+          body: JSON.stringify(requestPayload),
         },
       );
       if (!response.ok) {
         const failure = await response.json().catch(() => ({}));
-        if (response.status === 409)
+        if (failure.error === "version_conflict")
           throw new Error(
             "This recipe changed elsewhere. Reload it before saving.",
+          );
+        if (failure.error === "publication_confirmation_required")
+          throw new Error(
+            "Confirm that anyone can read this recipe on a public instance before saving.",
+          );
+        if (failure.error === "publication_unavailable")
+          throw new Error(
+            "Publishing requires public visibility and an instance that allows public browsing.",
           );
         if (failure.error === "instance_private")
           throw new Error(
@@ -1371,9 +1452,14 @@ function RecipeForm({
               <select
                 id="recipe-visibility"
                 value={visibility}
-                onChange={(event) =>
-                  setVisibility(event.target.value as Recipe["visibility"])
-                }
+                onChange={(event) => {
+                  const nextVisibility = event.target.value as Recipe["visibility"];
+                  setVisibility(nextVisibility);
+                  setPublicAccessConfirmed(false);
+                  setUnpublishedPublicAcknowledged(false);
+                  if (nextVisibility !== "public")
+                    setInitialPublicationState("unpublished");
+                }}
               >
                 <option value="private">Private</option>
                 <option value="unlisted">Unlisted</option>
@@ -1384,6 +1470,58 @@ function RecipeForm({
             <p className="dialog-note">
               Only the recipe owner can change visibility.
             </p>
+          )}
+          {!recipe && (
+            <fieldset className="form-choice-group">
+              <legend>Initial publication</legend>
+              <label htmlFor="initial-publication">Initial publication status</label>
+              <select
+                id="initial-publication"
+                value={initialPublicationState}
+                disabled={visibility !== "public"}
+                onChange={(event) =>
+                  {
+                    setInitialPublicationState(
+                      event.target.value as InitialPublicationInput["publication_state"],
+                    );
+                    setUnpublishedPublicAcknowledged(false);
+                  }
+                }
+              >
+                <option value="unpublished">Save without publishing</option>
+                <option value="published">Publish for public browsing</option>
+              </select>
+              <p className="dialog-note">
+                Publication is separate from visibility. Follower distribution and index submission remain off.
+              </p>
+            </fieldset>
+          )}
+          {visibility === "public" && (!recipe || recipe.visibility !== "public") && (
+            <div className="form-choice-group">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={publicAccessConfirmed}
+                  onChange={(event) => setPublicAccessConfirmed(event.target.checked)}
+                />
+                Anyone can read this recipe on a public instance.
+              </label>
+              {recipe && (
+                <p className="dialog-note">
+                  If follower distribution is enabled, making this recipe public can resume delivery.
+                </p>
+              )}
+              {!recipe && initialPublicationState === "unpublished" && (
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={unpublishedPublicAcknowledged}
+                    onChange={(event) => setUnpublishedPublicAcknowledged(event.target.checked)}
+                  />
+                  This recipe will not appear in anonymous browsing until I publish it.
+                </label>
+              )}
+            </div>
           )}
           {canManageCookbookSharing && (
             <>
@@ -1439,7 +1577,7 @@ function RecipeForm({
               ? "Saving…"
               : recipe
                 ? "Save changes"
-                : "Save private recipe"}
+                : "Save recipe"}
           </button>
         </form>
         {error && (

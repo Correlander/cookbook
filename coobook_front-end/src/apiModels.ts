@@ -215,11 +215,23 @@ export interface RecipeWritePayload {
   ingredients: RecipeIngredient[];
   steps: Array<{ text: string }>;
   version?: number;
+  confirm_public_access?: true;
 }
 
 export type PublicationState = "unpublished" | "published" | "withdrawn";
+export type InitialPublicationState = Exclude<PublicationState, "withdrawn">;
 
 export type FederationMode = "off" | "followers";
+
+export interface InitialPublicationInput {
+  publication_state: InitialPublicationState;
+  federation_mode: "off";
+  index_eligible: false;
+}
+
+export interface RecipeCreatePayload extends Omit<RecipeWritePayload, "version"> {
+  initial_publication: InitialPublicationInput;
+}
 
 export interface RecipePublicationInput {
   publication_state: PublicationState;

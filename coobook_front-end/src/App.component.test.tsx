@@ -226,6 +226,375 @@ it("shows cookbook sharing only when the API grants sharing management", async (
   ).toBeTruthy();
 });
 
+it("loads publication settings only after the canonical owner opens the panel", async () => {
+  const recipe = {
+    id: "recipe-1",
+    owner_id: "user-1",
+    creator_name: "Owner",
+    title: "Apple pie",
+    description: "A family recipe.",
+    ingredients: [{ name: "apples", quantity: "4", notes: "" }],
+    steps: [{ text: "Bake it." }],
+    servings: 6,
+    prep_time_minutes: 10,
+    cook_time_minutes: 40,
+    tags: [],
+    visibility: "public",
+    can_edit: false,
+    can_delete: false,
+    can_manage_sharing: true,
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/auth/me")
+      return Promise.resolve(
+        jsonResponse({
+          id: "user-1",
+          email: "owner@example.test",
+          display_name: "Owner",
+          is_admin: false,
+          created_at: "2026-01-01T00:00:00Z",
+        }),
+      );
+    if (url === "/api/recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([recipe]));
+    if (url === "/api/public/remote-recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/recipes/recipe-1/publication")
+      return Promise.resolve(jsonResponse({ error: "forbidden" }, 403));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Open Apple pie" }));
+  expect(screen.getByRole("button", { name: "Manage publication" })).toBeTruthy();
+  expect(
+    fetchMock.mock.calls.filter(
+      ([input]) => String(input) === "/api/recipes/recipe-1/publication",
+    ),
+  ).toHaveLength(0);
+
+  fireEvent.click(screen.getByRole("button", { name: "Manage publication" }));
+  await screen.findByText(/could not load publication settings/i);
+  expect(
+    fetchMock.mock.calls.filter(
+      ([input]) => String(input) === "/api/recipes/recipe-1/publication",
+    ),
+  ).toHaveLength(1);
+});
+
+it("hides publication controls from an editor who is not the recipe owner", async () => {
+  const recipe = {
+    id: "recipe-1",
+    owner_id: "another-user",
+    creator_name: "Owner",
+    title: "Apple pie",
+    description: "A family recipe.",
+    ingredients: [],
+    steps: [],
+    servings: 0,
+    prep_time_minutes: 0,
+    cook_time_minutes: 0,
+    tags: [],
+    visibility: "public",
+    can_edit: true,
+    can_delete: false,
+    can_manage_sharing: false,
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/auth/me")
+      return Promise.resolve(
+        jsonResponse({
+          id: "user-1",
+          email: "editor@example.test",
+          display_name: "Editor",
+          is_admin: false,
+          created_at: "2026-01-01T00:00:00Z",
+        }),
+      );
+    if (url === "/api/recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([recipe]));
+    if (url === "/api/public/remote-recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Open Apple pie" }));
+  expect(screen.queryByRole("button", { name: "Manage publication" })).toBeNull();
+  expect(
+    fetchMock.mock.calls.some(([input]) =>
+      String(input).endsWith("/publication"),
+    ),
+  ).toBe(false);
+});
+
+it("hides publication controls from guests even when a projection has an owner id", async () => {
+  const recipe = {
+    id: "recipe-1",
+    owner_id: "user-1",
+    creator_name: "Owner",
+    title: "Apple pie",
+    description: "A family recipe.",
+    ingredients: [],
+    steps: [],
+    servings: 0,
+    prep_time_minutes: 0,
+    cook_time_minutes: 0,
+    tags: [],
+    visibility: "public",
+    can_edit: false,
+    can_delete: false,
+    can_manage_sharing: false,
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse({}, 401));
+    if (url === "/api/public/recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([recipe]));
+    if (url === "/api/public/remote-recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Open Apple pie" }));
+  expect(screen.queryByRole("button", { name: "Manage publication" })).toBeNull();
+  expect(
+    fetchMock.mock.calls.some(([input]) =>
+      String(input).endsWith("/publication"),
+    ),
+  ).toBe(false);
+});
+
+it("does not show or fetch publication settings for a remote recipe", async () => {
+  const remote = {
+    object_id: "https://remote.example/recipes/1",
+    creator_name: "Remote cook",
+    source_origin: "https://remote.example",
+    sequence: 1,
+    recipe: {
+      title: "Remote soup",
+      description: "A remote recipe.",
+      ingredients: [],
+      steps: [],
+      servings: 0,
+      prep_time_minutes: 0,
+      cook_time_minutes: 0,
+      tags: [],
+    },
+  };
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/auth/me")
+      return Promise.resolve(
+        jsonResponse({
+          id: "user-1",
+          email: "owner@example.test",
+          display_name: "Owner",
+          is_admin: false,
+          created_at: "2026-01-01T00:00:00Z",
+        }),
+      );
+    if (url === "/api/recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/public/remote-recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([remote]));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Open Remote soup" }));
+  expect(screen.queryByRole("button", { name: "Manage publication" })).toBeNull();
+  expect(
+    fetchMock.mock.calls.some(([input]) =>
+      String(input).endsWith("/publication"),
+    ),
+  ).toBe(false);
+});
+
+it("sends explicit safe initial publication fields and public access confirmation", async () => {
+  let createBody: Record<string, unknown> | undefined;
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/auth/me")
+      return Promise.resolve(
+        jsonResponse({
+          id: "user-1",
+          email: "owner@example.test",
+          display_name: "Owner",
+          is_admin: false,
+          created_at: "2026-01-01T00:00:00Z",
+        }),
+      );
+    if (url === "/api/recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/public/remote-recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/cookbooks") return Promise.resolve(jsonResponse([]));
+    if (url === "/api/recipes" && init?.method === "POST") {
+      createBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return Promise.resolve(jsonResponse({ id: "new-recipe" }));
+    }
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+  fireEvent.click((await screen.findAllByRole("button", { name: /Add a recipe/i }))[0]);
+  fireEvent.change(screen.getByLabelText("Title"), {
+    target: { value: "Summer salad" },
+  });
+  fireEvent.change(screen.getByLabelText("Ingredients (name | quantity | notes per line)"), {
+    target: { value: "Tomatoes" },
+  });
+  fireEvent.change(screen.getByLabelText("Step 1"), {
+    target: { value: "Mix and serve." },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save recipe" }));
+  await waitFor(() => expect(createBody).toBeDefined());
+  expect(createBody).toMatchObject({
+    initial_publication: {
+      publication_state: "unpublished",
+      federation_mode: "off",
+      index_eligible: false,
+    },
+  });
+  expect(createBody).not.toHaveProperty("confirm_public_access");
+  expect(createBody).not.toHaveProperty("version");
+});
+
+it("requires public-access confirmation and retains form values after a denied create", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/auth/me")
+      return Promise.resolve(
+        jsonResponse({
+          id: "user-1",
+          email: "owner@example.test",
+          display_name: "Owner",
+          is_admin: false,
+          created_at: "2026-01-01T00:00:00Z",
+        }),
+      );
+    if (url === "/api/recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/public/remote-recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/cookbooks") return Promise.resolve(jsonResponse([]));
+    if (url === "/api/recipes" && init?.method === "POST")
+      return Promise.resolve(
+        jsonResponse({ error: "publication_unavailable" }, 409),
+      );
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+  fireEvent.click((await screen.findAllByRole("button", { name: /Add a recipe/i }))[0]);
+  fireEvent.change(screen.getByLabelText("Title"), {
+    target: { value: "Summer salad" },
+  });
+  fireEvent.change(screen.getByLabelText("Ingredients (name | quantity | notes per line)"), {
+    target: { value: "Tomatoes" },
+  });
+  fireEvent.change(screen.getByLabelText("Step 1"), {
+    target: { value: "Mix and serve." },
+  });
+  fireEvent.change(screen.getByLabelText("Visibility"), {
+    target: { value: "public" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save recipe" }));
+  expect(
+    await screen.findByText(/confirm that anyone can read this recipe/i),
+  ).toBeTruthy();
+  expect(fetchMock).not.toHaveBeenCalledWith("/api/recipes", expect.anything());
+
+  fireEvent.click(screen.getByRole("checkbox", { name: /anyone can read/i }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /not appear in anonymous/i }));
+  fireEvent.click(screen.getByRole("button", { name: "Save recipe" }));
+  expect(
+    await screen.findByText(/publishing requires public visibility/i),
+  ).toBeTruthy();
+  expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("Summer salad");
+  expect((screen.getByLabelText("Visibility") as HTMLSelectElement).value).toBe("public");
+});
+
+it("sends only local-access confirmation on a visibility-expanding update", async () => {
+  const recipe = {
+    id: "recipe-1",
+    owner_id: "user-1",
+    title: "Apple pie",
+    description: "A family recipe.",
+    ingredients: [{ name: "apples", quantity: "4", notes: "" }],
+    steps: [{ text: "Bake it." }],
+    servings: 6,
+    prep_time_minutes: 10,
+    cook_time_minutes: 40,
+    tags: [],
+    visibility: "private",
+    can_edit: true,
+    can_delete: true,
+    can_manage_sharing: true,
+    version: 3,
+    cookbook_ids: [],
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  let updateBody: Record<string, unknown> | undefined;
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/auth/me")
+      return Promise.resolve(
+        jsonResponse({
+          id: "user-1",
+          email: "owner@example.test",
+          display_name: "Owner",
+          is_admin: false,
+          created_at: "2026-01-01T00:00:00Z",
+        }),
+      );
+    if (url === "/api/recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([recipe]));
+    if (url === "/api/public/remote-recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/cookbooks") return Promise.resolve(jsonResponse([]));
+    if (url === "/api/recipes/recipe-1" && init?.method === "PUT") {
+      updateBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return Promise.resolve(jsonResponse({ ...recipe, visibility: "public" }));
+    }
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Open Apple pie" }));
+  fireEvent.click(screen.getByRole("button", { name: "Edit recipe" }));
+  fireEvent.change(screen.getByLabelText("Visibility"), {
+    target: { value: "public" },
+  });
+  fireEvent.click(screen.getByRole("checkbox", { name: /anyone can read/i }));
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+  await waitFor(() => expect(updateBody).toBeDefined());
+  expect(updateBody).toHaveProperty("confirm_public_access", true);
+  expect(updateBody).not.toHaveProperty("initial_publication");
+});
+
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status });
 }

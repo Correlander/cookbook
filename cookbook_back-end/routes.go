@@ -64,6 +64,7 @@ func handlerWithAuthConfig(db *sql.DB, auth authHandler, cfg config) http.Handle
 	mux.Handle("GET /api/admin/settings", requireSession(db, api))
 	mux.Handle("PATCH /api/admin/settings", recentPasskeyChange(api))
 	mux.Handle("GET /api/instance/authority", requireSession(db, http.HandlerFunc(api.instanceOwnerAPI)))
+	mux.Handle("GET /api/instance/owner-transfers", requireSession(db, ownerTransferReadHandler{db: db}))
 	mux.Handle("POST /api/instance/owner-transfers", recentPasskeyChange(http.HandlerFunc(api.instanceOwnerAPI)))
 	mux.Handle("POST /api/instance/owner-transfers/{id}/accept", recentPasskeyChange(http.HandlerFunc(api.instanceOwnerAPI)))
 	mux.Handle("DELETE /api/instance/owner-transfers/{id}", recentPasskeyChange(http.HandlerFunc(api.instanceOwnerAPI)))

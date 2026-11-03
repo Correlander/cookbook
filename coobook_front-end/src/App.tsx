@@ -24,7 +24,6 @@ import { SessionCheckError } from "./app/AppSession.tsx";
 import usePublicAuthConfig from "./features/auth/usePublicAuthConfig.ts";
 
 const PasskeySetupPrompt = lazy(() => import("./PasskeySetupPrompt.tsx"));
-const FederationAdmin = lazy(() => import("./FederationAdmin.tsx"));
 const Courses = lazy(() => import("./Courses.tsx"));
 const AccountSecurityPage = lazy(() =>
   import("./app/RoutePages.tsx").then((module) => ({
@@ -327,14 +326,6 @@ function HomeApp({ pathname }: { pathname: string }) {
               </p>
             </section>
           </>
-        )}
-        {signedIn && (
-          <FeatureIsland
-            name="Federation settings"
-            loading="federation settings"
-          >
-            <FederationAdmin />
-          </FeatureIsland>
         )}
         {signedIn && (
           <FeatureIsland name="Courses" loading="courses">

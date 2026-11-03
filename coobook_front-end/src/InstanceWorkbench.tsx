@@ -19,6 +19,7 @@ import useOwnerTransfers from "./features/instance/useOwnerTransfers.ts";
 
 const AdminInvitations = lazy(() => import("./features/instance/AdminInvitations.tsx"));
 const AdminAuditLog = lazy(() => import("./features/instance/AdminAuditLog.tsx"));
+const FederationAdmin = lazy(() => import("./features/instance/FederationAdmin.tsx"));
 
 function SignInRequired() {
   return (
@@ -62,27 +63,29 @@ function SignInAgainNotice() {
 
 export default function InstanceWorkbench() {
   const { state: sessionState, currentUser, refreshSession } = useAppSession();
+  const principalID = sessionState.currentUser?.id ?? null;
   const actorID = sessionState.status === "authenticated"
     ? sessionState.currentUser.id
     : null;
   const authority = useInstanceAuthority(actorID, actorID !== null);
   const transfers = useOwnerTransfers(actorID, actorID !== null, true);
   const actorIDRef = useRef(actorID);
-  actorIDRef.current = actorID;
+  actorIDRef.current = principalID;
   const retryAuthorityRef = useRef(authority.retry);
   retryAuthorityRef.current = authority.retry;
   const [noticeState, setNoticeState] = useState<{ userID: string; message: string } | null>(null);
   const [errorState, setErrorState] = useState<{ userID: string; message: string } | null>(null);
   const [busyState, setBusyState] = useState<{ userID: string; action: string } | null>(null);
-  const notice = noticeState?.userID === actorID ? noticeState.message : "";
-  const error = errorState?.userID === actorID ? errorState.message : "";
+  const [federationActorID, setFederationActorID] = useState<string | null>(null);
+  const notice = noticeState?.userID === principalID ? noticeState.message : "";
+  const error = errorState?.userID === principalID ? errorState.message : "";
   const busyAction = busyState?.userID === actorID ? busyState.action : "";
 
   useEffect(() => {
     setNoticeState(null);
     setErrorState(null);
     setBusyState(null);
-  }, [actorID]);
+  }, [principalID]);
 
   useEffect(() => {
     if (!actorID) return;
@@ -125,17 +128,16 @@ export default function InstanceWorkbench() {
       else if (request.action === "accept") await acceptOwnerTransfer(request.transfer.id);
       else await cancelOwnerTransfer(request.transfer.id);
       if (actorIDRef.current !== actorID) return;
+      setErrorState(null);
+      setNoticeState({
+        userID: actorID,
+        message: action === "create"
+          ? "Ownership request created. Ownership changes only if the recipient accepts."
+          : action === "accept"
+            ? "Ownership transfer accepted. Your account is now the instance owner."
+            : "Ownership request cancelled.",
+      });
       await refreshAfterMutation(action === "accept");
-      if (actorIDRef.current === actorID) {
-        setNoticeState({
-          userID: actorID,
-          message: action === "create"
-            ? "Ownership request created. Ownership changes only if the recipient accepts."
-            : action === "accept"
-              ? "Ownership transfer accepted. Your account is now the instance owner."
-              : "Ownership request cancelled.",
-        });
-      }
     } catch (mutationError) {
       if (actorIDRef.current !== actorID) return;
       if (
@@ -160,6 +162,18 @@ export default function InstanceWorkbench() {
   const authorityValue = authority.state.status === "ready" && authority.state.userID === actorID
     ? authority.state.authority
     : null;
+  useEffect(() => {
+    if (!principalID) {
+      setFederationActorID(null);
+      return;
+    }
+    if (authority.state.status === "ready" && authority.state.userID === principalID) {
+      const canViewFederation =
+        authority.state.authority.is_admin ||
+        authority.state.authority.can_manage_instance_roles;
+      setFederationActorID(canViewFederation ? principalID : null);
+    }
+  }, [authority.state, principalID]);
   const transferItems = transfers.state.status === "ready" && transfers.state.userID === actorID
     ? transfers.state.transfers
     : null;
@@ -184,6 +198,7 @@ export default function InstanceWorkbench() {
             <p>Review administrator access and ownership requests.</p>
           </div>
         </section>
+        {notice && <p className="form-message" role="status">{notice}</p>}
 
         {sessionState.status === "loading" ? (
           <p className="cookbook-dashboard" role="status">Checking your session…</p>
@@ -203,7 +218,6 @@ export default function InstanceWorkbench() {
           </section>
         ) : authorityValue ? (
           <>
-            {notice && <p className="form-message" role="status">{notice}</p>}
             {error && !error.includes("Sign out and sign in again") && (
               <p className="form-message" role="alert">{error}</p>
             )}
@@ -360,6 +374,18 @@ export default function InstanceWorkbench() {
             )}
           </>
         ) : null}
+        {sessionState.status === "authenticated" && (
+          (authorityValue?.is_admin || authorityValue?.can_manage_instance_roles ||
+            (federationActorID === actorID && authority.state.status !== "ready")) && (
+          <FeatureIsland name="Federation administration" loading="federation administration">
+            <FederationAdmin
+              actorID={sessionState.currentUser.id}
+              authorityState={authority.state}
+              onRefreshAuthority={authority.retry}
+            />
+          </FeatureIsland>
+          )
+        )}
       </main>
     </div>
   );

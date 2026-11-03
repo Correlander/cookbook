@@ -689,6 +689,7 @@ it("keeps instance account management off Home", async () => {
   expect(calls.some((url) => url.startsWith("/api/admin/users?"))).toBe(false);
   expect(calls.includes("/api/admin/invitations")).toBe(false);
   expect(calls.includes("/api/admin/audit?limit=24&offset=0")).toBe(false);
+  expect(calls.some((url) => url.startsWith("/api/admin/federation/"))).toBe(false);
   expect(screen.queryByRole("heading", { name: "Accounts" })).toBeNull();
   expect(screen.queryByRole("link", { name: "Instance" })).toBeNull();
 });

@@ -276,65 +276,9 @@ func openDatabase(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("configure sqlite database: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, schema); err != nil {
+	if err := migrateDatabase(ctx, db); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("apply initial schema: %w", err)
-	}
-	for _, column := range []struct{ table, name, declaration string }{
-		{"instance_settings", "registration_policy_configured", `INTEGER NOT NULL DEFAULT 0 CHECK (registration_policy_configured IN (0, 1))`},
-		{"instance_settings", "revision_retention_days", `INTEGER NOT NULL DEFAULT 365 CHECK (revision_retention_days IN (0, 7, 30, 90, 365))`},
-		{"instance_settings", "audit_retention_days", `INTEGER NOT NULL DEFAULT 365 CHECK (audit_retention_days IN (0, 7, 30, 90, 365))`},
-		{"instance_settings", "federation_enabled", `INTEGER NOT NULL DEFAULT 0 CHECK (federation_enabled IN (0, 1))`},
-		{"instance_settings", "federation_origin", `TEXT NOT NULL DEFAULT ''`},
-		{"instance_settings", "federation_origin_locked", `INTEGER NOT NULL DEFAULT 0 CHECK (federation_origin_locked IN (0, 1))`},
-		{"webauthn_credentials", "name", `TEXT NOT NULL DEFAULT 'Passkey'`},
-		{"sessions", "id", `TEXT NOT NULL DEFAULT ''`},
-		{"sessions", "user_agent", `TEXT NOT NULL DEFAULT ''`},
-		{"users", "is_admin", `INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1))`},
-		{"email_challenges", "display_name", `TEXT NOT NULL DEFAULT ''`},
-		{"email_challenges", "invitation_id", `TEXT REFERENCES invitations(id)`},
-		{"invitations", "cookbook_id", `TEXT REFERENCES cookbooks(id) ON DELETE CASCADE`},
-		{"invitations", "role", `TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('viewer', 'editor'))`},
-		{"recipes", "servings", `INTEGER NOT NULL DEFAULT 0 CHECK (servings BETWEEN 0 AND 1000)`},
-		{"recipes", "prep_time_minutes", `INTEGER NOT NULL DEFAULT 0 CHECK (prep_time_minutes BETWEEN 0 AND 1440)`},
-		{"recipes", "cook_time_minutes", `INTEGER NOT NULL DEFAULT 0 CHECK (cook_time_minutes BETWEEN 0 AND 1440)`},
-		{"recipes", "tags_json", `TEXT NOT NULL DEFAULT '[]'`},
-		{"recipes", "deleted_at", `TEXT`},
-		{"recipes", "image_path", `TEXT NOT NULL DEFAULT ''`},
-		{"recipes", "source_recipe_id", `TEXT NOT NULL DEFAULT ''`},
-		{"recipe_revisions", "servings", `INTEGER NOT NULL DEFAULT 0 CHECK (servings BETWEEN 0 AND 1000)`},
-		{"recipe_revisions", "prep_time_minutes", `INTEGER NOT NULL DEFAULT 0 CHECK (prep_time_minutes BETWEEN 0 AND 1440)`},
-		{"recipe_revisions", "cook_time_minutes", `INTEGER NOT NULL DEFAULT 0 CHECK (cook_time_minutes BETWEEN 0 AND 1440)`},
-		{"recipe_revisions", "tags_json", `TEXT NOT NULL DEFAULT '[]'`},
-		{"recipe_revisions", "image_path", `TEXT NOT NULL DEFAULT ''`},
-	} {
-		var exists int
-		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, column.table, column.name).Scan(&exists); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("inspect %s schema: %w", column.table, err)
-		}
-		if exists == 0 {
-			if _, err := db.ExecContext(ctx, `ALTER TABLE `+column.table+` ADD COLUMN `+column.name+` `+column.declaration); err != nil {
-				db.Close()
-				return nil, fmt.Errorf("upgrade %s schema: %w", column.table, err)
-			}
-		}
-	}
-	if _, err := db.ExecContext(ctx, `UPDATE sessions SET id=lower(hex(randomblob(16))) WHERE id=''; CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_id ON sessions(id);`); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("upgrade session identifiers: %w", err)
-	}
-	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_recipes_owner_deleted ON recipes(owner_id,deleted_at)`); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("index recipe trash: %w", err)
-	}
-	if _, err := db.ExecContext(ctx, `UPDATE invitations AS older SET revoked_at=COALESCE(older.created_at,?) WHERE older.accepted_at IS NULL AND older.revoked_at IS NULL AND EXISTS (SELECT 1 FROM invitations AS newer WHERE COALESCE(newer.cookbook_id,'')=COALESCE(older.cookbook_id,'') AND lower(newer.email)=lower(older.email) AND newer.accepted_at IS NULL AND newer.revoked_at IS NULL AND (newer.created_at>older.created_at OR (newer.created_at=older.created_at AND newer.id>older.id)))`, timestamp()); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("deduplicate pending invitations: %w", err)
-	}
-	if _, err := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_invitations_pending_email_scope ON invitations(COALESCE(cookbook_id,''),lower(email)) WHERE accepted_at IS NULL AND revoked_at IS NULL`); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("index pending invitations: %w", err)
+		return nil, fmt.Errorf("migrate database schema: %w", err)
 	}
 	return db, nil
 }

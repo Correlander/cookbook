@@ -251,20 +251,37 @@ func TestAccessPolicyDefaults(t *testing.T) {
 	}
 }
 
-func TestSchemaBackfillsCurrentRecipeRevision(t *testing.T) {
+func TestLegacySchemaBackfillsCurrentRecipeRevision(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "upgrade.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = legacy.Exec(`CREATE TABLE users(id TEXT PRIMARY KEY,email TEXT NOT NULL UNIQUE,display_name TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE TABLE recipes(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),creator_name TEXT NOT NULL,title TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',ingredients_json TEXT NOT NULL DEFAULT '[]',steps_json TEXT NOT NULL DEFAULT '[]',visibility TEXT NOT NULL DEFAULT 'private',edit_policy TEXT NOT NULL DEFAULT 'owner_only',version INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+INSERT INTO users(id,email,display_name,created_at) VALUES('legacy-owner','legacy@example.test','Legacy','now');
+INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,version,created_at,updated_at) VALUES('legacy-recipe','legacy-owner','Legacy','Old title','','[]','[]','private','owner_only',4,'old','updated');`)
+	if err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
 	db, err := openDatabase(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('legacy-owner','legacy@example.test','Legacy','now')`); err != nil {
+	var version int
+	var title string
+	if err := db.QueryRow(`SELECT version,title FROM recipe_revisions WHERE recipe_id='legacy-recipe'`).Scan(&version, &title); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,steps_json,visibility,edit_policy,version,created_at,updated_at) VALUES('legacy-recipe','legacy-owner','Legacy','Old title','','[]','[]','private','owner_only',4,'old','updated')`); err != nil {
-		t.Fatal(err)
+	if version != 4 || title != "Old title" {
+		t.Fatalf("backfilled revision = version %d, title %q", version, title)
 	}
-	if _, err := db.Exec(`DROP TABLE recipe_revisions`); err != nil {
-		t.Fatal(err)
+	if got := migrationVersion(t, db); got != 1 {
+		t.Fatalf("legacy baseline migration version=%d, want 1", got)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
@@ -274,13 +291,9 @@ func TestSchemaBackfillsCurrentRecipeRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	var version int
-	var title string
-	if err := db.QueryRow(`SELECT version,title FROM recipe_revisions WHERE recipe_id='legacy-recipe'`).Scan(&version, &title); err != nil {
-		t.Fatal(err)
-	}
-	if version != 4 || title != "Old title" {
-		t.Fatalf("backfilled revision = version %d, title %q", version, title)
+	var revisionCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM recipe_revisions WHERE recipe_id='legacy-recipe'`).Scan(&revisionCount); err != nil || revisionCount != 1 {
+		t.Fatalf("revision count after versioned restart=%d err=%v", revisionCount, err)
 	}
 }
 

@@ -157,3 +157,86 @@ func TestEnabledCoursesEnforceVisibilityAndProtectLinkedRecipes(t *testing.T) {
 		t.Fatalf("public course listing status=%d body=%s", publicList.Code, publicList.Body)
 	}
 }
+
+func TestCourseReadDistinguishesMissingAndStorageFailure(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`UPDATE instance_settings SET courses_enabled=1 WHERE id=1;
+		INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now'),('reader','reader@example.test','Reader','now');
+		INSERT INTO courses(id,owner_id,title,description,visibility,created_at,updated_at) VALUES('private-course','owner','Private course','','private','now','now')`); err != nil {
+		t.Fatal(err)
+	}
+	ownerToken, _, err := issueSession(db, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readerToken, _, err := issueSession(db, "reader")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := handlerWithAuth(db, testAuth(db))
+	ownerCookie := &http.Cookie{Name: sessionCookie, Value: ownerToken}
+	readerCookie := &http.Cookie{Name: sessionCookie, Value: readerToken}
+
+	missing := callAPI(handler, http.MethodGet, "/api/courses/missing-course", nil, ownerCookie)
+	if missing.Code != http.StatusNotFound || !strings.Contains(missing.Body.String(), `"error":"not_found"`) {
+		t.Fatalf("missing course status=%d body=%s, want 404 not_found", missing.Code, missing.Body)
+	}
+	inaccessible := callAPI(handler, http.MethodGet, "/api/courses/private-course", nil, readerCookie)
+	if inaccessible.Code != http.StatusNotFound || !strings.Contains(inaccessible.Body.String(), `"error":"not_found"`) {
+		t.Fatalf("inaccessible course status=%d body=%s, want 404 not_found", inaccessible.Code, inaccessible.Body)
+	}
+
+	// The course writes remain valid, but the joined owner projection fails on
+	// its post-write read, reproducing a committed write reported as not found.
+	if _, err := db.Exec(`ALTER TABLE users DROP COLUMN display_name`); err != nil {
+		t.Fatal(err)
+	}
+
+	created := callAPI(handler, http.MethodPost, "/api/courses", map[string]string{"title": "Committed course", "visibility": "private"}, ownerCookie)
+	if created.Code != http.StatusInternalServerError || !strings.Contains(created.Body.String(), `"error":"storage_error"`) {
+		t.Fatalf("course create post-write read status=%d body=%s, want 500 storage_error", created.Code, created.Body)
+	}
+	var createdCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM courses WHERE title='Committed course' AND owner_id='owner'`).Scan(&createdCount); err != nil || createdCount != 1 {
+		t.Fatalf("course create did not commit before read failure: count=%d err=%v", createdCount, err)
+	}
+
+	updated := callAPI(handler, http.MethodPatch, "/api/courses/private-course", map[string]string{"title": "Committed update"}, ownerCookie)
+	if updated.Code != http.StatusInternalServerError || !strings.Contains(updated.Body.String(), `"error":"storage_error"`) {
+		t.Fatalf("course update post-write read status=%d body=%s, want 500 storage_error", updated.Code, updated.Body)
+	}
+	var storedTitle string
+	if err := db.QueryRow(`SELECT title FROM courses WHERE id='private-course'`).Scan(&storedTitle); err != nil || storedTitle != "Committed update" {
+		t.Fatalf("course update did not commit before read failure: title=%q err=%v", storedTitle, err)
+	}
+}
+
+func TestCourseCreateAndUpdateReturnCurrentCourse(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`UPDATE instance_settings SET courses_enabled=1 WHERE id=1;
+		INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now')`); err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := issueSession(db, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := handlerWithAuth(db, testAuth(db))
+	cookie := &http.Cookie{Name: sessionCookie, Value: token}
+
+	created := callAPI(handler, http.MethodPost, "/api/courses", map[string]string{"title": "  Kitchen basics  ", "description": "  First draft  ", "visibility": "private"}, cookie)
+	var createdCourse course
+	if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &createdCourse) != nil || createdCourse.ID == "" || createdCourse.Title != "Kitchen basics" || createdCourse.Description != "First draft" {
+		t.Fatalf("course create status=%d body=%s", created.Code, created.Body)
+	}
+
+	updated := callAPI(handler, http.MethodPatch, "/api/courses/"+createdCourse.ID, map[string]string{"title": "Updated basics", "description": "Updated description"}, cookie)
+	var updatedCourse course
+	if updated.Code != http.StatusOK || json.Unmarshal(updated.Body.Bytes(), &updatedCourse) != nil || updatedCourse.ID != createdCourse.ID || updatedCourse.Title != "Updated basics" || updatedCourse.Description != "Updated description" {
+		t.Fatalf("course update status=%d body=%s", updated.Code, updated.Body)
+	}
+	var storedTitle, storedDescription string
+	if err := db.QueryRow(`SELECT title,description FROM courses WHERE id=?`, createdCourse.ID).Scan(&storedTitle, &storedDescription); err != nil || storedTitle != updatedCourse.Title || storedDescription != updatedCourse.Description {
+		t.Fatalf("updated course not persisted: title=%q description=%q err=%v", storedTitle, storedDescription, err)
+	}
+}

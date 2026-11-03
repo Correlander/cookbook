@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
 	"strings"
 )
@@ -214,7 +215,15 @@ func (h apiHandler) readCourseRecord(w http.ResponseWriter, r *http.Request, id 
 	err := h.db.QueryRow(`SELECT c.id,c.owner_id,u.display_name,c.title,c.description,c.visibility,COUNT(l.id),c.created_at,c.updated_at,s.public_instance
 		FROM courses c JOIN users u ON u.id=c.owner_id JOIN instance_settings s ON s.id=1
 		LEFT JOIN course_lessons l ON l.course_id=c.id WHERE c.id=? GROUP BY c.id`, id).Scan(&item.ID, &item.OwnerID, &item.OwnerName, &item.Title, &item.Description, &item.Visibility, &item.LessonCount, &item.CreatedAt, &item.UpdatedAt, &public)
-	if err != nil || !canReadResource(authenticatedUser(r), access{instancePublic: public == 1, visibility: visibility(item.Visibility), ownerID: item.OwnerID}) {
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found")
+		return course{}, false
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return course{}, false
+	}
+	if !canReadResource(authenticatedUser(r), access{instancePublic: public == 1, visibility: visibility(item.Visibility), ownerID: item.OwnerID}) {
 		writeError(w, http.StatusNotFound, "not_found")
 		return course{}, false
 	}

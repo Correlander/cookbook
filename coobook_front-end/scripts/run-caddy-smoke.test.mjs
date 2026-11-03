@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile, chmod, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile, chmod, stat, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -141,11 +141,34 @@ await writeFile(process.env.CADDY_BROWSER_STATE, JSON.stringify({
   capture: process.env.E2E_EMAIL_CAPTURE,
   report: process.env.PLAYWRIGHT_JSON_OUTPUT_FILE,
 }))
+const actionability = process.env.CADDY_BROWSER_ACTIONABILITY ?? ''
+const malformedSteps = process.env.CADDY_BROWSER_MALFORMED_STEPS === '1'
+const interceptionFixture = ['pointer_interception', 'all', 'unknown'].includes(actionability)
 const result = (status, file, line, column, name = 'Error', errors = []) => ({
   status: status === 'unexpected' ? 'failed' : status === 'skipped' ? 'skipped' : 'passed',
-  error: status === 'unexpected' ? { name, message: 'raw message with https://secret.invalid/?token=hidden', stack: '/private/secret/stack' } : undefined,
+  error: status === 'unexpected' ? {
+    name: interceptionFixture ? 'TimeoutError' : name,
+    message: interceptionFixture ? 'TimeoutError: Test timeout of 30000ms exceeded' : 'raw message with https://secret.invalid/?token=hidden',
+    stack: '/private/secret/stack',
+  } : undefined,
   errors: status === 'unexpected' ? [{ name, message: name + ': private error text', stack: '/private/secret/stack' }, ...errors] : [],
   errorLocation: status === 'unexpected' ? { file, line, column } : undefined,
+  steps: status === 'unexpected' && interceptionFixture ? [{
+    title: 'Open owner recipe dialog',
+    category: 'test.step',
+    steps: [{
+      title: 'locator.click',
+      category: 'pw:api',
+      error: {
+        name: 'TimeoutError',
+        message: actionability === 'all'
+          ? 'element intercepts pointer events; element is not stable; element detached from DOM; element is not visible; element is not enabled; element is outside of the viewport\\n- <button class="recipe-card" aria-label="synthetic">recipe</button> intercepts pointer events'
+          : actionability === 'unknown'
+            ? '- <x-secret class="secret-class" role="private">private user text</x-secret> intercepts pointer events'
+            : 'TimeoutError: locator.click timed out; <a class="text-link" role="link">private link text</a> intercepts pointer events at https://secret.invalid/path?token=secret\\n- <div class="dialog-backdrop" role="presentation">/private/secret/email@example.test</div> intercepts pointer events',
+      },
+    }],
+  }] : malformedSteps ? [null, { title: { token: 'malformed-secret' }, error: { message: { token: 'nested-secret' } }, steps: 'not-an-array' }] : undefined,
 })
 const spec = (title, status, file, line, column, name, errors) => ({
   title, file, line: 1, column: 1,
@@ -178,6 +201,7 @@ if (reportMode === 'empty') report = {}
 if (reportMode === 'wrong-shape') report = { stats: { expected: 0, unexpected: 0, flaky: 0, skipped: 0 }, suites: [] }
 if (reportMode === 'all-skipped' || reportMode === 'skipped-passed-result') report = { stats: { expected: 0, unexpected: 0, flaky: 0, skipped: 1 }, suites: [{ title: 'e2e', file: 'e2e', specs }] }
 if (reportMode === 'skipped-passed-result') report.suites[0].specs[0].tests[0].results[0].status = 'passed'
+const expectedReportPath = process.env.CADDY_BROWSER_EXPECTED_REPORT
 if (reportMode === 'missing') {
   // Exercise the runner's missing-report path.
 } else if (reportMode === 'malformed') {
@@ -185,18 +209,27 @@ if (reportMode === 'missing') {
 } else if (reportMode === 'oversized') {
   await writeFile(process.env.PLAYWRIGHT_JSON_OUTPUT_FILE, 'x'.repeat(1024 * 1024 + 1))
 } else {
-  await writeFile(process.env.PLAYWRIGHT_JSON_OUTPUT_FILE, JSON.stringify(report))
+  const reportBytes = JSON.stringify(report)
+  await writeFile(process.env.PLAYWRIGHT_JSON_OUTPUT_FILE, reportBytes)
+  if (expectedReportPath) await writeFile(expectedReportPath, reportBytes)
 }
 console.error('Error: unrelated stderr with /private/secret/e2e/static-host.spec.ts:888:2 and token=not-for-summary')
 if (process.env.CADDY_BROWSER_ZERO_EXIT !== '1' && (failed || process.env.CADDY_BROWSER_NONZERO_EXIT === '1')) process.exit(9)
 `
 
-async function runBrowserFixture({ directory, statePath, engine }, port, { fail = false, grep, reportMode = '', zeroExit = false, nonzeroExit = false, runnerFailure = fail || Boolean(reportMode) || nonzeroExit } = {}) {
+async function runBrowserFixture({ directory, statePath, engine }, port, { fail = false, grep, reportMode = '', zeroExit = false, nonzeroExit = false, actionability = '', malformedSteps = false, privateReport = false, runnerFailure = fail || Boolean(reportMode) || nonzeroExit } = {}) {
   const browserCache = join(directory, 'browser-cache')
   const playwright = join(directory, 'fake-playwright.mjs')
   const browserState = join(directory, 'browser-state.json')
+  const privateReportDirectory = privateReport ? join(directory, 'private-report') : undefined
+  const expectedReportPath = join(directory, 'expected-report.json')
   await writeFile(playwright, fakePlaywrightSource, { encoding: 'utf8', mode: 0o700 })
   await chmod(playwright, 0o700)
+  const syntaxCheck = spawn(process.execPath, ['--check', playwright], { stdio: ['ignore', 'pipe', 'pipe'] })
+  let syntaxStderr = ''
+  syntaxCheck.stderr.setEncoding('utf8').on('data', (chunk) => { syntaxStderr += chunk })
+  const syntaxExit = await new Promise((resolve) => syntaxCheck.once('close', resolve))
+  assert.equal(syntaxExit, 0, syntaxStderr)
   await mkdir(browserCache)
   const result = await runRunner([
     '--engine', engine,
@@ -204,13 +237,17 @@ async function runBrowserFixture({ directory, statePath, engine }, port, { fail 
     '--backend-image', 'backend:browser-fixture',
     '--browser',
     ...(grep ? ['--browser-grep', grep] : []),
+    ...(privateReportDirectory ? ['--private-report-dir', privateReportDirectory] : []),
   ], {
     CADDY_TEST_STATE: statePath,
     CADDY_TEST_PORT: String(port),
     CADDY_BROWSER_STATE: browserState,
+    CADDY_BROWSER_EXPECTED_REPORT: expectedReportPath,
     CADDY_BROWSER_FAIL: fail ? '1' : '0',
     CADDY_BROWSER_GREP_EXPECTED: grep ?? '',
     CADDY_BROWSER_REPORT_MODE: reportMode,
+    CADDY_BROWSER_ACTIONABILITY: actionability,
+    CADDY_BROWSER_MALFORMED_STEPS: malformedSteps ? '1' : '0',
     CADDY_BROWSER_ZERO_EXIT: zeroExit ? '1' : '0',
     CADDY_BROWSER_NONZERO_EXIT: nonzeroExit ? '1' : '0',
     COOKBOOK_CADDY_SMOKE_PLAYWRIGHT_CLI: playwright,
@@ -235,7 +272,10 @@ async function runBrowserFixture({ directory, statePath, engine }, port, { fail 
   assert.ok(state.calls.some((record) => record[0] === 'cp' && record[1].endsWith(':/srv/static-csp.json')))
   assert.equal(state.containers.length, 0)
   assert.equal(state.networks.length, 0)
-  assert.deepEqual((await readdir(directory)).sort(), ['browser-cache', 'fake-engine.mjs', 'fake-playwright.mjs', 'state.json', ...(await readdir(directory)).filter((name) => name === 'browser-state.json')].sort())
+  const allowed = ['browser-cache', 'fake-engine.mjs', 'fake-playwright.mjs', 'state.json', 'browser-state.json']
+  if ((await readdir(directory)).includes('expected-report.json')) allowed.push('expected-report.json')
+  if (privateReportDirectory) allowed.push('private-report')
+  assert.deepEqual((await readdir(directory)).sort(), allowed.sort())
   const browser = JSON.parse(await readFile(browserState, 'utf8'))
   assert.equal(browser.baseUrl, `http://localhost:${port}`)
   assert.equal(browser.browsers, browserCache)
@@ -243,6 +283,17 @@ async function runBrowserFixture({ directory, statePath, engine }, port, { fail 
   assert.match(browser.dist, /playwright-dist$/)
   assert.match(browser.output, /playwright-output$/)
   assert.match(browser.capture, /\/mail\/capture\.json$/)
+  if (privateReportDirectory) {
+    assert.equal((await stat(privateReportDirectory)).mode & 0o777, 0o700)
+    const captured = join(privateReportDirectory, 'playwright-report.json')
+    const expectedBytes = await readFile(expectedReportPath).catch(() => undefined)
+    if (expectedBytes) {
+      assert.equal((await stat(captured)).mode & 0o777, 0o600)
+      assert.deepEqual(await readFile(captured), expectedBytes)
+    } else {
+      assert.equal((await readdir(privateReportDirectory)).length, 0)
+    }
+  }
   return result
 }
 
@@ -469,14 +520,53 @@ await withHttpFixture(async (port) => withFakeEngine(async (context) => {
 }))
 
 await withHttpFixture(async (port) => withFakeEngine(async (context) => {
-  const result = await runBrowserFixture(context, port, { fail: true })
+  const result = await runBrowserFixture(context, port, { privateReport: true })
+  assert.equal(result.code, 0, result.stdout + result.stderr)
+  assert.match(result.stdout, /Private Playwright report: captured/)
+  assert.match(result.stdout, /Caddy\/Go proxy smoke passed/)
+}))
+
+for (const reportMode of ['missing', 'malformed', 'oversized']) {
+  await withHttpFixture(async (port) => withFakeEngine(async (context) => {
+    const result = await runBrowserFixture(context, port, { fail: true, reportMode, privateReport: true })
+    assert.equal(result.code, 1, result.stdout + result.stderr)
+    assert.match(result.stdout, new RegExp(`Private Playwright report: ${reportMode === 'oversized' ? 'oversized' : reportMode}`))
+    assert.deepEqual(await readdir(join(context.directory, 'private-report')), [])
+  }))
+}
+
+await withHttpFixture(async (port) => withFakeEngine(async (context) => {
+  const result = await runBrowserFixture(context, port, { fail: true, actionability: 'pointer_interception' })
   assert.equal(result.code, 1, result.stdout + result.stderr)
   assert.match(result.stderr, /Playwright failed: 1 passed, 4 failed, 1 skipped/)
   assert.match(result.stderr, /failed test #1 \(unknown; source=publication-spec; line=47; column=9\)/)
+  assert.match(result.stderr, /phase=open_owner_recipe_dialog/)
+  assert.match(result.stderr, /actionability=pointer_interception=true,instability=false,detachment=false,invisibility=false,disabled=false,outside_viewport=false/)
   assert.match(result.stderr, /failed test #3 \(Error; source=auth-helper; line=221; column=14\)/)
   assert.match(result.stderr, /failed test #4 \(Error; source=unknown; line=unknown; column=unknown\)/)
   assert.match(result.stderr, /failed test #5 \(Error; source=unknown; line=unknown; column=unknown\)/)
-  assert.doesNotMatch(result.stderr, /opaque publication title|opaque auth title|unknown source title|out of range title|https:\/\/|\/private\/secret|token=|PrivateTokenError|TimeoutError|attacker|9999999|888:2/)
+  assert.doesNotMatch(result.stderr, /opaque publication title|opaque auth title|unknown source title|out of range title|https:\/\/|\/private\/secret|token=|PrivateTokenError|TimeoutError|attacker|9999999|888:2|dialog-backdrop|text-link|private link text|<div/)
+}))
+
+await withHttpFixture(async (port) => withFakeEngine(async (context) => {
+  const result = await runBrowserFixture(context, port, { fail: true, malformedSteps: true })
+  assert.equal(result.code, 1, result.stdout + result.stderr)
+  assert.match(result.stderr, /phase=unknown actionability=pointer_interception=false,instability=false,detachment=false,invisibility=false,disabled=false,outside_viewport=false/)
+  assert.doesNotMatch(result.stdout + result.stderr, /malformed-secret|nested-secret|token=|https:\/\/|\/private\/secret/)
+}))
+
+await withHttpFixture(async (port) => withFakeEngine(async (context) => {
+  const result = await runBrowserFixture(context, port, { fail: true, actionability: 'unknown' })
+  assert.equal(result.code, 1, result.stdout + result.stderr)
+  assert.match(result.stderr, /phase=open_owner_recipe_dialog actionability=pointer_interception=true,instability=false,detachment=false,invisibility=false,disabled=false,outside_viewport=false/)
+  assert.doesNotMatch(result.stdout + result.stderr, /https:\/\/|\/private\/secret|token=|email@example\.test|secret-class|private user text|<x-secret/)
+}))
+
+await withHttpFixture(async (port) => withFakeEngine(async (context) => {
+  const result = await runBrowserFixture(context, port, { fail: true, actionability: 'all' })
+  assert.equal(result.code, 1, result.stdout + result.stderr)
+  assert.match(result.stderr, /actionability=pointer_interception=true,instability=true,detachment=true,invisibility=true,disabled=true,outside_viewport=true/)
+  assert.doesNotMatch(result.stdout + result.stderr, /https:\/\/|\/private\/secret|token=|email@example\.test|recipe-card|synthetic/)
 }))
 
 for (const reportMode of ['missing', 'malformed', 'oversized', 'empty', 'wrong-shape', 'unknown-status', 'unknown-result-status', 'all-skipped', 'expected-failed-result', 'skipped-passed-result']) {
@@ -523,5 +613,37 @@ const longBrowserGrep = await runRunner([
 ], {})
 assert.equal(longBrowserGrep.code, 1)
 assert.match(longBrowserGrep.stderr, /browser-grep must be a single-line pattern up to 200 characters/)
+
+await withFakeEngine(async ({ statePath, engine, directory }) => {
+  await writeFile(statePath, JSON.stringify({ calls: [], networks: [], containers: [] }))
+  const existingDirectory = join(directory, 'existing-private-report')
+  await mkdir(existingDirectory, { mode: 0o700 })
+  const occupiedPrivateReport = await runRunner([
+    '--engine', engine,
+    '--frontend-image', 'frontend:fixture', '--backend-image', 'backend:fixture', '--browser',
+    '--private-report-dir', existingDirectory,
+  ], { CADDY_TEST_STATE: statePath })
+  assert.equal(occupiedPrivateReport.code, 1)
+  assert.match(occupiedPrivateReport.stderr, /private report directory must be a new directory/)
+  assert.deepEqual((await loadState(statePath)).calls, [], 'existing private report directory started the container engine')
+  const symlinkTarget = join(directory, 'symlink-target')
+  await mkdir(symlinkTarget, { mode: 0o700 })
+  const symlinkPath = join(directory, 'private-report-symlink')
+  await symlink(symlinkTarget, symlinkPath)
+  const symlinkPrivateReport = await runRunner([
+    '--engine', engine,
+    '--frontend-image', 'frontend:fixture', '--backend-image', 'backend:fixture', '--browser',
+    '--private-report-dir', symlinkPath,
+  ], { CADDY_TEST_STATE: statePath })
+  assert.equal(symlinkPrivateReport.code, 1)
+  assert.match(symlinkPrivateReport.stderr, /private report directory must be a new directory/)
+  assert.deepEqual((await loadState(statePath)).calls, [], 'symlink private report directory started the container engine')
+})
+
+const reportWithoutBrowser = await runRunner([
+  '--frontend-image', 'frontend:fixture', '--backend-image', 'backend:fixture', '--private-report-dir', '/tmp/private-report-without-browser',
+], {})
+assert.equal(reportWithoutBrowser.code, 1)
+assert.match(reportWithoutBrowser.stderr, /private-report-dir requires --browser/)
 
 console.log('Caddy smoke runner ownership, argument, timeout, redirect, loopback, failure, and signal checks passed')

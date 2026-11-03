@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 
@@ -16,6 +16,7 @@ function parseArgs(args) {
     '--frontend-image': 'frontendImage', '--backend-image': 'backendImage', '--engine': 'engine',
     '--timeout-ms': 'timeoutMs', '--command-timeout-ms': 'commandTimeoutMs',
     '--browser-grep': 'browserGrep',
+    '--private-report-dir': 'privateReportDir',
     '--browser': 'browser',
   }
   for (let index = 0; index < args.length; index++) {
@@ -51,6 +52,9 @@ function parseArgs(args) {
   }
   if (options.browserGrep && !options.browser) {
     throw new Error('--browser-grep requires --browser')
+  }
+  if (options.privateReportDir && !options.browser) {
+    throw new Error('--private-report-dir requires --browser')
   }
   return options
 }
@@ -262,6 +266,74 @@ function safeFailureLocation(location, sourceRoot) {
   return { source, line, column }
 }
 
+const safeActionabilityPatterns = Object.freeze({
+  pointer_interception: /\bintercepts? (?:pointer|mouse|touch) events\b/i,
+  instability: /\b(?:element is not stable|not stable)\b/i,
+  detachment: /\b(?:element (?:was )?detached from (?:the )?DOM|not attached to (?:the )?DOM|no longer attached)\b/i,
+  invisibility: /\b(?:element is not visible|element is hidden|not visible)\b/i,
+  disabled: /\b(?:element is not enabled|element is disabled|not enabled)\b/i,
+  outside_viewport: /\b(?:element is outside of the viewport|outside of the viewport|outside viewport)\b/i,
+})
+
+const maxActionabilityMessageLength = 64 * 1024
+
+const safePhaseIds = new Map([
+  ['Email delivery', 'email_delivery'],
+  ['Confirmation page', 'confirmation_page'],
+  ['Session establishment', 'session_establishment'],
+  ['Passkey registration', 'passkey_registration'],
+  ['Recipe create and edit', 'recipe_create_and_edit'],
+  ['Recipe history and stale update conflict', 'recipe_history_stale_update'],
+  ['Logout closes the editor', 'logout_closes_editor'],
+  ['Passkey sign-in', 'passkey_signin'],
+  ['Logout and reject token replay', 'logout_replay'],
+  ['Admin setup and public browsing setting', 'admin_setup_public_browsing'],
+  ['Recipe owner sign-in and creation', 'owner_signin_create'],
+  ['Confirm unpublished recipe stays anonymous-hidden', 'unpublished_hidden'],
+  ['Open owner recipe dialog', 'open_owner_recipe_dialog'],
+  ['Open owner publication settings', 'open_owner_publication_settings'],
+  ['Verify owner publication GET and strong ETag', 'verify_owner_publication_get'],
+  ['Confirm publication controls are ready', 'confirm_publication_controls_ready'],
+  ['Save publication and verify owner access', 'save_publication_owner_access'],
+  ['Verify anonymous published list and detail', 'verify_anonymous_published_detail'],
+  ['Withdraw and preserve owner access', 'withdraw_owner_access'],
+])
+
+function summarizeActionability(result) {
+  const flags = Object.fromEntries(Object.keys(safeActionabilityPatterns).map((name) => [name, false]))
+  let phase = 'unknown'
+  let visited = 0
+  const inspectMessage = (message) => {
+    if (typeof message !== 'string') return
+    const bounded = message.slice(-maxActionabilityMessageLength)
+    for (const [name, pattern] of Object.entries(safeActionabilityPatterns)) {
+      if (pattern.test(bounded)) flags[name] = true
+    }
+  }
+  const inspectError = (error) => {
+    if (error && typeof error === 'object' && !Array.isArray(error)) inspectMessage(error.message)
+  }
+
+  if (Array.isArray(result?.errors)) for (const error of result.errors) inspectError(error)
+  inspectError(result?.error)
+  const pending = []
+  if (Array.isArray(result?.steps)) for (let i = result.steps.length - 1; i >= 0; i -= 1) pending.push({ step: result.steps[i], phase: undefined })
+  while (pending.length > 0 && visited < 10_000) {
+    const item = pending.pop()
+    visited += 1
+    const entry = item?.step
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
+    const stepPhase = typeof entry.title === 'string' ? safePhaseIds.get(entry.title) : undefined
+    const currentPhase = stepPhase ?? item.phase
+    if (entry.error && typeof entry.error === 'object' && currentPhase) phase = currentPhase
+    inspectError(entry.error)
+    if (Array.isArray(entry.steps)) {
+      for (let i = entry.steps.length - 1; i >= 0; i -= 1) pending.push({ step: entry.steps[i], phase: currentPhase })
+    }
+  }
+  return { phase, flags }
+}
+
 function deriveTestOutcome(expectedStatus, results) {
   let skipped = 0
   let expected = 0
@@ -340,7 +412,14 @@ function summarizePlaywrightReport(report, durationMs, childExitCode, timedOut, 
     const failedResult = [...results].reverse().find((entry) => entry?.status === 'failed' || entry?.status === 'timedOut' || entry?.status === 'interrupted')
     const errorMessage = failedResult?.errors?.[0]?.message ?? failedResult?.error?.message
     const safeClass = typeof errorMessage === 'string' ? errorMessage.match(/^(TimeoutError|Error):/)?.[1] : undefined
-    return [{ ordinal: index + 1, errorClass: safeErrorClass(safeClass), ...safeFailureLocation(failedResult?.errorLocation, sourceRoot) }]
+    const actionability = summarizeActionability(failedResult)
+    return [{
+      ordinal: index + 1,
+      errorClass: safeErrorClass(safeClass),
+      ...safeFailureLocation(failedResult?.errorLocation, sourceRoot),
+      phase: actionability.phase,
+      actionability: actionability.flags,
+    }]
   })
   const failed = failures.length
   const exitMismatch = timedOut ? false : childExitCode === 0 ? failed > 0 : Number.isInteger(childExitCode) ? failed === 0 : true
@@ -352,6 +431,45 @@ async function readPlaywrightReport(path) {
   const info = await stat(path)
   if (info.size > maxPlaywrightReportBytes) throw new Error('Playwright structured report exceeded its private size limit')
   return JSON.parse(await readFile(path, 'utf8'))
+}
+
+async function preparePrivateReportDirectory(path) {
+  const directory = resolve(path)
+  try {
+    await mkdir(directory, { mode: 0o700 })
+    await chmod(directory, 0o700)
+  } catch {
+    throw new Error('private report directory must be a new directory with an existing parent')
+  }
+  return directory
+}
+
+async function capturePrivatePlaywrightReport(sourcePath, destinationDirectory) {
+  if (!destinationDirectory) return 'disabled'
+  let file
+  try {
+    file = await open(sourcePath, 'r')
+    const bounded = Buffer.allocUnsafe(maxPlaywrightReportBytes + 1)
+    let length = 0
+    while (length < bounded.length) {
+      const { bytesRead } = await file.read(bounded, length, bounded.length - length, null)
+      if (bytesRead === 0) break
+      length += bytesRead
+    }
+    if (length > maxPlaywrightReportBytes) return 'oversized'
+    const contents = bounded.subarray(0, length)
+    JSON.parse(contents.toString('utf8'))
+    const destination = join(destinationDirectory, 'playwright-report.json')
+    await writeFile(destination, contents, { flag: 'wx', mode: 0o600 })
+    await chmod(destination, 0o600)
+    return 'captured'
+  } catch (error) {
+    if (error?.code === 'ENOENT') return 'missing'
+    if (error instanceof SyntaxError) return 'malformed'
+    return 'unavailable'
+  } finally {
+    await file?.close().catch(() => {})
+  }
 }
 
 async function summarizePlaywrightReportFile(path, durationMs, childExitCode, timedOut, sourceRoot) {
@@ -375,7 +493,10 @@ async function summarizePlaywrightReportFile(path, durationMs, childExitCode, ti
 
 function formatPlaywrightSummary(summary) {
   const parts = [`Playwright ${summary.result}: ${summary.passed} passed, ${summary.failed} failed, ${summary.skipped} skipped in ${summary.durationMs}ms`]
-  for (const failure of summary.failures) parts.push(`failed test #${failure.ordinal} (${failure.errorClass}; source=${failure.source}; line=${failure.line ?? 'unknown'}; column=${failure.column ?? 'unknown'})`)
+  for (const failure of summary.failures) {
+    const actionability = Object.entries(failure.actionability ?? {}).map(([name, value]) => `${name}=${value}`).join(',')
+    parts.push(`failed test #${failure.ordinal} (${failure.errorClass}; source=${failure.source}; line=${failure.line ?? 'unknown'}; column=${failure.column ?? 'unknown'}) phase=${failure.phase ?? 'unknown'} actionability=${actionability || 'unavailable'}`)
+  }
   if (summary.reportUnavailable) parts.push('structured Playwright report unavailable')
   if (summary.invalidReport && !summary.reportUnavailable) parts.push('structured Playwright report rejected')
   if (summary.exitMismatch) parts.push('Playwright process/report status mismatch')
@@ -383,7 +504,7 @@ function formatPlaywrightSummary(summary) {
   return parts.join('\n')
 }
 
-const usage = `Usage: node scripts/run-caddy-smoke.mjs --frontend-image IMAGE --backend-image IMAGE [--engine podman] [--browser] [--browser-grep PATTERN] [--timeout-ms 90000] [--command-timeout-ms 15000]\n\nUses existing images only. The default container engine is Podman.`
+const usage = `Usage: node scripts/run-caddy-smoke.mjs --frontend-image IMAGE --backend-image IMAGE [--engine podman] [--browser] [--browser-grep PATTERN] [--private-report-dir NEW_DIR] [--timeout-ms 90000] [--command-timeout-ms 15000]\n\nUses existing images only. The default container engine is Podman.`
 let cleanupPromise
 let selectedEngine = 'podman'
 let selectedCommandTimeoutMs = 15000
@@ -533,6 +654,9 @@ async function main() {
   }
   selectedEngine = options.engine
   selectedCommandTimeoutMs = options.commandTimeoutMs
+  const privateReportDirectory = options.privateReportDir
+    ? await preparePrivateReportDirectory(options.privateReportDir)
+    : undefined
   let browserArtifacts
   if (options.browser) {
     const nodeVersion = process.versions.node.split('.').map(Number)
@@ -611,6 +735,8 @@ async function main() {
           },
         })
       } catch (error) {
+        const capture = await capturePrivatePlaywrightReport(browserArtifacts.playwrightReport, privateReportDirectory)
+        if (capture !== 'disabled') console.log(`Private Playwright report: ${capture}`)
         const summary = await summarizePlaywrightReportFile(
           browserArtifacts.playwrightReport,
           error.durationMs ?? 0,
@@ -621,6 +747,8 @@ async function main() {
         await writeFile(join(browserArtifacts.playwrightOutput, 'failure-summary.json'), `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o600 })
         throw new Error(formatPlaywrightSummary(summary))
       }
+      const capture = await capturePrivatePlaywrightReport(browserArtifacts.playwrightReport, privateReportDirectory)
+      if (capture !== 'disabled') console.log(`Private Playwright report: ${capture}`)
       const summary = await summarizePlaywrightReportFile(browserArtifacts.playwrightReport, playwrightResult.durationMs, playwrightResult.code, false, frontendRoot)
       await writeFile(join(browserArtifacts.playwrightOutput, 'result-summary.json'), `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o600 })
       if (summary.reportUnavailable || summary.invalidReport || summary.truncated || summary.exitMismatch || summary.result !== 'passed') throw new Error(formatPlaywrightSummary(summary))

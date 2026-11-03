@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -22,8 +23,30 @@ function renderApp(
 
 afterEach(() => {
   cleanup();
+  window.history.replaceState({}, "", "/");
   vi.unstubAllGlobals();
 });
+
+function publicConfig(
+  emailLink: boolean,
+  passkey: boolean,
+  registrationPolicy: "invite_only" | "open" | "disabled" = "invite_only",
+) {
+  return {
+    auth_methods: { email_link: emailLink, passkey },
+    registration_policy: registrationPolicy,
+    public_instance: false,
+    courses_enabled: false,
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 it("serves the account route directly and requires a signed-in session", async () => {
   vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse({}, 401))));
@@ -599,6 +622,237 @@ function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status });
 }
 
+it.each([
+  ["open", "Anyone can create an account with email sign-in."],
+  [
+    "invite_only",
+    "New accounts need an invitation; existing accounts can still sign in.",
+  ],
+  [
+    "disabled",
+    "New email registrations are disabled; existing accounts can still sign in.",
+  ],
+] as const)("explains %s email registration policy", async (policy, copy) => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/public/config")
+        return Promise.resolve(jsonResponse(publicConfig(true, false, policy)));
+      if (url === "/api/auth/me") return Promise.resolve(jsonResponse({}, 401));
+      if (url === "/api/public/remote-recipes?limit=24&offset=0")
+        return Promise.resolve(jsonResponse([]));
+      if (url === "/api/public/recipes?limit=24&offset=0")
+        return Promise.resolve(jsonResponse([]));
+      return Promise.resolve(jsonResponse({}, 404));
+    }),
+  );
+
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Sign in" }));
+
+  expect((await screen.findByText(copy)).textContent).toBe(copy);
+  expect(screen.getByLabelText("Email address")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Sign in with a passkey" })).toBeNull();
+});
+
+it("shows only the enabled passkey action when email sign-in is disabled", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/public/config")
+        return Promise.resolve(jsonResponse(publicConfig(false, true, "disabled")));
+      if (url === "/api/auth/me") return Promise.resolve(jsonResponse({}, 401));
+      if (url === "/api/public/remote-recipes?limit=24&offset=0")
+        return Promise.resolve(jsonResponse([]));
+      if (url === "/api/public/recipes?limit=24&offset=0")
+        return Promise.resolve(jsonResponse([]));
+      return Promise.resolve(jsonResponse({}, 404));
+    }),
+  );
+
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Sign in" }));
+
+  expect(await screen.findByRole("button", { name: "Sign in with a passkey" })).toBeTruthy();
+  expect(screen.queryByLabelText("Email address")).toBeNull();
+  expect(screen.getByText("Email link sign-in is unavailable on this instance.")).toBeTruthy();
+});
+
+it("reports when neither sign-in method is available", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/public/config")
+        return Promise.resolve(jsonResponse(publicConfig(false, false)));
+      if (url === "/api/auth/me") return Promise.resolve(jsonResponse({}, 401));
+      if (url === "/api/public/remote-recipes?limit=24&offset=0")
+        return Promise.resolve(jsonResponse([]));
+      if (url === "/api/public/recipes?limit=24&offset=0")
+        return Promise.resolve(jsonResponse([]));
+      return Promise.resolve(jsonResponse({}, 404));
+    }),
+  );
+
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Sign in" }));
+
+  expect(
+    await screen.findByText("Sign-in is currently unavailable on this instance."),
+  ).toBeTruthy();
+  expect(screen.queryByLabelText("Email address")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Sign in with a passkey" })).toBeNull();
+});
+
+it("shows a retryable configuration error instead of guessing available methods", async () => {
+  const configRetry = deferred<Response>();
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/public/config")
+      return fetchMock.mock.calls.filter(([call]) => String(call) === url).length === 1
+        ? Promise.resolve(jsonResponse({}, 503))
+        : configRetry.promise;
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse({}, 401));
+    if (url === "/api/public/remote-recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/public/recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Sign in" }));
+  expect(
+    await screen.findByText("Could not load sign-in options. Try again."),
+  ).toBeTruthy();
+  expect(screen.queryByLabelText("Email address")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Sign in with a passkey" })).toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await act(async () => {
+    configRetry.resolve(jsonResponse(publicConfig(true, false)));
+    await configRetry.promise;
+  });
+  expect(await screen.findByLabelText("Email address")).toBeTruthy();
+});
+
+it("preserves the explicit email-unavailable message", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/public/config")
+        return Promise.resolve(jsonResponse(publicConfig(true, false)));
+      if (url === "/api/auth/me") return Promise.resolve(jsonResponse({}, 401));
+      if (url === "/api/public/remote-recipes?limit=24&offset=0")
+        return Promise.resolve(jsonResponse([]));
+      if (url === "/api/public/recipes?limit=24&offset=0")
+        return Promise.resolve(jsonResponse([]));
+      if (url === "/api/auth/email")
+        return Promise.resolve(jsonResponse({ error: "email_unavailable" }, 503));
+      return Promise.resolve(jsonResponse({}, 404));
+    }),
+  );
+
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Sign in" }));
+  fireEvent.change(await screen.findByLabelText("Email address"), {
+    target: { value: "cook@example.test" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: /Send sign-in link/ }));
+
+  expect(await screen.findByText("Email sign-in is not configured on this instance.")).toBeTruthy();
+});
+
+it("defers optional passkey setup until config loads without blocking confirmed sign-in", async () => {
+  const config = deferred<Response>();
+  let sessionChecks = 0;
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/public/config") return config.promise;
+    if (url === "/api/auth/me") {
+      sessionChecks += 1;
+      return Promise.resolve(
+        sessionChecks === 1
+          ? jsonResponse({}, 401)
+          : jsonResponse({
+              id: "user-1",
+              email: "cook@example.test",
+              display_name: "Cook",
+              is_admin: false,
+            }),
+      );
+    }
+    if (url === "/api/public/remote-recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/public/recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/auth/consume") return Promise.resolve(jsonResponse({}));
+    if (url === "/api/auth/passkeys") return Promise.resolve(jsonResponse([]));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState({}, "", "/auth/confirm?token=one-time-token");
+
+  renderApp();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Continue to Cookbook" }),
+  );
+
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog", { name: "Confirm your sign-in" })).toBeNull(),
+  );
+  expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/auth/consume")).toHaveLength(1);
+  expect(screen.queryByRole("dialog", { name: "Add a passkey?" })).toBeNull();
+
+  await act(async () => {
+    config.resolve(jsonResponse(publicConfig(true, true)));
+    await config.promise;
+  });
+  expect(await screen.findByRole("dialog", { name: "Add a passkey?" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog", { name: "Add a passkey?" })).toBeNull(),
+  );
+});
+
+it("does not offer first-passkey setup when passkeys are disabled", async () => {
+  let sessionChecks = 0;
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/public/config")
+      return Promise.resolve(jsonResponse(publicConfig(true, false)));
+    if (url === "/api/auth/me") {
+      sessionChecks += 1;
+      return Promise.resolve(
+        sessionChecks === 1
+          ? jsonResponse({}, 401)
+          : jsonResponse({ id: "user-1", email: "cook@example.test", display_name: "Cook", is_admin: false }),
+      );
+    }
+    if (url === "/api/public/remote-recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/public/recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/auth/consume") return Promise.resolve(jsonResponse({}));
+    if (url === "/api/auth/passkeys") return Promise.resolve(jsonResponse([]));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState({}, "", "/auth/confirm?token=one-time-token");
+
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Continue to Cookbook" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog", { name: "Confirm your sign-in" })).toBeNull(),
+  );
+  expect(screen.queryByRole("dialog", { name: "Add a passkey?" })).toBeNull();
+  expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/auth/consume")).toHaveLength(1);
+});
+
 it("closes auth-bound dialogs on sign-out so public sign-in can open", async () => {
   const recipe = {
     id: "recipe-1",
@@ -663,6 +917,6 @@ it("closes auth-bound dialogs on sign-out so public sign-in can open", async () 
 
   fireEvent.click(screen.getByRole("button", { name: /^Sign in$/ }));
   expect(
-    await screen.findByRole("dialog", { name: "Sign in with email" }),
+    await screen.findByRole("dialog", { name: "Sign in" }),
   ).toBeTruthy();
 });

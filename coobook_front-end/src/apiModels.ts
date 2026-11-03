@@ -28,6 +28,18 @@ export interface BrowserSession {
 
 export type RegistrationPolicy = "invite_only" | "open" | "disabled";
 
+export interface AuthMethods {
+  email_link: boolean;
+  passkey: boolean;
+}
+
+export interface PublicAuthConfig {
+  auth_methods: AuthMethods;
+  registration_policy: RegistrationPolicy;
+  public_instance: boolean;
+  courses_enabled: boolean;
+}
+
 export interface AdminSettingsModel {
   public_instance: boolean;
   courses_enabled: boolean;

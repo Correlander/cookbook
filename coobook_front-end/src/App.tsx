@@ -26,6 +26,7 @@ import type {
   UserSummary,
 } from "./apiModels";
 import { errorMessage } from "./apiModels";
+import usePublicAuthConfig from "./features/auth/usePublicAuthConfig.ts";
 
 const PasskeySetupPrompt = lazy(() => import("./PasskeySetupPrompt.tsx"));
 const FederationAdmin = lazy(() => import("./FederationAdmin.tsx"));
@@ -105,8 +106,13 @@ function HomeApp({ pathname }: { pathname: string }) {
     [editRecipe, setEditRecipe] = useState<Recipe | null>(null),
     [createOpen, setCreateOpen] = useState(false),
     [inviteToken, setInviteToken] = useState(""),
-    [passkeyPrompt, setPasskeyPrompt] = useState(false);
+    [passkeyPrompt, setPasskeyPrompt] = useState(false),
+    [pendingPasskeyOffer, setPendingPasskeyOffer] = useState(false);
   const { currentUser, refreshSession, clearSession } = useAppSession();
+  const {
+    state: publicAuthConfigState,
+    retry: retryPublicAuthConfig,
+  } = usePublicAuthConfig();
   const signedIn = Boolean(currentUser);
   const feed = useRecipeFeed({ signedIn, query });
   const emailDialogRef = useRef<HTMLElement>(null);
@@ -118,8 +124,19 @@ function HomeApp({ pathname }: { pathname: string }) {
     setSelectedRemote(null);
     setEmailOpen(false);
     setPasskeyPrompt(false);
+    setPendingPasskeyOffer(false);
   }
   useModalFocus(emailDialogRef, () => setEmailOpen(false), emailOpen);
+  useEffect(() => {
+    if (
+      !pendingPasskeyOffer ||
+      publicAuthConfigState.status !== "ready"
+    )
+      return;
+    setPendingPasskeyOffer(false);
+    if (publicAuthConfigState.config.auth_methods.passkey)
+      setPasskeyPrompt(true);
+  }, [pendingPasskeyOffer, publicAuthConfigState]);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const confirmation =
@@ -217,7 +234,7 @@ function HomeApp({ pathname }: { pathname: string }) {
       if (user) {
         const passkeysResponse = await fetch("/api/auth/passkeys");
         if (passkeysResponse.ok && !(await passkeysResponse.json()).length)
-          setPasskeyPrompt(true);
+          setPendingPasskeyOffer(true);
       }
       setEmailOpen(false);
     } catch (error: unknown) {
@@ -519,33 +536,77 @@ function HomeApp({ pathname }: { pathname: string }) {
                 <h2 id="signin-title">
                   {inviteToken
                     ? "Accept your invitation"
-                    : "Sign in with email"}
+                    : publicAuthConfigState.status === "ready" &&
+                        publicAuthConfigState.config.auth_methods.email_link
+                      ? "Sign in with email"
+                      : "Sign in"}
                 </h2>
                 <p>
-                  We’ll send you a one-time link to get back to your cookbooks.
+                  {publicAuthConfigState.status === "ready" &&
+                  publicAuthConfigState.config.auth_methods.email_link
+                    ? "We’ll send you a one-time link to get back to your cookbooks."
+                    : "Sign in to your cookbooks."}
                 </p>
-                <form onSubmit={signIn}>
-                  <label htmlFor="signin-email">Email address</label>
-                  <input
-                    id="signin-email"
-                    type="email"
-                    autoComplete="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="you@example.com"
-                    required
-                  />
-                  <button className="button button--green" type="submit">
-                    Send sign-in link <Icon name="arrow" size={16} />
-                  </button>
-                </form>
-                <button
-                  className="text-link passkey-action"
-                  type="button"
-                  onClick={passkeySignIn}
-                >
-                  Sign in with a passkey
-                </button>
+                {publicAuthConfigState.status === "loading" && (
+                  <p role="status">Loading sign-in options…</p>
+                )}
+                {publicAuthConfigState.status === "error" && (
+                  <div>
+                    <p role="alert">{publicAuthConfigState.message}</p>
+                    <button type="button" onClick={retryPublicAuthConfig}>
+                      Retry
+                    </button>
+                  </div>
+                )}
+                {publicAuthConfigState.status === "ready" && (
+                  <>
+                    {publicAuthConfigState.config.auth_methods.email_link ? (
+                      <>
+                        <p>
+                          {publicAuthConfigState.config.registration_policy ===
+                          "open"
+                            ? "Anyone can create an account with email sign-in."
+                            : publicAuthConfigState.config
+                                  .registration_policy === "invite_only"
+                              ? "New accounts need an invitation; existing accounts can still sign in."
+                              : "New email registrations are disabled; existing accounts can still sign in."}
+                        </p>
+                        <form onSubmit={signIn}>
+                          <label htmlFor="signin-email">Email address</label>
+                          <input
+                            id="signin-email"
+                            type="email"
+                            autoComplete="email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            placeholder="you@example.com"
+                            required
+                          />
+                          <button className="button button--green" type="submit">
+                            Send sign-in link <Icon name="arrow" size={16} />
+                          </button>
+                        </form>
+                      </>
+                    ) : (
+                      <p>Email link sign-in is unavailable on this instance.</p>
+                    )}
+                    {publicAuthConfigState.config.auth_methods.passkey && (
+                      <button
+                        className="text-link passkey-action"
+                        type="button"
+                        onClick={passkeySignIn}
+                      >
+                        Sign in with a passkey
+                      </button>
+                    )}
+                    {!publicAuthConfigState.config.auth_methods.email_link &&
+                      !publicAuthConfigState.config.auth_methods.passkey && (
+                        <p role="status">
+                          Sign-in is currently unavailable on this instance.
+                        </p>
+                      )}
+                  </>
+                )}
               </>
             )}
             {message && (

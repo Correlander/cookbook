@@ -1,0 +1,450 @@
+import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { createServer } from 'node:http'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile, chmod, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const runner = fileURLToPath(new URL('./run-caddy-smoke.mjs', import.meta.url))
+const fakeEngineSource = `#!/usr/bin/env node
+import { readFile, writeFile } from 'node:fs/promises'
+const [command, ...args] = process.argv.slice(2)
+const statePath = process.env.CADDY_TEST_STATE
+const state = await readFile(statePath, 'utf8').then(JSON.parse).catch(() => ({ calls: [], networks: [], containers: [] }))
+const save = () => writeFile(statePath, JSON.stringify(state))
+const option = (name) => args[args.indexOf(name) + 1]
+const filterLabel = (prefix) => (option('--filter') ?? '').replace(prefix, '')
+state.calls.push([command, ...args])
+
+if (command === 'network' && args[0] === 'create') {
+  const name = args.at(-1)
+  if (process.env.CADDY_TEST_COLLISION === 'network') {
+    state.networks.push({ id: 'foreign-network-id', name, label: 'unrelated=true' })
+    await save()
+    process.exit(125)
+  }
+  state.networks.push({ id: 'owned-network-id', name, label: option('--label') })
+  if (process.env.CADDY_TEST_UNEXPECTED_OWNED === '1') state.networks.push({ id: 'unexpected-owned-network-id', name: 'unexpected-owned-network', label: option('--label') })
+} else if (command === 'run') {
+  const name = option('--name')
+  const label = option('--label')
+  const image = args.at(-1)
+  if (process.env.CADDY_TEST_COLLISION === 'container' && image === 'frontend:collision') {
+    state.containers.push({ id: 'foreign-container-id', name, label: 'unrelated=true' })
+    await save()
+    process.exit(125)
+  }
+  state.containers.push({ id: name.endsWith('-frontend') ? 'owned-frontend-id' : 'owned-backend-id', name, label })
+  if (process.env.CADDY_TEST_UNEXPECTED_OWNED === '1' && name.endsWith('-frontend')) {
+    state.containers.push({ id: 'unexpected-owned-container-id', name: 'unexpected-owned-container', label })
+  }
+  await save()
+  if (process.env.CADDY_TEST_FAIL_BACKEND === '1' && image === 'backend:partial-failure') process.exit(17)
+} else if (command === 'port') {
+  const mapping = process.env.CADDY_TEST_PORT_MAPPING ?? (process.env.CADDY_TEST_PORT ? '127.0.0.1:' + process.env.CADDY_TEST_PORT : '127.0.0.1:43127')
+  console.log(mapping)
+  await save()
+  if (process.env.CADDY_TEST_HOLD === '1') setInterval(() => {}, 1000)
+} else if (command === 'cp') {
+  await writeFile(args[1], '{"scriptHashes":[]}')
+} else if (command === 'ps') {
+  const label = filterLabel('label=')
+  for (const item of state.containers.filter((entry) => entry.label === label)) console.log(item.id + ' ' + item.name)
+} else if (command === 'network' && args[0] === 'ls') {
+  const label = filterLabel('label=')
+  for (const item of state.networks.filter((entry) => entry.label === label)) console.log(item.id + ' ' + item.name)
+} else if (command === 'rm') {
+  const id = args.at(-1)
+  state.containers = state.containers.filter((entry) => entry.id !== id)
+} else if (command === 'network' && args[0] === 'rm') {
+  const id = args.at(-1)
+  state.networks = state.networks.filter((entry) => entry.id !== id)
+}
+
+await save()
+  if (command === 'network' && args[0] === 'create' && process.env.CADDY_TEST_HOLD_CREATE === '1') setInterval(() => {}, 1000)
+`
+
+async function withFakeEngine(run) {
+  const directory = await mkdtemp(join(tmpdir(), 'cookbook-caddy-smoke-test-'))
+  const statePath = join(directory, 'state.json')
+  const engine = join(directory, 'fake-engine.mjs')
+  try {
+    await writeFile(engine, fakeEngineSource, { encoding: 'utf8', mode: 0o700 })
+    await chmod(engine, 0o700)
+    await run({ directory, statePath, engine })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+}
+
+function startRunner(args, env) {
+  const child = spawn(process.execPath, [runner, ...args], { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] })
+  let stdout = ''
+  let stderr = ''
+  const result = new Promise((resolve, reject) => {
+    const timeout = setTimeout(async () => {
+      const trace = env.CADDY_TEST_STATE ? await readFile(env.CADDY_TEST_STATE, 'utf8').catch(() => '') : ''
+      child.kill('SIGTERM')
+      const force = setTimeout(() => child.kill('SIGKILL'), 1000)
+      force.unref()
+      reject(new Error(`Caddy smoke fake-engine test exceeded its 8 second limit: ${args.join(' ')}; calls ${trace}`))
+    }, 8000)
+    child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk })
+    child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk })
+    child.once('error', (error) => { clearTimeout(timeout); reject(error) })
+    child.once('close', (code, signal) => { clearTimeout(timeout); resolve({ code, signal, stdout, stderr }) })
+  })
+  return { child, result }
+}
+
+async function runRunner(args, env) {
+  const execution = startRunner(args, env)
+  try {
+    return await execution.result
+  } finally {
+    if (execution.child.exitCode === null && execution.child.signalCode === null) {
+      execution.child.kill('SIGTERM')
+      await Promise.race([execution.result.catch(() => {}), new Promise((resolve) => setTimeout(resolve, 1500))])
+      if (execution.child.exitCode === null && execution.child.signalCode === null) execution.child.kill('SIGKILL')
+    }
+  }
+}
+
+async function loadState(path) {
+  return JSON.parse(await readFile(path, 'utf8'))
+}
+
+const fakePlaywrightSource = `#!/usr/bin/env node
+import assert from 'node:assert/strict'
+import { readFile, writeFile, stat } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+if (process.env.CADDY_BROWSER_GREP_EXPECTED) assert.ok(process.argv.includes('--grep=' + process.env.CADDY_BROWSER_GREP_EXPECTED))
+assert.ok(process.argv.includes('--workers=1'))
+assert.equal(process.env.PLAYWRIGHT_BASE_URL, 'http://127.0.0.1:' + process.env.CADDY_TEST_PORT)
+assert.equal(process.env.E2E_EMAIL_CAPTURE, join(dirname(process.env.E2E_EMAIL_CAPTURE), 'capture.json'))
+assert.equal(await readFile(join(process.env.PLAYWRIGHT_DIST, 'static-csp.json'), 'utf8'), '{"scriptHashes":[]}')
+const tempRoot = dirname(dirname(process.env.E2E_EMAIL_CAPTURE))
+assert.equal((await stat(tempRoot)).mode & 0o777, 0o700)
+assert.equal((await stat(dirname(process.env.E2E_EMAIL_CAPTURE))).mode & 0o777, 0o777)
+const helper = await readFile(join(dirname(process.env.E2E_EMAIL_CAPTURE), 'capture-email'), 'utf8')
+assert.ok(helper.includes('cat > /smoke-mail/capture.json'))
+assert.ok(helper.includes('chmod 644'))
+await writeFile(process.env.CADDY_BROWSER_STATE, JSON.stringify({
+  baseUrl: process.env.PLAYWRIGHT_BASE_URL,
+  dist: process.env.PLAYWRIGHT_DIST,
+  output: process.env.PLAYWRIGHT_OUTPUT_DIR,
+  browsers: process.env.PLAYWRIGHT_BROWSERS_PATH,
+  capture: process.env.E2E_EMAIL_CAPTURE,
+}))
+if (process.env.CADDY_BROWSER_FAIL === '1') {
+  console.log('FAIL e5z7opaqueSecret')
+  console.log('PrivateTokenError: do not print this class name')
+  console.error('https://example.test/auth/confirm?token=synthetic-private-token')
+  console.log('FAIL opaqueSecondTitle')
+  console.error('Error: expect(locator).toBeVisible failed')
+  console.log('Playwright result: failed')
+  process.exit(9)
+}
+console.log('PASS direct route serves built page')
+console.log('SKIP optional browser capability')
+console.log('Playwright result: passed')
+`
+
+async function runBrowserFixture({ directory, statePath, engine }, port, fail, grep) {
+  const browserCache = join(directory, 'browser-cache')
+  const playwright = join(directory, 'fake-playwright.mjs')
+  const browserState = join(directory, 'browser-state.json')
+  await writeFile(playwright, fakePlaywrightSource, { encoding: 'utf8', mode: 0o700 })
+  await chmod(playwright, 0o700)
+  await mkdir(browserCache)
+  const result = await runRunner([
+    '--engine', engine,
+    '--frontend-image', 'frontend:browser-fixture',
+    '--backend-image', 'backend:browser-fixture',
+    '--browser',
+    ...(grep ? ['--browser-grep', grep] : []),
+  ], {
+    CADDY_TEST_STATE: statePath,
+    CADDY_TEST_PORT: String(port),
+    CADDY_BROWSER_STATE: browserState,
+    CADDY_BROWSER_FAIL: fail ? '1' : '0',
+    CADDY_BROWSER_GREP_EXPECTED: grep ?? '',
+    COOKBOOK_CADDY_SMOKE_PLAYWRIGHT_CLI: playwright,
+    PLAYWRIGHT_BROWSERS_PATH: browserCache,
+    TMPDIR: directory,
+  })
+  assert.equal(result.code, fail ? 1 : 0, result.stdout + result.stderr)
+  const state = await loadState(statePath)
+  const backend = state.calls.find((record) => record[0] === 'run' && record.includes('backend:browser-fixture'))
+  assert.ok(backend)
+  assert.ok(backend.includes('--tmpfs') && backend.some((arg) => arg.startsWith('/data:')))
+  assert.ok(backend.includes('COOKBOOK_EMAIL_COMMAND=/smoke-mail/capture-email'))
+  assert.ok(backend.includes('COOKBOOK_REGISTRATION=open'))
+  assert.ok(backend.includes('COOKBOOK_ADMIN_EMAIL=admin@example.test'))
+  assert.ok(backend.includes('COOKBOOK_ADMIN_NAME=E2E Admin'))
+  assert.ok(backend.some((arg) => arg.includes(':/smoke-mail:rw,Z')))
+  assert.ok(state.calls.some((record) => record[0] === 'cp' && record[1].endsWith(':/srv/static-csp.json')))
+  assert.equal(state.containers.length, 0)
+  assert.equal(state.networks.length, 0)
+  assert.deepEqual((await readdir(directory)).sort(), ['browser-cache', 'fake-engine.mjs', 'fake-playwright.mjs', 'state.json', ...(await readdir(directory)).filter((name) => name === 'browser-state.json')].sort())
+  const browser = JSON.parse(await readFile(browserState, 'utf8'))
+  assert.equal(browser.baseUrl, `http://127.0.0.1:${port}`)
+  assert.equal(browser.browsers, browserCache)
+  assert.match(browser.dist, /playwright-dist$/)
+  assert.match(browser.output, /playwright-output$/)
+  assert.match(browser.capture, /\/mail\/capture\.json$/)
+  return result
+}
+
+async function withHttpFixture(run, { redirectRoot = false, oversizeRoot = false } = {}) {
+  const csp = "default-src 'self'; script-src 'self'; style-src 'self'"
+  const server = createServer((request, response) => {
+    if (redirectRoot && request.url === '/') {
+      response.writeHead(302, { location: 'http://example.invalid/redirect-target' }).end()
+      return
+    }
+    if (oversizeRoot && request.url === '/') {
+      response.writeHead(200, {
+        'content-type': 'text/html', 'cache-control': 'no-store', 'content-security-policy': csp,
+        'content-length': String(2 * 1024 * 1024 + 1),
+      }).end('oversize fixture')
+      return
+    }
+    if (request.url === '/healthz') {
+      response.writeHead(200, { 'content-type': 'application/json', 'content-security-policy': csp }).end('{"status":"ok"}')
+    } else if (request.url === '/') {
+      response.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store', 'content-security-policy': csp })
+        .end('<!doctype html><html><script src="/_astro/app.js"></script></html>')
+    } else if (request.url?.startsWith('/auth/confirm?')) {
+      response.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store', 'content-security-policy': csp })
+        .end('<!doctype html><html><title>Confirm</title></html>')
+    } else if (request.url === '/_astro/app.js') {
+      response.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'public, max-age=31536000, immutable' }).end('')
+    } else if (request.url === '/api/auth/consume' && request.method === 'POST') {
+      if (request.headers.origin !== `http://127.0.0.1:${server.address().port}`) {
+        response.writeHead(403, { 'content-type': 'application/json' }).end('{"error":"csrf_origin_mismatch"}')
+      } else {
+        response.writeHead(400, { 'content-type': 'application/json', 'cache-control': 'no-store', 'content-security-policy': csp })
+          .end('{"error":"invalid_or_expired_token"}')
+      }
+    } else if (request.url?.startsWith('/api/')) {
+      response.writeHead(401, { 'content-type': 'application/json', 'content-security-policy': csp }).end('{"error":"unauthorized"}')
+    } else {
+      response.writeHead(404).end('not found')
+    }
+  })
+  await new Promise((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve))
+  try {
+    await run(server.address().port)
+  } finally {
+    await new Promise((resolveClose) => server.close(resolveClose))
+  }
+}
+
+await withFakeEngine(async ({ statePath, engine }) => {
+  const result = await runRunner([
+    '--engine', engine,
+    '--frontend-image', 'frontend image:fixture',
+    '--backend-image', 'backend:partial-failure',
+  ], { CADDY_TEST_STATE: statePath, CADDY_TEST_FAIL_BACKEND: '1' })
+  assert.equal(result.code, 1, result.stdout + result.stderr)
+  assert.match(result.stderr, /run failed \(17\)/)
+
+  const state = await loadState(statePath)
+  const frontend = state.calls.find((record) => record[0] === 'run' && record.includes('frontend image:fixture'))
+  const backend = state.calls.find((record) => record[0] === 'run' && record.includes('backend:partial-failure'))
+  assert.ok(frontend, 'frontend image argument with spaces was not forwarded as one argument')
+  assert.ok(backend, 'backend image argument was not forwarded')
+  assert.ok(frontend.includes('--pull=never'), 'frontend image was not protected from pulls')
+  assert.ok(backend.includes('--tmpfs') && backend.some((arg) => arg.startsWith('/data:')))
+  assert.ok(frontend.includes('--label') && backend.includes('--label'))
+  assert.equal(frontend[frontend.indexOf('--label') + 1], backend[backend.indexOf('--label') + 1])
+  assert.equal(state.containers.length, 0, 'partially started owned containers were not removed')
+  assert.equal(state.networks.length, 0, 'owned network was not removed')
+})
+
+await withFakeEngine(async ({ statePath, engine }) => {
+  const result = await runRunner([
+    '--engine', engine,
+    '--frontend-image', 'frontend:collision',
+    '--backend-image', 'backend:fixture',
+  ], { CADDY_TEST_STATE: statePath, CADDY_TEST_COLLISION: 'container' })
+  assert.equal(result.code, 1)
+  const state = await loadState(statePath)
+  assert.equal(state.containers.length, 1, 'cleanup removed an unrelated same-name container')
+  assert.equal(state.containers[0].id, 'foreign-container-id')
+  assert.equal(state.networks.length, 0, 'owned network was not removed after container-name collision')
+  assert.equal(state.calls.some((record) => record[0] === 'rm'), false, 'collision cleanup attempted to remove a container by name')
+})
+
+await withFakeEngine(async ({ statePath, engine }) => {
+  const result = await runRunner([
+    '--engine', engine,
+    '--frontend-image', 'frontend:fixture',
+    '--backend-image', 'backend:fixture',
+  ], { CADDY_TEST_STATE: statePath, CADDY_TEST_COLLISION: 'network' })
+  assert.equal(result.code, 1)
+  const state = await loadState(statePath)
+  assert.equal(state.networks.length, 1, 'cleanup removed an unrelated same-name network')
+  assert.equal(state.networks[0].id, 'foreign-network-id')
+  assert.equal(state.containers.length, 0)
+  assert.equal(state.calls.some((record) => record[0] === 'network' && record[1] === 'rm'), false, 'collision cleanup attempted to remove a network by name')
+})
+
+await withHttpFixture(async (port) => withFakeEngine(async ({ statePath, engine }) => {
+  const result = await runRunner([
+    '--engine', engine,
+    '--frontend-image', 'frontend:fixture',
+    '--backend-image', 'backend:fixture',
+  ], { CADDY_TEST_STATE: statePath, CADDY_TEST_PORT: String(port) })
+  assert.equal(result.code, 0, result.stdout + result.stderr)
+  assert.match(result.stdout, /Caddy\/Go proxy smoke passed/)
+  const state = await loadState(statePath)
+  assert.equal(state.containers.length, 0, 'successful run left owned containers behind')
+  assert.equal(state.networks.length, 0, 'successful run left owned network behind')
+}))
+
+await withFakeEngine(async ({ statePath, engine }) => {
+  const result = await runRunner([
+    '--engine', engine,
+    '--frontend-image', 'frontend:fixture',
+    '--backend-image', 'backend:fixture',
+  ], { CADDY_TEST_STATE: statePath, CADDY_TEST_PORT_MAPPING: '0.0.0.0:43127' })
+  assert.equal(result.code, 1)
+  assert.match(result.stderr, /strictly on loopback/)
+  const state = await loadState(statePath)
+  assert.equal(state.containers.length, 0)
+  assert.equal(state.networks.length, 0)
+})
+
+await withFakeEngine(async ({ statePath, engine }) => {
+  const result = await runRunner([
+    '--engine', engine,
+    '--timeout-ms', '1000',
+    '--frontend-image', 'frontend:fixture',
+    '--backend-image', 'backend:fixture',
+  ], { CADDY_TEST_STATE: statePath, CADDY_TEST_HOLD_CREATE: '1' })
+  assert.equal(result.code, 1, result.stdout + result.stderr)
+  assert.match(result.stderr, /overall timeout/)
+  const state = await loadState(statePath)
+  assert.equal(state.networks.length, 0, 'overall timeout left its created network behind')
+  assert.equal(state.containers.length, 0)
+})
+
+await withFakeEngine(async ({ statePath, engine }) => {
+  const result = await runRunner([
+    '--engine', engine,
+    '--command-timeout-ms', '1000',
+    '--frontend-image', 'frontend:fixture',
+    '--backend-image', 'backend:fixture',
+  ], { CADDY_TEST_STATE: statePath, CADDY_TEST_HOLD_CREATE: '1' })
+  assert.equal(result.code, 1, result.stdout + result.stderr)
+  assert.match(result.stderr, /network timed out after 1000ms/)
+  const state = await loadState(statePath)
+  assert.equal(state.networks.length, 0, 'command timeout left its owned network behind')
+  assert.equal(state.containers.length, 0)
+})
+
+await withFakeEngine(async ({ statePath, engine }) => {
+  const result = await runRunner([
+    '--engine', engine,
+    '--frontend-image', 'frontend:fixture',
+    '--backend-image', 'backend:partial-failure',
+  ], { CADDY_TEST_STATE: statePath, CADDY_TEST_FAIL_BACKEND: '1', CADDY_TEST_UNEXPECTED_OWNED: '1' })
+  assert.equal(result.code, 1, result.stdout + result.stderr)
+  assert.match(result.stderr, /unexpected container/)
+  assert.match(result.stderr, /unexpected network/)
+  const state = await loadState(statePath)
+  assert.deepEqual(state.containers.map((entry) => entry.id), ['unexpected-owned-container-id'])
+  assert.deepEqual(state.networks.map((entry) => entry.id), ['unexpected-owned-network-id'])
+})
+
+await withHttpFixture(async (port) => withFakeEngine(async ({ statePath, engine }) => {
+  const result = await runRunner([
+    '--engine', engine,
+    '--frontend-image', 'frontend:fixture',
+    '--backend-image', 'backend:fixture',
+  ], { CADDY_TEST_STATE: statePath, CADDY_TEST_PORT: String(port) })
+  assert.equal(result.code, 1)
+  assert.match(result.stderr, /redirect|fetch/i)
+  const state = await loadState(statePath)
+  assert.equal(state.containers.length, 0)
+  assert.equal(state.networks.length, 0)
+}), { redirectRoot: true })
+
+await withHttpFixture(async (port) => withFakeEngine(async ({ statePath, engine }) => {
+  const result = await runRunner([
+    '--engine', engine,
+    '--frontend-image', 'frontend:fixture',
+    '--backend-image', 'backend:fixture',
+  ], { CADDY_TEST_STATE: statePath, CADDY_TEST_PORT: String(port) })
+  assert.equal(result.code, 1)
+  assert.match(result.stderr, /static root body exceeds/)
+  const state = await loadState(statePath)
+  assert.equal(state.containers.length, 0)
+  assert.equal(state.networks.length, 0)
+}), { oversizeRoot: true })
+
+await withFakeEngine(async ({ statePath, engine }) => {
+  const execution = startRunner([
+    '--engine', engine,
+    '--frontend-image', 'frontend:signal',
+    '--backend-image', 'backend:signal',
+  ], { CADDY_TEST_STATE: statePath, CADDY_TEST_HOLD: '1' })
+  try {
+    let state
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try { state = await loadState(statePath) } catch { /* Wait for the fake engine to reach its held port query. */ }
+      if (state?.calls.some((record) => record[0] === 'port')) break
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+    assert.ok(state?.calls.some((record) => record[0] === 'port'), 'runner did not reach the signal test hold point')
+    execution.child.kill('SIGTERM')
+    const result = await execution.result
+    assert.equal(result.code, 143, result.stdout + result.stderr)
+    state = await loadState(statePath)
+    assert.equal(state.containers.length, 0, 'SIGTERM left the owned frontend container behind')
+    assert.equal(state.networks.length, 0, 'SIGTERM left the owned network behind')
+  } finally {
+    if (execution.child.exitCode === null && execution.child.signalCode === null) execution.child.kill('SIGTERM')
+  }
+})
+
+await withHttpFixture(async (port) => withFakeEngine(async (context) => {
+  const result = await runBrowserFixture(context, port, false, 'signed-in account users|signed-in instance administrators|email sign-in remains explicit')
+  assert.equal(result.code, 0, result.stdout + result.stderr)
+  assert.match(result.stdout, /Playwright passed: 1 passed, 0 failed, 1 skipped/)
+  assert.match(result.stdout, /Caddy\/Go proxy smoke passed/)
+}))
+
+await withHttpFixture(async (port) => withFakeEngine(async (context) => {
+  const result = await runBrowserFixture(context, port, true)
+  assert.equal(result.code, 1, result.stdout + result.stderr)
+  assert.match(result.stderr, /Playwright failed: 0 passed, 2 failed, 0 skipped/)
+  assert.match(result.stderr, /failed test #1 \(unknown\)/)
+  assert.match(result.stderr, /failed test #2 \(Error\)/)
+  assert.doesNotMatch(result.stderr, /e5z7opaqueSecret|opaqueSecondTitle|synthetic-private-token|PrivateTokenError/)
+}))
+
+const missingImages = await runRunner(['--frontend-image', 'frontend:fixture'], {})
+assert.equal(missingImages.code, 1)
+assert.match(missingImages.stderr, /provide both --frontend-image and --backend-image/)
+await withFakeEngine(async ({ statePath, engine }) => {
+  await writeFile(statePath, JSON.stringify({ calls: [], networks: [], containers: [] }))
+  const grepWithoutBrowser = await runRunner([
+    '--engine', engine,
+    '--frontend-image', 'frontend:fixture', '--backend-image', 'backend:fixture', '--browser-grep', 'route test',
+  ], { CADDY_TEST_STATE: statePath })
+  assert.equal(grepWithoutBrowser.code, 1)
+  assert.match(grepWithoutBrowser.stderr, /browser-grep requires --browser/)
+  assert.deepEqual((await loadState(statePath)).calls, [], 'invalid browser-grep arguments started the container engine')
+})
+const longBrowserGrep = await runRunner([
+  '--frontend-image', 'frontend:fixture', '--backend-image', 'backend:fixture', '--browser-grep', 'x'.repeat(201),
+], {})
+assert.equal(longBrowserGrep.code, 1)
+assert.match(longBrowserGrep.stderr, /browser-grep must be a single-line pattern up to 200 characters/)
+
+console.log('Caddy smoke runner ownership, argument, timeout, redirect, loopback, failure, and signal checks passed')

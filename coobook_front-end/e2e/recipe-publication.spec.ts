@@ -116,12 +116,15 @@ test("owners can publish and withdraw a public recipe without losing owner acces
       expect(unpublishedRows.some((recipe) => recipe.id === recipeId)).toBe(false);
     });
 
-    await test.step("Publish and verify owner and anonymous access", async () => {
+    await test.step("Open owner dialog and load publication settings", async () => {
       await page.getByRole("button", { name: `Open ${title}` }).click();
       await page.getByRole("button", { name: "Manage publication" }).click();
       await expect(page.getByText("Current status")).toBeVisible();
       await expect(page.getByText("Not published", { exact: true })).toBeVisible();
       await page.getByLabel("Public browsing status").selectOption("published");
+    });
+
+    await test.step("Save publication and verify owner access", async () => {
       const publishResponsePromise = page.waitForResponse(
         (response) =>
           response.request().method() === "PUT" &&
@@ -132,7 +135,9 @@ test("owners can publish and withdraw a public recipe without losing owner acces
       expect((await publishResponsePromise).status()).toBe(200);
       const ownerRead = await page.request.get(`/api/recipes/${recipeId}`);
       expect(ownerRead.status()).toBe(200);
+    });
 
+    await test.step("Verify anonymous published list and detail", async () => {
       await anonPage.goto("/");
       await expect(
         anonPage.getByRole("button", { name: `Open ${title}` }),

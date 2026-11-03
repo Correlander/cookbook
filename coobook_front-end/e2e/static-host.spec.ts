@@ -241,7 +241,7 @@ test('email sign-in remains explicit, establishes a session, and rejects replay'
     await form.getByLabel('Description').fill('Created by the browser journey')
     await form.getByLabel(/Ingredients/).fill('Flour | 1 cup | sifted')
     await form.locator('textarea[id^="recipe-step-"]').first().fill('Mix')
-    await form.getByRole('button', { name: 'Save private recipe' }).click()
+    await form.getByRole('button', { name: 'Save recipe' }).click()
     await expect(form).toBeHidden()
     const recipeCard = page.getByRole('button', { name: 'Open Browser private recipe' })
     await expect(recipeCard).toBeVisible()

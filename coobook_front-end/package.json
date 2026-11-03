@@ -12,7 +12,7 @@
     "postbuild": "node scripts/generate-static-headers.mjs",
     "lint": "eslint .",
     "test": "npm run test:ops && node --test src/quantity.test.ts src/steps.test.ts src/features/recipes/recipeFeedApi.test.ts && vitest run",
-    "test:ops": "node --test scripts/generate-static-headers.test.mjs scripts/static-host.test.mjs",
+    "test:ops": "node --test scripts/generate-static-headers.test.mjs scripts/static-host.test.mjs scripts/run-e2e.test.mjs",
     "test:e2e": "playwright test --config=e2e/playwright.config.ts",
     "e2e": "node scripts/run-e2e.mjs",
     "preview": "astro preview"

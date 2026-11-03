@@ -8,6 +8,7 @@ test('serves built Astro root with its generated CSP and static metadata', async
   expect(response?.status()).toBe(200)
   await expect(page).toHaveTitle(/Cookbook/)
   await expect(page.locator('meta[name="description"]')).toHaveAttribute('content', /recipes/i)
+  await expect(page.locator('meta[name="robots"]')).toHaveCount(0)
   await expect(page.locator('a.skip-link')).toHaveAttribute('href', '#home')
   const policies = JSON.parse(await readFile(`${process.env.PLAYWRIGHT_DIST}/static-csp.json`, 'utf8')) as Array<{ route: string; policy: string }>
   expect(response?.headers()['content-security-policy']).toBe(policies.find((policy) => policy.route === '/')?.policy)
@@ -23,6 +24,7 @@ test('serves confirmation as a static route and leaves its token untouched until
   const response = await page.goto('/auth/confirm?token=synthetic-unused-token')
   expect(response?.status()).toBe(200)
   expect(page.url()).toContain('/auth/confirm?token=synthetic-unused-token')
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', 'noindex,follow')
   const api = await page.request.get('/api/auth/me')
   expect(api.status()).toBe(401)
   expect(api.headers()['cache-control']).toContain('no-store')

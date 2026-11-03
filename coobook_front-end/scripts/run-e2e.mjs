@@ -36,18 +36,42 @@ async function makeWritableTree(path) {
 
 function start(command, args, options) {
   const child = spawn(command, args, { stdio: ['ignore', 'inherit', 'inherit'], detached: process.platform !== 'win32', ...options })
+  child.spawnError = null
+  child.on('error', (error) => { child.spawnError = error })
   children.push(child)
   return child
 }
-function waitForExit(child) { return new Promise((resolveExit) => child.once('exit', resolveExit)) }
+function waitForExit(child) {
+  if (child.spawnError) return Promise.resolve({ error: child.spawnError })
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve({ code: child.exitCode, signal: child.signalCode })
+  return new Promise((resolveExit) => {
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      child.off('error', onError)
+      child.off('exit', onExit)
+      resolveExit(result)
+    }
+    const onError = (error) => finish({ error })
+    const onExit = (code, signal) => finish({ code, signal })
+    child.once('error', onError)
+    child.once('exit', onExit)
+  })
+}
 function stopAll() {
   if (shutdownPromise) return shutdownPromise
   shutdownPromise = (async () => {
     for (const child of children.reverse()) {
-      if (child.exitCode !== null) continue
+      if (child.spawnError || child.exitCode !== null) continue
       try { process.kill(process.platform === 'win32' ? child.pid : -child.pid, 'SIGTERM') } catch {}
-      await Promise.race([waitForExit(child), new Promise((done) => setTimeout(done, 5000))])
-      if (child.exitCode === null) {
+      let timeout
+      const exited = await Promise.race([
+        waitForExit(child).then(() => true),
+        new Promise((done) => { timeout = setTimeout(() => done(false), 5000) }),
+      ])
+      clearTimeout(timeout)
+      if (!exited && child.exitCode === null && child.signalCode === null) {
         try { process.kill(process.platform === 'win32' ? child.pid : -child.pid, 'SIGKILL') } catch {}
         await waitForExit(child)
       }
@@ -68,8 +92,9 @@ async function freePort() {
 }
 async function run(command, args, options = {}) {
   const child = start(command, args, { ...options, stdio: 'inherit' })
-  const code = await new Promise((resolveExit) => child.once('exit', resolveExit))
-  if (code !== 0) throw new Error(`${command} exited with ${code}`)
+  const result = await waitForExit(child)
+  if (result.error) throw new Error(`${command} could not start`, { cause: result.error })
+  if (result.code !== 0) throw new Error(`${command} exited with ${result.code ?? `signal ${result.signal}`}`)
 }
 
 try {

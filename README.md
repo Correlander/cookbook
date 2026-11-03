@@ -71,6 +71,14 @@ Sign-in uses one-time email links and WebAuthn passkeys. Opening an email link d
 
 `COOKBOOK_PUBLIC_URL` must be the browser-facing app origin; passkeys require HTTPS outside localhost. `COOKBOOK_RP_ID` defaults to its hostname and `COOKBOOK_RP_ORIGIN` must match the public origin.
 
+For a new account that cannot receive an email sign-in link, an operator can issue a short-lived, one-time initial passkey grant while the backend is stopped. Use the exact existing account ID from the administrator user list:
+
+```sh
+podman compose run --rm --no-deps cookbook instance passkey-enrollment issue --account-id <account-id>
+```
+
+The command requires an interactive terminal, an exact confirmation, and the exclusive maintenance lock. It prints the enrollment token once; give it to the account holder through a secure channel. The token expires after 15 minutes and is stored only as a SHA-256 digest. To revoke an unused grant, run `podman compose run --rm --no-deps cookbook instance passkey-enrollment revoke --account-id <account-id>`. The account holder submits the token by POST to `/api/auth/passkey/enrollment/begin`, then submits it again with the returned `ceremony_id` and the browser's WebAuthn registration response to `/api/auth/passkey/enrollment/finish`. These endpoints require the exact configured Origin and do not create a login session; the new passkey is used for a separate sign-in. No self-service enrollment form is currently provided.
+
 Account security lists active browser sessions, showing a bounded browser identifier and expiry, and lets you revoke another session without signing out the current browser. Signing out from the current browser remains available from the account menu.
 
 Passkey enrollment/removal, administrator-role changes, and recipe ownership transfers require a sign-in from the last ten minutes. If a session is older, sign in again and retry.

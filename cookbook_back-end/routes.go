@@ -28,6 +28,8 @@ func handlerWithAuthConfig(db *sql.DB, auth authHandler, cfg config) http.Handle
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.Handle("POST /api/federation/inbox", federationInboxHandler{db: db, origin: cfg.federationOrigin, trustedProxies: cfg.trustedProxies})
+	mux.Handle("POST /api/auth/passkey/enrollment/begin", csrfProtection(auth.origin, passkeys))
+	mux.Handle("POST /api/auth/passkey/enrollment/finish", csrfProtection(auth.origin, passkeys))
 	mux.Handle("/api/auth/passkey/register/", csrfProtection(auth.origin, requireSession(db, auditChanges(db, passkeys))))
 	recentPasskeyChange := func(next http.Handler) http.Handler {
 		return csrfProtection(auth.origin, requireSession(db, auditChanges(db, requireRecentAuthentication(db, next))))

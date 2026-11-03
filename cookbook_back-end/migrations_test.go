@@ -58,14 +58,14 @@ func TestFreshDatabaseRecordsAllRegisteredMigrations(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if got := migrationVersion(t, db); got != 3 {
-		t.Fatalf("migration version=%d, want 3", got)
+	if got := migrationVersion(t, db); got != 4 {
+		t.Fatalf("migration version=%d, want 4", got)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != 3 {
-		t.Fatalf("migration ledger rows=%d err=%v, want 3", count, err)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != 4 {
+		t.Fatalf("migration ledger rows=%d err=%v, want 4", count, err)
 	}
-	for version, name := range map[int]string{1: "legacy-baseline", 2: "instance-owner-authority", 3: "recipe-publication-policy"} {
+	for version, name := range map[int]string{1: "legacy-baseline", 2: "instance-owner-authority", 3: "recipe-publication-policy", 4: "offline-passkey-enrollment"} {
 		var got string
 		if err := db.QueryRow(`SELECT name FROM schema_migrations WHERE version=?`, version).Scan(&got); err != nil || got != name {
 			t.Fatalf("migration %d name=%q err=%v, want %q", version, got, err, name)
@@ -113,6 +113,17 @@ INSERT INTO sessions(id,token_hash,user_id,expires_at,created_at,user_agent) VAL
 		db.Close()
 		t.Fatalf("pre-ledger revision count=%d err=%v", beforeRevisions, err)
 	}
+	// Reconstruct the schema shape immediately before v4, as an unversioned
+	// installation cannot already contain the passkey grant migration.
+	if _, err := db.Exec(`ALTER TABLE webauthn_ceremonies RENAME TO webauthn_ceremonies_v4;
+CREATE TABLE webauthn_ceremonies(id TEXT PRIMARY KEY,user_id TEXT REFERENCES users(id) ON DELETE CASCADE,purpose TEXT NOT NULL CHECK (purpose IN ('registration','login')),session_data TEXT NOT NULL,expires_at TEXT NOT NULL,created_at TEXT NOT NULL);
+INSERT INTO webauthn_ceremonies(id,user_id,purpose,session_data,expires_at,created_at) SELECT id,user_id,purpose,session_data,expires_at,created_at FROM webauthn_ceremonies_v4;
+DROP TABLE webauthn_ceremonies_v4;
+CREATE INDEX idx_webauthn_ceremonies_expiry ON webauthn_ceremonies(expires_at);
+DROP TABLE passkey_enrollment_grants`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(`DROP TABLE schema_migrations`); err != nil {
 		db.Close()
 		t.Fatal(err)
@@ -138,8 +149,8 @@ INSERT INTO sessions(id,token_hash,user_id,expires_at,created_at,user_agent) VAL
 	if public != 1 || admin != 1 || creator != "Claimed Creator" || title != "Preserve me" || version != 4 || sessionID != "stable-session" || revisionCount != beforeRevisions {
 		t.Fatalf("adopted data changed: public=%d admin=%d creator=%q title=%q version=%d session=%q revisions=%d", public, admin, creator, title, version, sessionID, revisionCount)
 	}
-	if got := migrationVersion(t, db); got != 3 {
-		t.Fatalf("adopted migration version=%d, want 3", got)
+	if got := migrationVersion(t, db); got != 4 {
+		t.Fatalf("adopted migration version=%d, want 4", got)
 	}
 	var owner sql.NullString
 	var generation int64
@@ -171,8 +182,8 @@ func TestInstanceOwnerMigrationPreservesV1RowsAndLeavesAuthorityUnclaimed(t *tes
 	if err := runSchemaMigrations(ctx, db, registeredSchemaMigrations()); err != nil {
 		t.Fatal(err)
 	}
-	if got := migrationVersion(t, db); got != 3 {
-		t.Fatalf("migration version=%d, want 3", got)
+	if got := migrationVersion(t, db); got != 4 {
+		t.Fatalf("migration version=%d, want 4", got)
 	}
 	var owner sql.NullString
 	var claimedAt sql.NullString
@@ -241,7 +252,7 @@ func TestFutureMigrationRunsOnceAndFailureRollsBackStepAndLedger(t *testing.T) {
 	defer db.Close()
 	fail := true
 	runs := 0
-	step := migrationTestStep(4, "test-marker", func(ctx context.Context, exec migrationExecutor) error {
+	step := migrationTestStep(5, "test-marker", func(ctx context.Context, exec migrationExecutor) error {
 		runs++
 		if _, err := exec.ExecContext(ctx, `CREATE TABLE migration_marker(value TEXT NOT NULL); INSERT INTO migration_marker(value) VALUES('applied')`); err != nil {
 			return err
@@ -255,14 +266,14 @@ func TestFutureMigrationRunsOnceAndFailureRollsBackStepAndLedger(t *testing.T) {
 	if err := runSchemaMigrations(context.Background(), db, migrations); err == nil || !strings.Contains(err.Error(), "injected migration failure") {
 		t.Fatalf("failed migration error=%v", err)
 	}
-	if migrationObjectExists(t, db, "table", "migration_marker") || migrationVersion(t, db) != 3 {
+	if migrationObjectExists(t, db, "table", "migration_marker") || migrationVersion(t, db) != 4 {
 		t.Fatal("failed migration left partial DDL/data or advanced the ledger")
 	}
 	fail = false
 	if err := runSchemaMigrations(context.Background(), db, migrations); err != nil {
 		t.Fatal(err)
 	}
-	if migrationVersion(t, db) != 4 || !migrationObjectExists(t, db, "table", "migration_marker") {
+	if migrationVersion(t, db) != 5 || !migrationObjectExists(t, db, "table", "migration_marker") {
 		t.Fatal("pending migration did not apply")
 	}
 	if err := runSchemaMigrations(context.Background(), db, migrations); err != nil {
@@ -324,7 +335,7 @@ func TestMigrationNameChecksumAndNewerVersionAreValidated(t *testing.T) {
 	}{
 		{name: "name", update: `UPDATE schema_migrations SET name='other' WHERE version=2`, wantErrSub: `name`},
 		{name: "checksum", update: `UPDATE schema_migrations SET checksum=lower(hex(randomblob(32))) WHERE version=2`, wantErrSub: `checksum mismatch`},
-		{name: "newer version", update: `UPDATE schema_migrations SET version=999 WHERE version=3`, wantErrSub: `newer than this binary`},
+		{name: "newer version", update: `UPDATE schema_migrations SET version=999 WHERE version=4`, wantErrSub: `newer than this binary`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "ledger.db")
@@ -434,8 +445,8 @@ func TestConcurrentStartupSerializesBaselineMigration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := migrationVersion(t, first); got != 3 {
-		t.Fatalf("concurrent migration version=%d, want 3", got)
+	if got := migrationVersion(t, first); got != 4 {
+		t.Fatalf("concurrent migration version=%d, want 4", got)
 	}
 }
 

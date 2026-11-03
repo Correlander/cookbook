@@ -53,6 +53,11 @@ func registeredSchemaMigrations() []schemaMigration {
 		name:     "recipe-publication-policy",
 		checksum: migrationChecksum("recipe-publication-policy", recipePublicationPolicyDDL+"\x00"+recipePublicationPolicyBackfillSQL),
 		apply:    ApplyRecipePublicationPolicyMigration,
+	}, {
+		version:  4,
+		name:     "offline-passkey-enrollment",
+		checksum: migrationChecksum("offline-passkey-enrollment", passkeyEnrollmentSchemaDDL),
+		apply:    ApplyPasskeyEnrollmentMigration,
 	}}
 }
 

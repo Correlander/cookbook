@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestInstanceOwnerCLIClaimRequiresExplicitTargetConfirmationAndExclusiveLock(t *testing.T) {
@@ -114,6 +115,53 @@ func TestInstanceOwnerCLIRequiresRecoveryReasonAndRejectsImplicitTarget(t *testi
 		if handled, err := runInstanceOwnerCLI(tc.args, strings.NewReader("CLAIM target\n"), &bytes.Buffer{}); !handled || err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("args=%v handled=%v err=%v, want error containing %q", tc.args, handled, err, tc.want)
 		}
+	}
+}
+
+func TestPasskeyEnrollmentCLIIssuesHashOnlyTokenAndRevokesIt(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "cookbook.db")
+	db := openOwnerCLITestDatabase(t, database)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,is_admin,created_at) VALUES('target','target@example.test','Target',0,'now')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COOKBOOK_DATABASE", database)
+	t.Setenv("COOKBOOK_FEDERATION_ORIGIN", "")
+	args := []string{"instance", "passkey-enrollment", "issue", "--account-id", "target"}
+	var output bytes.Buffer
+	if handled, err := runInstanceOwnerCLI(args, strings.NewReader("ISSUE PASSKEY ENROLLMENT target\n"), &output); !handled || err != nil {
+		t.Fatalf("issue handled=%v err=%v output=%q", handled, err, output.String())
+	}
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	token := lines[len(lines)-1]
+	id, digest, ok := parseEnrollmentToken(token)
+	if !ok {
+		t.Fatalf("CLI did not print one valid token: %q", output.String())
+	}
+	check := openOwnerCLITestDatabase(t, database)
+	var stored []byte
+	var expires string
+	var consumed, revoked sql.NullString
+	if err := check.QueryRow(`SELECT id,token_hash,expires_at,consumed_at,revoked_at FROM passkey_enrollment_grants`).Scan(&id, &stored, &expires, &consumed, &revoked); err != nil || !bytes.Equal(stored, digest) || consumed.Valid || revoked.Valid {
+		t.Fatalf("stored grant id=%q hash-match=%v consumed=%v revoked=%v err=%v", id, bytes.Equal(stored, digest), consumed, revoked, err)
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, expires)
+	if err != nil || time.Until(expiresAt) <= 0 || time.Until(expiresAt) > 15*time.Minute+time.Second {
+		t.Fatalf("grant expiry=%q parsed=%v err=%v, want within 15 minutes", expires, expiresAt, err)
+	}
+	if err := check.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var revokeOutput bytes.Buffer
+	if handled, err := runInstanceOwnerCLI([]string{"instance", "passkey-enrollment", "revoke", "--account-id", "target"}, strings.NewReader("REVOKE PASSKEY ENROLLMENT target\n"), &revokeOutput); !handled || err != nil {
+		t.Fatalf("revoke handled=%v err=%v output=%q", handled, err, revokeOutput.String())
+	}
+	check = openOwnerCLITestDatabase(t, database)
+	defer check.Close()
+	if _, valid, err := validEnrollmentGrant(context.Background(), check, token, time.Now().UTC()); err != nil || valid {
+		t.Fatalf("revoked token valid=%v err=%v", valid, err)
 	}
 }
 

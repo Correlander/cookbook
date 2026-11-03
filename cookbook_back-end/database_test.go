@@ -282,8 +282,8 @@ INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,
 	if version != 4 || title != "Old title" {
 		t.Fatalf("backfilled revision = version %d, title %q", version, title)
 	}
-	if got := migrationVersion(t, db); got != 3 {
-		t.Fatalf("legacy migration version=%d, want 3", got)
+	if got := migrationVersion(t, db); got != 4 {
+		t.Fatalf("legacy migration version=%d, want 4", got)
 	}
 	var privateState, publicState string
 	var federation string
@@ -313,6 +313,33 @@ INSERT INTO recipes(id,owner_id,creator_name,title,description,ingredients_json,
 	var revisionCount int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM recipe_revisions WHERE recipe_id='legacy-recipe'`).Scan(&revisionCount); err != nil || revisionCount != 1 {
 		t.Fatalf("revision count after versioned restart=%d err=%v", revisionCount, err)
+	}
+}
+
+func TestPasskeyEnrollmentMigrationPreservesExistingCeremonies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "passkey-v3.db")
+	db := rawMigrationDB(t, path)
+	if err := runSchemaMigrations(context.Background(), db, registeredSchemaMigrations()[:3]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,is_admin,created_at) VALUES('legacy-user','legacy@example.test','Legacy',0,'created');
+INSERT INTO webauthn_ceremonies(id,user_id,purpose,session_data,expires_at,created_at) VALUES('legacy-registration','legacy-user','registration','{}','2099-01-01T00:00:00Z','before-v4'),('legacy-login',NULL,'login','{}','2099-01-01T00:00:00Z','before-v4')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := runSchemaMigrations(context.Background(), db, registeredSchemaMigrations()); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM webauthn_ceremonies WHERE created_at='before-v4' AND enrollment_grant_id IS NULL`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("preserved ceremonies=%d err=%v", count, err)
+	}
+	var purpose, session string
+	if err := db.QueryRow(`SELECT purpose,session_data FROM webauthn_ceremonies WHERE id='legacy-registration'`).Scan(&purpose, &session); err != nil || purpose != "registration" || session != "{}" {
+		t.Fatalf("legacy ceremony purpose=%q session=%q err=%v", purpose, session, err)
+	}
+	var grantTable int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='passkey_enrollment_grants'`).Scan(&grantTable); err != nil || grantTable != 1 {
+		t.Fatalf("grant table=%d err=%v", grantTable, err)
 	}
 }
 

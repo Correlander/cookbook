@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
@@ -51,6 +52,10 @@ type passkeySummary struct {
 
 func (h passkeyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
+	case r.Method == http.MethodPost && r.URL.Path == "/api/auth/passkey/enrollment/begin":
+		h.enrollmentBegin(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/auth/passkey/enrollment/finish":
+		h.enrollmentFinish(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/auth/passkey/register/begin":
 		h.beginRegistration(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/auth/passkey/register/finish":
@@ -242,25 +247,42 @@ func (h passkeyHandler) remove(w http.ResponseWriter, r *http.Request, id string
 }
 
 func (h passkeyHandler) loadUser(id string) (webAuthnUser, bool) {
+	user, ok, _ := h.loadUserFrom(context.Background(), h.db, id)
+	return user, ok
+}
+
+func (h passkeyHandler) loadUserFrom(ctx context.Context, exec migrationExecutor, id string) (webAuthnUser, bool, error) {
 	var user webAuthnUser
-	if id == "" || h.db.QueryRow(`SELECT id,email,display_name FROM users WHERE id=?`, id).Scan(&user.id, &user.email, &user.displayName) != nil {
-		return webAuthnUser{}, false
+	if id == "" {
+		return webAuthnUser{}, false, nil
 	}
-	rows, err := h.db.Query(`SELECT credential_json FROM webauthn_credentials WHERE user_id=?`, id)
+	if err := exec.QueryRowContext(ctx, `SELECT id,email,display_name FROM users WHERE id=?`, id).Scan(&user.id, &user.email, &user.displayName); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return webAuthnUser{}, false, nil
+		}
+		return webAuthnUser{}, false, err
+	}
+	rows, err := exec.QueryContext(ctx, `SELECT credential_json FROM webauthn_credentials WHERE user_id=?`, id)
 	if err != nil {
-		return webAuthnUser{}, false
+		return webAuthnUser{}, false, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var encoded string
 		var stored storedWebAuthnCredential
-		if rows.Scan(&encoded) != nil || json.Unmarshal([]byte(encoded), &stored) != nil {
-			return webAuthnUser{}, false
+		if err := rows.Scan(&encoded); err != nil {
+			return webAuthnUser{}, false, err
+		}
+		if err := json.Unmarshal([]byte(encoded), &stored); err != nil {
+			return webAuthnUser{}, false, err
 		}
 		stored.Credential.Flags = webauthn.NewCredentialFlags(stored.Flags)
 		user.credentials = append(user.credentials, stored.Credential)
 	}
-	return user, rows.Err() == nil
+	if err := rows.Err(); err != nil {
+		return webAuthnUser{}, false, err
+	}
+	return user, true, nil
 }
 
 func (h passkeyHandler) loadDiscoverableUser(rawID, userHandle []byte) (webauthn.User, error) {
@@ -336,6 +358,10 @@ func (h passkeyHandler) consumeCeremony(w http.ResponseWriter, r *http.Request, 
 }
 
 func (h passkeyHandler) storeCredential(userID string, credential webauthn.Credential, name string) error {
+	return storeCredentialWithExecutor(context.Background(), h.db, userID, credential, name)
+}
+
+func storeCredentialWithExecutor(ctx context.Context, exec migrationExecutor, userID string, credential webauthn.Credential, name string) error {
 	name, err := normalizePasskeyName(name)
 	if err != nil {
 		return err
@@ -345,7 +371,7 @@ func (h passkeyHandler) storeCredential(userID string, credential webauthn.Crede
 	if err != nil {
 		return err
 	}
-	result, err := h.db.Exec(`INSERT INTO webauthn_credentials(credential_id,user_id,name,credential_json,created_at) VALUES(?,?,?,?,?) ON CONFLICT(credential_id) DO NOTHING`, credential.ID, userID, name, string(encoded), timestamp())
+	result, err := exec.ExecContext(ctx, `INSERT INTO webauthn_credentials(credential_id,user_id,name,credential_json,created_at) VALUES(?,?,?,?,?) ON CONFLICT(credential_id) DO NOTHING`, credential.ID, userID, name, string(encoded), timestamp())
 	if err != nil {
 		return err
 	}

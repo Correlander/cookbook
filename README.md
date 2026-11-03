@@ -16,7 +16,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the data model, access-control rules,
 
 Requirements: Go 1.24+, Node.js 22.23.4+, and npm.
 
-1. Copy `cookbook_back-end/.env.example` to `cookbook_back-end/.env` and configure the public URL and mail delivery. The Go service reads environment variables directly; load the file with your shell or preferred environment loader.
+1. Copy `cookbook_back-end/.env.example` to `cookbook_back-end/.env` and configure the public URL. Email delivery is optional; to disable it, leave `COOKBOOK_EMAIL_COMMAND` empty and clear all four `COOKBOOK_SMTP_*` values. The Go service reads environment variables directly; load the file with your shell or preferred environment loader.
 2. Run the API from `cookbook_back-end` with `go run .` (defaults to `127.0.0.1:8000`). It initializes the SQLite schema and serves API/health routes only.
 3. In a second terminal, run `npm ci && npm run dev` from `coobook_front-end`. Astro serves the development UI at `http://localhost:4321` and proxies API requests to the Go service.
 
@@ -24,14 +24,14 @@ Run backend checks with `go test ./...` and `go vet ./...` from `cookbook_back-e
 
 ## Self-host with Docker Compose
 
-1. Copy `.env.example` to `.env`, then set `COOKBOOK_PUBLIC_URL`, `COOKBOOK_RP_ID`, `COOKBOOK_RP_ORIGIN`, and the SMTP host/from values. SMTP delivery requires STARTTLS; credentials are optional for relays that do not require authentication. Alternatively, configure `COOKBOOK_EMAIL_COMMAND` with an executable in the container that accepts the documented JSON payload on stdin. SMTP connections and mail commands have a 30-second deadline.
-2. Set `COOKBOOK_ADMIN_EMAIL` and optionally `COOKBOOK_ADMIN_NAME` for the first startup. This creates the first administrator account. Leave the email challenge/sign-in flow configured before making the instance reachable.
+1. Copy `cookbook_back-end/.env.example` to `cookbook_back-end/.env` and set `COOKBOOK_PUBLIC_URL`, `COOKBOOK_RP_ID`, and `COOKBOOK_RP_ORIGIN`. Email delivery is optional. To disable it, leave `COOKBOOK_EMAIL_COMMAND` empty and clear all four `COOKBOOK_SMTP_*` values, including the example host/from values. To enable email-link sign-in, configure either SMTP host/from values (STARTTLS; relay credentials are optional) or `COOKBOOK_EMAIL_COMMAND` with an executable in the container that accepts the documented JSON payload on stdin. SMTP connections and mail commands have a 30-second deadline. With both delivery options unset, the server starts normally and email-link requests return `503 email_unavailable`; passkey authentication remains available.
+2. Set `COOKBOOK_ADMIN_EMAIL` and optionally `COOKBOOK_ADMIN_NAME` for the first startup. This creates the first administrator account even when no email delivery is configured.
 3. Run `docker compose up --build -d`. Compose binds the service to `127.0.0.1:8000`; put a trusted HTTPS reverse proxy in front. The `cookbook-data` volume stores SQLite data at `/data/cookbook.db` and recipe images under `/data/media`.
 4. After setup, remove `COOKBOOK_ADMIN_EMAIL` from `.env`. It provisions an account only when the instance has no users; it will not recreate or promote an account on an existing instance, including one with no administrators.
 
 ## Instance owner operations
 
-The first instance owner is selected explicitly from an existing account. While the API is running, an administrator can obtain account IDs from the admin user list. Stop the backend before an offline owner command; the service and CLI coordinate through a persistent Linux advisory lock, and the CLI fails without opening the database if the service still holds its lock.
+The first instance owner is selected explicitly from an existing account. While the API is running, an administrator can obtain account IDs from the admin user list. If email sign-in is unavailable, stop the backend and use the read-only local account lookup described below to confirm an account ID. Offline commands coordinate through a persistent Linux advisory lock and fail while the service holds its lock.
 
 For Compose, stop the backend and run the one-shot command against the same data volume:
 
@@ -40,6 +40,15 @@ podman compose stop cookbook
 podman compose run --rm --no-deps cookbook instance owner claim --account-id <account-id>
 podman compose up -d cookbook
 ```
+
+When the first administrator cannot receive an email link, the operator can discover that bootstrapped account's ID locally without querying SQLite manually. Stop the backend, then run the exact-email lookup against the same Compose data volume:
+
+```sh
+podman compose stop cookbook
+podman compose run --rm --no-deps -T cookbook instance account lookup --email admin@example.test
+```
+
+The command requires an exact email match and prints the account ID, email, and display name for confirmation. It opens the database read-only, makes no account changes, and does not report or infer email verification or roles. Use the returned ID with the initial passkey enrollment command below; that grant is separately confirmed and does not change account roles.
 
 The command prompts for an exact confirmation. Claiming changes no administrator role, account credentials, content ownership or private-content access. After claim, only the instance owner can grant or revoke administrator roles or stage/activate the local federation signing-key rotation. Existing administrators retain ordinary admin features and peer management, but lose those instance-identity controls. Before the first claim, existing administrators retain their current role and federation identity controls. The canonical federation origin remains a host-operator startup setting (`COOKBOOK_FEDERATION_ORIGIN`); it is not changed through admin settings.
 
@@ -67,11 +76,11 @@ Signed-in users can download their owned, non-deleted recipes and owned cookbook
 
 ## Authentication and registration
 
-Sign-in uses one-time email links and WebAuthn passkeys. Opening an email link displays a confirmation page; the token is consumed only after the user chooses “Continue to Cookbook,” so link preloading alone does not redeem it. Email sign-in requests are limited to five per email address per hour and 30 per client IP per hour; passkey ceremony starts are limited to 30 per client IP per hour, and passkey login completions are limited to 60 per client IP per hour. `COOKBOOK_TRUSTED_PROXIES` accepts comma-separated proxy CIDRs; only when the connecting peer matches one of those ranges does the service use the trusted proxy chain in `X-Forwarded-For`. Leave it unset unless the network boundary is controlled.
+Sign-in uses one-time email links when email delivery is configured, and WebAuthn passkeys. With email delivery disabled, email-link requests return `503 email_unavailable`; passkey login and enrollment remain available. Opening an email link displays a confirmation page; the token is consumed only after the user chooses “Continue to Cookbook,” so link preloading alone does not redeem it. Email sign-in requests are limited to five per email address per hour and 30 per client IP per hour when enabled; passkey ceremony starts are limited to 30 per client IP per hour, and passkey login completions are limited to 60 per client IP per hour. `COOKBOOK_TRUSTED_PROXIES` accepts comma-separated proxy CIDRs; only when the connecting peer matches one of those ranges does the service use the trusted proxy chain in `X-Forwarded-For`. Leave it unset unless the network boundary is controlled.
 
 `COOKBOOK_PUBLIC_URL` must be the browser-facing app origin; passkeys require HTTPS outside localhost. `COOKBOOK_RP_ID` defaults to its hostname and `COOKBOOK_RP_ORIGIN` must match the public origin.
 
-For a new account that cannot receive an email sign-in link, an operator can issue a short-lived, one-time initial passkey grant while the backend is stopped. Use the exact existing account ID from the administrator user list:
+For an account that cannot receive an email sign-in link, an operator can issue a short-lived, one-time initial passkey grant while the backend is stopped. Use the exact existing account ID from the administrator user list or the read-only local lookup above:
 
 ```sh
 podman compose run --rm --no-deps cookbook instance passkey-enrollment issue --account-id <account-id>
@@ -99,7 +108,7 @@ Recipe owners can move recipes to their private trash and restore them. `COOKBOO
 
 Administrators can separately set recipe revision and security audit retention to 7, 30, 90, or 365 days, or unlimited. Both default to 365 days. Older revisions are deleted in bounded batches while each recipe's current snapshot is retained; audit events are also removed in bounded batches. The current settings are visible in the administrator dashboard.
 
-`COOKBOOK_ADMIN_EMAIL` bootstraps the first administrator on startup if no administrator exists. The account can sign in through its verified email address. Keep control of the environment file and email account. Administrators can grant or revoke administrator access in the Accounts section; the interface requires another administrator to change your own role, and the API protects the last administrator.
+`COOKBOOK_ADMIN_EMAIL` bootstraps the first administrator on startup only when the instance has no user accounts. It neither creates an account nor promotes an existing account on a populated instance. When email delivery is configured, the account can sign in through its verified email address. Keep control of the environment file and email account. Administrators can grant or revoke administrator access in the Accounts section; the interface requires another administrator to change your own role, and the API protects the last administrator.
 
 For command-based email delivery, Cookbook writes one JSON object to the executable's stdin:
 

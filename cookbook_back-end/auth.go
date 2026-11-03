@@ -88,6 +88,10 @@ func normalizeOrigin(raw string) (string, error) {
 }
 
 func (h authHandler) requestEmail(w http.ResponseWriter, r *http.Request) {
+	if h.sender == nil {
+		writeError(w, http.StatusServiceUnavailable, "email_unavailable")
+		return
+	}
 	allowed, err := allowAuthRequest(h.db, r, "email-link", 30, time.Hour, h.trustedProxies)
 	if err != nil {
 		writeError(w, 500, "storage_error")
@@ -306,12 +310,17 @@ func (h authHandler) me(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 401, "unauthorized")
 		return
 	}
-	var u user
-	if err := h.db.QueryRow(`SELECT id,email,display_name FROM users WHERE id=?`, uid).Scan(&u.ID, &u.Email, &u.DisplayName); err != nil {
+	var currentUser struct {
+		ID          string `json:"id"`
+		Email       string `json:"email"`
+		DisplayName string `json:"display_name"`
+		IsAdmin     bool   `json:"is_admin"`
+	}
+	if err := h.db.QueryRow(`SELECT id,email,display_name,is_admin FROM users WHERE id=?`, uid).Scan(&currentUser.ID, &currentUser.Email, &currentUser.DisplayName, &currentUser.IsAdmin); err != nil {
 		writeError(w, 401, "unauthorized")
 		return
 	}
-	writeJSON(w, 200, u)
+	writeJSON(w, 200, currentUser)
 }
 func (h authHandler) logout(w http.ResponseWriter, r *http.Request) {
 	uid, ok := sessionUser(h.db, r)
@@ -337,19 +346,22 @@ func authConfig(db *sql.DB) (authHandler, error) {
 		return authHandler{}, errors.New("COOKBOOK_PUBLIC_URL must use HTTPS outside local development")
 	}
 	driver := strings.TrimSpace(os.Getenv("COOKBOOK_EMAIL_COMMAND"))
+	host := strings.TrimSpace(os.Getenv("COOKBOOK_SMTP_HOST"))
+	from := strings.TrimSpace(os.Getenv("COOKBOOK_SMTP_FROM"))
+	username := os.Getenv("COOKBOOK_SMTP_USERNAME")
+	password := os.Getenv("COOKBOOK_SMTP_PASSWORD")
 	var sender emailSender
 	if driver != "" {
+		if host != "" || from != "" || username != "" || password != "" {
+			return authHandler{}, errors.New("configure either COOKBOOK_EMAIL_COMMAND or SMTP delivery, not both")
+		}
 		if _, err := exec.LookPath(driver); err != nil {
 			return authHandler{}, errors.New("COOKBOOK_EMAIL_COMMAND executable was not found")
 		}
 		sender = commandEmailSender{command: driver}
-	} else {
-		host := strings.TrimSpace(os.Getenv("COOKBOOK_SMTP_HOST"))
-		from := strings.TrimSpace(os.Getenv("COOKBOOK_SMTP_FROM"))
-		username := os.Getenv("COOKBOOK_SMTP_USERNAME")
-		password := os.Getenv("COOKBOOK_SMTP_PASSWORD")
+	} else if host != "" || from != "" || username != "" || password != "" {
 		if host == "" || from == "" {
-			return authHandler{}, errors.New("configure COOKBOOK_EMAIL_COMMAND or COOKBOOK_SMTP_HOST and COOKBOOK_SMTP_FROM")
+			return authHandler{}, errors.New("COOKBOOK_SMTP_HOST and COOKBOOK_SMTP_FROM must both be set")
 		}
 		parsedFrom, parseErr := mail.ParseAddress(from)
 		if parseErr != nil || parsedFrom.Address != from {

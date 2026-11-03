@@ -53,12 +53,16 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
     await writeFile(join(dist, 'auth/enroll.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Passkey enrollment</title></head></html>')
     await writeFile(join(dist, 'account/security.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Account security</title></head></html>')
     await writeFile(join(dist, 'admin/settings.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Admin settings</title></head></html>')
+    await writeFile(join(dist, 'library.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Library</title></head></html>')
+    await writeFile(join(dist, 'recipe.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Recipe</title></head></html>')
     await writeFile(join(dist, 'static-csp.json'), JSON.stringify([
       { route: '/', policy: "default-src 'self'; script-src 'self'" },
       { route: '/auth/confirm', policy: "default-src 'self'; style-src 'self'" },
       { route: '/auth/enroll', policy: "default-src 'self'; script-src 'self'" },
       { route: '/account/security', policy: "default-src 'self'; img-src 'self'" },
       { route: '/admin/settings', policy: "default-src 'self'; connect-src 'self'" },
+      { route: '/library', policy: "default-src 'self'; script-src 'self'" },
+      { route: '/recipe', policy: "default-src 'self'; img-src 'self'" },
     ]))
     await writeFile(join(temp, 'secret.txt'), 'outside static root')
     child = spawn(process.execPath, [join(root, 'coobook_front-end/scripts/static-host.mjs')], {
@@ -98,6 +102,18 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
     ]) {
       for (const alias of [page.path, `${page.path}.html`]) {
         const response = await fetch(`${base}${alias}?view=security`)
+        assert.equal(response.status, 200, alias)
+        assert.match(await response.text(), page.title)
+        assert.equal(response.headers.get('cache-control'), 'no-store')
+        assert.equal(response.headers.get('content-security-policy'), page.policy)
+      }
+    }
+    for (const page of [
+      { path: '/library', policy: "default-src 'self'; script-src 'self'", title: /Library/ },
+      { path: '/recipe', policy: "default-src 'self'; img-src 'self'", title: /Recipe/ },
+    ]) {
+      for (const alias of [page.path, `${page.path}.html`]) {
+        const response = await fetch(`${base}${alias}?id=synthetic-id`)
         assert.equal(response.status, 200, alias)
         assert.match(await response.text(), page.title)
         assert.equal(response.headers.get('cache-control'), 'no-store')

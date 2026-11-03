@@ -11,6 +11,7 @@ import AppNavigation from "./app/AppNavigation.tsx";
 import RecipeDialog from "./features/recipes/RecipeDialog.tsx";
 import RecipeForm from "./features/recipes/RecipeForm.tsx";
 import Icon from "./features/recipes/RecipeIcon.tsx";
+import RecipeCardContents from "./features/recipes/RecipeCardContents.tsx";
 import type { RemoteRecipe } from "./features/recipes/recipeUiTypes.ts";
 import type {
   AdminInvitation,
@@ -45,6 +46,9 @@ type RecipeCardItem = {
   id: string;
   title: string;
   creator_name: string;
+  owner_id?: string;
+  source_recipe_id?: string;
+  source_origin?: string;
   image?: string;
   steps: Array<{ text: string }>;
 };
@@ -52,33 +56,38 @@ type RecipeCardItem = {
 function RecipeCard<T extends RecipeCardItem>({
   recipe,
   onOpen,
+  currentUserID,
+  relationshipLabel,
 }: {
   recipe: T;
   onOpen: (recipe: T) => void;
+  currentUserID?: string | null;
+  relationshipLabel?: string;
 }) {
+  const relationship =
+    relationshipLabel ??
+    (recipe.source_origin
+      ? `From ${recipe.source_origin}`
+      : currentUserID && recipe.owner_id === currentUserID
+        ? recipe.source_recipe_id
+          ? "Owned by you · Your copy"
+          : "Owned by you"
+        : currentUserID
+          ? "Available to you"
+          : "Public on this instance");
   return (
     <button
       className="recipe-card"
       onClick={() => onOpen(recipe)}
       aria-label={`Open ${recipe.title}`}
     >
-      {recipe.image ? (
-        <img src={recipe.image} alt="" loading="lazy" />
-      ) : (
-        <div className="recipe-card__placeholder" aria-hidden="true">
-          <Icon name="leaf" size={34} />
-        </div>
-      )}
-      <span className="recipe-card__body">
-        <span className="recipe-card__category">
-          {recipe.creator_name || "Recipe"}
-        </span>
-        <strong>{recipe.title}</strong>
-        <span className="recipe-card__meta">
-          <Icon name="clock" size={15} />
-          {recipe.steps?.length ? `${recipe.steps.length} steps` : "Recipe"}
-        </span>
-      </span>
+      <RecipeCardContents
+        title={recipe.title}
+        creatorName={recipe.creator_name}
+        image={recipe.image}
+        stepCount={recipe.steps?.length ?? 0}
+        relationshipLabel={relationship}
+      />
     </button>
   );
 }
@@ -353,6 +362,7 @@ function HomeApp({ pathname }: { pathname: string }) {
                     key={recipe.id}
                     recipe={recipe}
                     onOpen={setSelectedRemote}
+                    relationshipLabel={`From ${recipe.source_origin}`}
                   />
                 ))}
               </div>
@@ -370,7 +380,12 @@ function HomeApp({ pathname }: { pathname: string }) {
           addIcon={<Icon name="arrow" size={15} />}
           searchIcon={<Icon name="search" size={25} />}
           renderRecipe={(recipe, onOpen) => (
-            <RecipeCard key={recipe.id} recipe={recipe} onOpen={onOpen} />
+            <RecipeCard
+              key={recipe.id}
+              recipe={recipe}
+              onOpen={onOpen}
+              currentUserID={currentUser?.id}
+            />
           )}
         />
         {!signedIn && (
@@ -640,7 +655,7 @@ function CookbookDashboard({
       <div className="section-heading">
         <div>
           <span className="eyebrow">Your collection</span>
-          <h2>My cookbooks</h2>
+          <h2>Cookbooks you can access</h2>
         </div>
         <button className="text-link" onClick={() => setCreateOpen(true)}>
           Create cookbook <Icon name="arrow" size={15} />
@@ -915,6 +930,7 @@ function CookbookDetail({ book, onClose, onOpenRecipe }: CookbookDetailProps) {
                 key={recipe.id}
                 recipe={recipe}
                 onOpen={onOpenRecipe}
+                relationshipLabel={`In ${book.title}`}
               />
             ))}
           </div>

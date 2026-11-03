@@ -93,6 +93,47 @@ export interface PublicRecipeContent {
   tags: string[];
 }
 
+export interface PublicRecipeDetail extends PublicRecipeContent {
+  id: string;
+  creator_name: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  image?: string;
+}
+
+export interface RecipeBookmarkTarget {
+  local_recipe_id?: string;
+  remote_object_uri?: string;
+}
+
+export interface RemoteRecipeReadView {
+  object_uri: string;
+  source_origin: string;
+  source_recipe_id: string;
+  creator_name: string;
+  recipe: PublicRecipeContent;
+  sequence: number;
+  updated_at: string;
+}
+
+export interface RecipeBookmarkView {
+  id: string;
+  target_kind: "local" | "remote";
+  target?: RecipeBookmarkTarget;
+  availability: "available" | "unavailable";
+  local_recipe?: Recipe;
+  remote_recipe?: RemoteRecipeReadView;
+  created_at: string;
+}
+
+export interface RecipeBookmarkPage {
+  items: RecipeBookmarkView[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface RemoteRecipeListItem {
   object_id: string;
   source_origin: string;

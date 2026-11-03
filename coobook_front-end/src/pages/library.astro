@@ -1,0 +1,11 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro'
+import LibraryRoot from '../app/LibraryRoot.tsx'
+
+const title = 'Library — Cookbook'
+const description = 'Browse recipes you can access and references you have saved.'
+---
+
+<BaseLayout title={title} description={description} robots="noindex,nofollow">
+  <LibraryRoot client:load />
+</BaseLayout>

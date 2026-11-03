@@ -8,6 +8,8 @@ const pages = [
   { file: 'auth/enroll.html', route: '/auth/enroll' },
   { file: 'account/security.html', route: '/account/security' },
   { file: 'admin/settings.html', route: '/admin/settings' },
+  { file: 'library.html', route: '/library' },
+  { file: 'recipe.html', route: '/recipe' },
 ]
 const defaults = {
   'default-src': ["'self'"],

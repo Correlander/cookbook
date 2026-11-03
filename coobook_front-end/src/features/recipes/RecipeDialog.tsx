@@ -1,9 +1,16 @@
 import { lazy, useEffect, useRef, useState } from "react";
 import FeatureIsland from "../../components/FeatureIsland.tsx";
-import type { Recipe, RecipeRevision, RecipeRevisionDiff } from "../../apiModels";
+import type {
+  PublicRecipeDetail,
+  Recipe,
+  RecipeBookmarkView,
+  RecipeRevision,
+  RecipeRevisionDiff,
+} from "../../apiModels";
 import { errorMessage } from "../../apiModels";
 import { scaleQuantity } from "../../quantity.ts";
 import useModalFocus from "../../useModalFocus.ts";
+import BookmarkAction from "../library/BookmarkAction.tsx";
 import Icon from "./RecipeIcon.tsx";
 import type { RemoteRecipe } from "./recipeUiTypes.ts";
 
@@ -11,6 +18,12 @@ const CookingMode = lazy(() => import("../../CookingMode.tsx"));
 const RecipePublicationPanel = lazy(
   () => import("./RecipePublicationPanel.tsx"),
 );
+
+function isLocalRecipe(
+  recipe: Recipe | PublicRecipeDetail | RemoteRecipe,
+): recipe is Recipe {
+  return "can_edit" in recipe;
+}
 
 async function apiFailure(
   response: Response,
@@ -162,7 +175,7 @@ function RecipeHistory({ recipe, onRestored }: RecipeHistoryProps) {
   );
 }
 interface RecipeDialogProps {
-  recipe: Recipe | RemoteRecipe | null;
+  recipe: Recipe | PublicRecipeDetail | RemoteRecipe | null;
   currentUserID: string | null;
   onClose: () => void;
   onEdit: (recipe: Recipe) => void;
@@ -172,6 +185,15 @@ interface RecipeDialogProps {
   canEdit: boolean;
   canDelete: boolean;
   canFork: boolean;
+  presentation?: "dialog" | "page";
+  publicRead?: boolean;
+  bookmark?: RecipeBookmarkView;
+  onBookmarkChange?: (
+    bookmark: RecipeBookmarkView | null,
+    created?: boolean,
+    removed?: RecipeBookmarkView,
+  ) => void;
+  onCopied?: (recipe: Recipe) => void;
 }
 
 function RecipeDialog({
@@ -185,6 +207,11 @@ function RecipeDialog({
   canEdit,
   canDelete,
   canFork,
+  presentation = "dialog",
+  publicRead = false,
+  bookmark,
+  onBookmarkChange,
+  onCopied,
 }: RecipeDialogProps) {
   const dialogRef = useRef<HTMLElement>(null);
   useModalFocus(
@@ -192,7 +219,7 @@ function RecipeDialog({
     () => {
       if (!document.querySelector("[data-cooking-mode]")) onClose();
     },
-    Boolean(recipe),
+    Boolean(recipe) && presentation === "dialog",
   );
   const [historyOpen, setHistoryOpen] = useState(false),
     [transferEmail, setTransferEmail] = useState(""),
@@ -220,8 +247,13 @@ function RecipeDialog({
     })) || [];
   if (!recipe) return null;
   const currentRecipe = recipe;
+  const isRemote = !("version" in currentRecipe);
+  const localRecipe = isLocalRecipe(currentRecipe);
+  const bookmarkTarget = isRemote
+    ? { remote_object_uri: currentRecipe.id }
+    : { local_recipe_id: currentRecipe.id };
   async function moveToTrash(): Promise<void> {
-    if (!("version" in currentRecipe)) return;
+    if (!isLocalRecipe(currentRecipe)) return;
     if (!window.confirm(`Move “${currentRecipe.title}” to your trash?`)) return;
     setDeleting(true);
     setDeleteError("");
@@ -235,27 +267,24 @@ function RecipeDialog({
       setDeleting(false);
     }
   }
-  return (
-    <div
-      className="dialog-backdrop"
-      role="presentation"
-      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
-    >
+  const content = (
       <section
         ref={dialogRef}
         tabIndex={-1}
-        className="recipe-dialog"
-        role="dialog"
-        aria-modal="true"
+        className={`recipe-dialog ${presentation === "page" ? "mx-auto max-h-none!" : ""}`}
+        role={presentation === "dialog" ? "dialog" : undefined}
+        aria-modal={presentation === "dialog" ? true : undefined}
         aria-labelledby="dialog-title"
       >
-        <button
-          className="icon-button dialog-close"
-          aria-label="Close recipe"
-          onClick={onClose}
-        >
-          <Icon name="close" />
-        </button>
+        {presentation === "dialog" && (
+          <button
+            className="icon-button dialog-close"
+            aria-label="Close recipe"
+            onClick={onClose}
+          >
+            <Icon name="close" />
+          </button>
+        )}
         {"image" in recipe && recipe.image ? (
           <img className="recipe-dialog__image" src={recipe.image} alt="" />
         ) : (
@@ -263,10 +292,21 @@ function RecipeDialog({
         )}
         <div className="recipe-dialog__content">
           <span className="eyebrow">
-            {recipe.creator_name || "Cookbook recipe"}
+            {recipe.creator_name ? `By ${recipe.creator_name}` : "Cookbook recipe"}
           </span>
           <h2 id="dialog-title">{recipe.title}</h2>
           <p>{recipe.description}</p>
+          {currentUserID && localRecipe && currentRecipe.owner_id === currentUserID ? (
+            <p className="dialog-note">
+              {currentRecipe.source_recipe_id
+                ? "Owned by you · Your copy"
+                : "Owned by you"}
+            </p>
+          ) : publicRead ? (
+            <p className="dialog-note">Public on this instance</p>
+          ) : !isRemote ? (
+            <p className="dialog-note">Available to you</p>
+          ) : null}
           {"source_recipe_id" in recipe && recipe.source_recipe_id && (
             <p className="dialog-note">
               A copy of a recipe by {recipe.creator_name}.
@@ -293,14 +333,14 @@ function RecipeDialog({
               ))}
             </p>
           )}
-          {canEdit && "version" in recipe && (
-            <button className="text-link" onClick={() => onEdit(recipe)}>
+          {canEdit && localRecipe && (
+            <button className="text-link" onClick={() => onEdit(currentRecipe)}>
               Edit recipe
             </button>
           )}
-          {"version" in recipe &&
+          {localRecipe &&
             Boolean(currentUserID) &&
-            recipe.owner_id === currentUserID && (
+            currentRecipe.owner_id === currentUserID && (
               <button
                 className="text-link"
                 type="button"
@@ -310,9 +350,9 @@ function RecipeDialog({
               </button>
             )}
           {publicationOpen &&
-            "version" in recipe &&
+            localRecipe &&
             Boolean(currentUserID) &&
-            recipe.owner_id === currentUserID && (
+            currentRecipe.owner_id === currentUserID && (
               <FeatureIsland name="Recipe publication" loading="publication settings">
                 <RecipePublicationPanel
                   recipeId={recipe.id}
@@ -335,8 +375,12 @@ function RecipeDialog({
                   );
                   if (!response.ok)
                     throw new Error("Could not save a copy of this recipe.");
-                  onClose();
-                  window.location.hash = "my-cookbooks";
+                  const copied = (await response.json()) as Recipe;
+                  if (onCopied) onCopied(copied);
+                  else {
+                    onClose();
+                    window.location.hash = "my-cookbooks";
+                  }
                 } catch (error: unknown) {
                   setDeleteError(
                     errorMessage(
@@ -347,8 +391,22 @@ function RecipeDialog({
                 }
               }}
             >
-              Save a copy
+              Create a copy
             </button>
+          )}
+          <BookmarkAction
+            currentUserID={currentUserID}
+            target={bookmarkTarget}
+            bookmark={bookmark}
+            onChange={onBookmarkChange}
+          />
+          {!isRemote && (
+            <a
+              className="text-link"
+              href={`/recipe?id=${encodeURIComponent(recipe.id)}`}
+            >
+              Open recipe page
+            </a>
           )}
           {recipe.steps?.length > 0 && (
             <button
@@ -449,8 +507,8 @@ function RecipeDialog({
               {deleteError}
             </p>
           )}
-          {historyOpen && "version" in recipe && (
-            <RecipeHistory recipe={recipe} onRestored={onRestored} />
+          {historyOpen && localRecipe && (
+            <RecipeHistory recipe={currentRecipe} onRestored={onRestored} />
           )}
           {recipe.servings > 0 && (
             <div className="servings-control">
@@ -490,8 +548,8 @@ function RecipeDialog({
             </div>
           </div>
           <p className="dialog-note">
-            {recipe.source_origin
-              ? `Public copy from ${recipe.source_origin}.`
+            {isRemote && "source_origin" in recipe
+              ? `From ${recipe.source_origin}. This saved snapshot is read-only.`
               : "Recipe details from this Cookbook instance."}
           </p>
         </div>
@@ -508,6 +566,16 @@ function RecipeDialog({
           </FeatureIsland>
         )}
       </section>
+  );
+  return presentation === "page" ? (
+    <div className="recipe-detail-view">{content}</div>
+  ) : (
+    <div
+      className="dialog-backdrop"
+      role="presentation"
+      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
+    >
+      {content}
     </div>
   );
 }

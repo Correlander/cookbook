@@ -7,7 +7,9 @@ interface RecipeCollectionProps {
   query: string;
   feed: RecipeFeed;
   onOpenRecipe: (recipe: RecipeFeedEntry) => void;
-  onCreateRecipe: () => void;
+  onCreateRecipe?: () => void;
+  heading?: string;
+  emptyMessage?: string;
   renderRecipe: (
     recipe: RecipeFeedEntry,
     onOpen: (recipe: RecipeFeedEntry) => void,
@@ -22,6 +24,8 @@ export default function RecipeCollection({
   feed,
   onOpenRecipe,
   onCreateRecipe,
+  heading,
+  emptyMessage,
   renderRecipe,
   addIcon,
   searchIcon,
@@ -56,9 +60,9 @@ export default function RecipeCollection({
           <span className="eyebrow">
             {signedIn ? "From your kitchen" : "A few good things"}
           </span>
-          <h2>{signedIn ? "Your recipes" : "Find your next favorite"}</h2>
+          <h2>{heading ?? (signedIn ? "Recipes you can access" : "Find your next favorite")}</h2>
         </div>
-        {signedIn && (
+        {signedIn && onCreateRecipe && (
           <button className="text-link" onClick={onCreateRecipe}>
             Add a recipe {addIcon}
           </button>
@@ -94,7 +98,7 @@ export default function RecipeCollection({
       ) : (
         <div className="empty-state">
           {searchIcon}
-          <p>No recipes match “{query}”. Try another search.</p>
+          <p>{emptyMessage ?? `No recipes match “${query}”. Try another search.`}</p>
         </div>
       )}
     </section>

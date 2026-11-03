@@ -20,6 +20,10 @@ const pageAliases = new Map([
   ['account/security.html', { file: 'account/security.html', route: '/account/security' }],
   ['admin/settings', { file: 'admin/settings.html', route: '/admin/settings' }],
   ['admin/settings.html', { file: 'admin/settings.html', route: '/admin/settings' }],
+  ['library', { file: 'library.html', route: '/library' }],
+  ['library.html', { file: 'library.html', route: '/library' }],
+  ['recipe', { file: 'recipe.html', route: '/recipe' }],
+  ['recipe.html', { file: 'recipe.html', route: '/recipe' }],
 ])
 
 const server = createServer(async (request, response) => {

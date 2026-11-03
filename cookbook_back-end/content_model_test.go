@@ -38,9 +38,6 @@ func TestRecipePublicationPolicyMigrationBackfillsV2WithoutChangingLegacyRows(t 
 		t.Fatal(err)
 	}
 	migrations := registeredSchemaMigrations()
-	if len(migrations) != 4 {
-		t.Fatalf("registered migrations=%d, want 4", len(migrations))
-	}
 	if err := runSchemaMigrations(ctx, db, migrations[:2]); err != nil {
 		t.Fatal(err)
 	}
@@ -69,6 +66,9 @@ INSERT INTO federation_outbox(id,peer_origin,event_id,object_id,sequence,payload
 	}
 	if err := runSchemaMigrations(ctx, db, migrations); err != nil {
 		t.Fatal(err)
+	}
+	if got, want := migrationVersion(t, db), migrations[len(migrations)-1].version; got != want {
+		t.Fatalf("migration version=%d, want latest registered version %d", got, want)
 	}
 
 	wantState := map[string]RecipePublicationState{
@@ -143,8 +143,8 @@ INSERT INTO federation_outbox(id,peer_origin,event_id,object_id,sequence,payload
 		t.Fatalf("policy rows after restart=%d err=%v, want %d", policyCount, err, beforeRecipes)
 	}
 	var versionAfterRestart int
-	if err := db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&versionAfterRestart); err != nil || versionAfterRestart != 4 {
-		t.Fatalf("migration version after restart=%d err=%v, want 4", versionAfterRestart, err)
+	if err := db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&versionAfterRestart); err != nil || versionAfterRestart != migrations[len(migrations)-1].version {
+		t.Fatalf("migration version after restart=%d err=%v, want latest registered version %d", versionAfterRestart, err, migrations[len(migrations)-1].version)
 	}
 }
 

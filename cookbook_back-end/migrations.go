@@ -58,6 +58,11 @@ func registeredSchemaMigrations() []schemaMigration {
 		name:     "offline-passkey-enrollment",
 		checksum: migrationChecksum("offline-passkey-enrollment", passkeyEnrollmentSchemaDDL),
 		apply:    ApplyPasskeyEnrollmentMigration,
+	}, {
+		version:  5,
+		name:     "person-actor-identity",
+		checksum: migrationChecksum("person-actor-identity", personActorSchemaDDL),
+		apply:    ApplyPersonActorMigration,
 	}}
 }
 

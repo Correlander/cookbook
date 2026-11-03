@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import useModalFocus from "./useModalFocus.ts";
-import type { PublicCookbook, PublicRecipe } from "./apiModels";
+import type { PublicCookbook, PublicCookbookRecipe } from "./apiModels";
 import { errorMessage } from "./apiModels";
+import {
+  COOKBOOK_PAGE_SIZE,
+  listPublicCookbookRecipes,
+  listPublicCookbooks,
+} from "./features/cookbooks/cookbookApi.ts";
 
 export default function PublicCookbooks() {
   const [query, setQuery] = useState("");
@@ -19,18 +24,12 @@ export default function PublicCookbooks() {
     let active = true;
     setLoading(true);
     setError("");
-    const params = new URLSearchParams({ limit: "24", offset: "0" });
-    if (query.trim()) params.set("q", query.trim());
-    fetch(`/api/public/cookbooks?${params}`)
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Public cookbooks are unavailable.");
-        return response.json() as Promise<PublicCookbook[]>;
-      })
+    listPublicCookbooks(query, 0, "Public cookbooks are unavailable.")
       .then((data) => {
         if (!active) return;
         setCookbooks(data);
         setOffset(data.length);
-        setHasMore(data.length === 24);
+        setHasMore(data.length === COOKBOOK_PAGE_SIZE);
       })
       .catch((loadError: unknown) => {
         if (active) {
@@ -55,18 +54,15 @@ export default function PublicCookbooks() {
     setLoadingMore(true);
     setError("");
     try {
-      const params = new URLSearchParams({
-        limit: "24",
-        offset: String(offset),
-      });
-      if (query.trim()) params.set("q", query.trim());
-      const response = await fetch(`/api/public/cookbooks?${params}`);
-      if (!response.ok) throw new Error("Could not load more cookbooks.");
-      const data = (await response.json()) as PublicCookbook[];
+      const data = await listPublicCookbooks(
+        query,
+        offset,
+        "Could not load more cookbooks.",
+      );
       if (queryRef.current !== requestedQuery) return;
       setCookbooks((current) => [...current, ...data]);
       setOffset((current) => current + data.length);
-      setHasMore(data.length === 24);
+      setHasMore(data.length === COOKBOOK_PAGE_SIZE);
     } catch (loadError: unknown) {
       setError(errorMessage(loadError, "Could not load more cookbooks."));
     } finally {
@@ -165,15 +161,14 @@ function PublicCookbookDialog({ book, onClose }: PublicCookbookDialogProps) {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<"recent" | "oldest" | "title">("recent");
   const [tag, setTag] = useState("");
-  const [recipes, setRecipes] = useState<PublicRecipe[]>([]);
+  const [recipes, setRecipes] = useState<PublicCookbookRecipe[]>([]);
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
-  const [selectedRecipe, setSelectedRecipe] = useState<PublicRecipe | null>(
-    null,
-  );
+  const [selectedRecipe, setSelectedRecipe] =
+    useState<PublicCookbookRecipe | null>(null);
   const filterKeyRef = useRef("");
   const filterKey = query.trim() + ":" + sort + ":" + tag.trim();
   filterKeyRef.current = filterKey;
@@ -182,21 +177,16 @@ function PublicCookbookDialog({ book, onClose }: PublicCookbookDialogProps) {
     let active = true;
     setLoading(true);
     setError("");
-    const params = new URLSearchParams({ limit: "24", offset: "0", sort });
-    if (query.trim()) params.set("q", query.trim());
-    if (tag.trim()) params.set("tag", tag.trim());
-    fetch(
-      `/api/public/cookbooks/${encodeURIComponent(book.id)}/recipes?${params}`,
+    listPublicCookbookRecipes(
+      book.id,
+      { offset: 0, sort, query, tag },
+      "Could not load this cookbook.",
     )
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Could not load this cookbook.");
-        return response.json() as Promise<PublicRecipe[]>;
-      })
       .then((data) => {
         if (!active) return;
         setRecipes(data);
         setOffset(data.length);
-        setHasMore(data.length === 24);
+        setHasMore(data.length === COOKBOOK_PAGE_SIZE);
       })
       .catch((loadError: unknown) => {
         if (active) {
@@ -219,22 +209,15 @@ function PublicCookbookDialog({ book, onClose }: PublicCookbookDialogProps) {
     setLoadingMore(true);
     setError("");
     try {
-      const params = new URLSearchParams({
-        limit: "24",
-        offset: String(offset),
-        sort,
-      });
-      if (query.trim()) params.set("q", query.trim());
-      if (tag.trim()) params.set("tag", tag.trim());
-      const response = await fetch(
-        `/api/public/cookbooks/${encodeURIComponent(book.id)}/recipes?${params}`,
+      const data = await listPublicCookbookRecipes(
+        book.id,
+        { offset, sort, query, tag },
+        "Could not load more recipes.",
       );
-      if (!response.ok) throw new Error("Could not load more recipes.");
-      const data = (await response.json()) as PublicRecipe[];
       if (filterKeyRef.current !== requestedFilterKey) return;
       setRecipes((current) => [...current, ...data]);
       setOffset((current) => current + data.length);
-      setHasMore(data.length === 24);
+      setHasMore(data.length === COOKBOOK_PAGE_SIZE);
     } catch (loadError) {
       setError(errorMessage(loadError, "Could not load more recipes."));
     } finally {

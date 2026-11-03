@@ -122,6 +122,10 @@ export interface PublicRecipeDetail extends PublicRecipeContent {
   image?: string;
 }
 
+export interface PublicCookbookRecipe extends PublicRecipeDetail {
+  visibility: "public";
+}
+
 export interface RecipeBookmarkTarget {
   local_recipe_id?: string;
   remote_object_uri?: string;
@@ -311,7 +315,7 @@ export interface RecipePublicationView extends RecipePublicationInput {
   federation_origin: string;
 }
 
-export type PublicRecipe = Recipe;
+export type PublicRecipe = PublicRecipeDetail;
 
 export interface RecipeRevision {
   id: string;

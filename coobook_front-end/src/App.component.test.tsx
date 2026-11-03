@@ -1208,3 +1208,100 @@ it("closes auth-bound dialogs on sign-out so public sign-in can open", async () 
     await screen.findByRole("dialog", { name: "Sign in" }),
   ).toBeTruthy();
 });
+
+it("shows cookbook edit and member controls only to the owner", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/auth/me")
+      return Promise.resolve(
+        jsonResponse({
+          id: "owner-1",
+          email: "owner@example.test",
+          display_name: "Owner",
+          is_admin: false,
+          created_at: "2026-01-01T00:00:00Z",
+        }),
+      );
+    if (url === "/api/cookbooks?limit=24&offset=0")
+      return Promise.resolve(
+        jsonResponse([
+          {
+            id: "owned-book",
+            owner_id: "owner-1",
+            title: "My recipes",
+            description: "",
+            visibility: "private",
+          },
+          {
+            id: "member-book",
+            owner_id: "someone-else",
+            title: "Shared recipes",
+            description: "",
+            visibility: "public",
+          },
+        ]),
+      );
+    if (url === "/api/cookbooks/owned-book/members")
+      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/cookbooks/owned-book/members/invitations")
+      return Promise.resolve(jsonResponse([]));
+    if (
+      url ===
+      "/api/recipes?cookbook_id=owned-book&limit=24&offset=0&sort=recent"
+    )
+      return Promise.resolve(
+        jsonResponse([
+          {
+            id: "soup-1",
+            owner_id: "owner-1",
+            creator_name: "Owner",
+            title: "Garden soup",
+            description: "A simple soup.",
+            ingredients: [{ name: "carrots" }],
+            steps: [{ text: "Cook gently." }],
+            servings: 2,
+            prep_time_minutes: 5,
+            cook_time_minutes: 20,
+            tags: ["vegetarian"],
+            visibility: "private",
+            can_edit: true,
+            can_delete: true,
+            can_manage_sharing: true,
+            version: 1,
+            cookbook_ids: ["owned-book"],
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+          },
+        ]),
+      );
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+
+  const ownerCard = (await screen.findByText("My recipes")).closest("article");
+  if (!ownerCard) throw new Error("Expected an owned cookbook card.");
+  expect(ownerCard.textContent).toContain("Edit cookbook");
+  expect(ownerCard.textContent).toContain("Share and manage members");
+  expect(
+    screen.getByRole("button", { name: "Share and manage members" }),
+  ).toBeTruthy();
+  const memberCard = screen.getByText("Shared recipes").closest("article");
+  if (!memberCard) throw new Error("Expected a shared cookbook card.");
+  expect(memberCard.textContent).toContain("Open cookbook");
+  expect(memberCard.textContent).not.toContain("Edit cookbook");
+  expect(memberCard.textContent).not.toContain("Share and manage members");
+
+  fireEvent.click(screen.getByRole("button", { name: "Share and manage members" }));
+  expect(await screen.findByRole("dialog", { name: "Cookbook members" })).toBeTruthy();
+  expect(fetchMock).toHaveBeenCalledWith("/api/cookbooks/owned-book/members");
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/cookbooks/owned-book/members/invitations",
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "Close members" }));
+  fireEvent.click(screen.getAllByRole("button", { name: "Open cookbook" })[0]!);
+  fireEvent.click(await screen.findByRole("button", { name: "Open Garden soup" }));
+  expect(await screen.findByRole("dialog", { name: "Garden soup" })).toBeTruthy();
+});

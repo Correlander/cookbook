@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Route } from '@playwright/test'
 import { readFile, stat, unlink } from 'node:fs/promises'
 import { signInWithSyntheticEmail } from './auth'
 
@@ -21,20 +21,158 @@ test('serves built Astro root with its generated CSP and static metadata', async
   expect(violations).toEqual([])
 })
 
-test('serves confirmation as a static route and leaves its token untouched until explicit user action', async ({ page }) => {
-  const response = await page.goto('/auth/confirm?token=synthetic-unused-token')
-  expect(response?.status()).toBe(200)
-  expect(page.url()).toContain('/auth/confirm?token=synthetic-unused-token')
-  await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', 'noindex,follow')
-  const api = await page.request.get('/api/auth/me')
-  expect(api.status()).toBe(401)
-  expect(api.headers()['cache-control']).toContain('no-store')
+test('serves confirmation aliases without consuming the token or loading Home content', async ({ page }) => {
+  const policies = JSON.parse(await readFile(`${process.env.PLAYWRIGHT_DIST}/static-csp.json`, 'utf8')) as Array<{ route: string; policy: string }>
+  const policy = policies.find((item) => item.route === '/auth/confirm')?.policy
+  expect(policy).toBeTruthy()
+  expect(policy).not.toMatch(/unsafe-inline|unsafe-eval/)
+
+  const consumes: string[] = []
+  const sessionStatuses: number[] = []
+  const homeContentRequests: string[] = []
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname
+    if (path === '/api/auth/consume' && request.method() === 'POST') consumes.push(path)
+    if (/^\/api\/(recipes|cookbooks|courses)(?:\/|$)/.test(path) || /^\/api\/public\/(recipes|cookbooks|remote-recipes|courses)(?:\/|$)/.test(path)) homeContentRequests.push(path)
+  })
+  page.on('response', (response) => {
+    if (new URL(response.url()).pathname === '/api/auth/me') sessionStatuses.push(response.status())
+  })
+
+  await page.setViewportSize({ width: 320, height: 720 })
+  for (const route of ['/auth/confirm', '/auth/confirm.html']) {
+    const priorSessionChecks = sessionStatuses.length
+    const priorHomeRequests = homeContentRequests.length
+    const response = await page.goto(`${route}?token=synthetic-unused-token`)
+    expect(response?.status(), route).toBe(200)
+    expect(new URL(page.url()).pathname, route).toBe(route)
+    expect(new URL(page.url()).searchParams.has('token'), route).toBe(true)
+    expect(response?.headers()['cache-control'], route).toBe('no-store')
+    expect(response?.headers()['referrer-policy'], route).toBe('no-referrer')
+    expect(response?.headers()['content-security-policy'], route).toBe(policy)
+    expect(await response?.text()).not.toContain('synthetic-unused-token')
+    await expect(page).toHaveTitle(/Confirm your sign-in/)
+    await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', 'noindex,follow')
+    await expect(page.getByRole('heading', { name: 'Sign-in confirmation', level: 1 })).toBeVisible()
+    await expect(page.getByRole('button', { name: /continue to cookbook/i })).toBeVisible()
+    await expect.poll(() => sessionStatuses.length).toBe(priorSessionChecks + 1)
+    expect(sessionStatuses.at(-1)).toBe(401)
+    expect(consumes, route).toEqual([])
+    expect(homeContentRequests.slice(priorHomeRequests), route).toEqual([])
+
+    await page.keyboard.press('Tab')
+    await expect(page.locator(':focus')).toHaveAttribute('href', '#home')
+    await page.keyboard.press('Enter')
+    await expect(page.locator('#home')).toBeFocused()
+    const horizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)
+    expect(horizontalOverflow, route).toBe(false)
+  }
 })
 
 test('opens the shared sign-in dialog from a route link without consuming a token', async ({ page }) => {
   await page.goto('/?signin=1')
   await expect(page.getByRole('dialog', { name: /Sign in with email/i })).toBeVisible()
   expect(new URL(page.url()).searchParams.get('signin')).toBe('1')
+})
+
+test('real email confirmation can continue to Home while optional auth checks are pending', async ({ page, request }) => {
+  const origin = process.env.PLAYWRIGHT_BASE_URL ?? 'http://127.0.0.1:4178'
+  const capturePath = process.env.E2E_EMAIL_CAPTURE
+  if (!capturePath) throw new Error('E2E_EMAIL_CAPTURE is missing')
+
+  let releaseOptionalChecks!: () => void
+  const optionalChecks = new Promise<void>((resolve) => { releaseOptionalChecks = resolve })
+  let pendingRoutes = 0
+  let resolveRoutesDrained!: () => void
+  const routesDrained = new Promise<void>((resolve) => { resolveRoutesDrained = resolve })
+  let resolveConfigHeld!: () => void
+  const configHeld = new Promise<void>((resolve) => { resolveConfigHeld = resolve })
+  let resolvePasskeysHeld!: () => void
+  const passkeysHeld = new Promise<void>((resolve) => { resolvePasskeysHeld = resolve })
+  const holdOptionalRoute = async (route: Route) => {
+    pendingRoutes += 1
+    const path = new URL(route.request().url()).pathname
+    if (path === '/api/public/config') resolveConfigHeld()
+    if (path === '/api/auth/passkeys') resolvePasskeysHeld()
+    try {
+      await optionalChecks
+      await route.continue()
+    } catch {
+      // The browser can cancel a held fetch while leaving the confirmation document.
+    } finally {
+      pendingRoutes -= 1
+      if (pendingRoutes === 0) resolveRoutesDrained()
+    }
+  }
+  await page.route('**/api/public/config', holdOptionalRoute)
+  await page.route('**/api/auth/passkeys', holdOptionalRoute)
+
+  let consumePosts = 0
+  const consumeStatuses: number[] = []
+  const homeContentRequests: string[] = []
+  page.on('request', (browserRequest) => {
+    const path = new URL(browserRequest.url()).pathname
+    if (path === '/api/auth/consume' && browserRequest.method() === 'POST') consumePosts += 1
+    if (/^\/api\/(recipes|cookbooks|courses)(?:\/|$)/.test(path) || /^\/api\/public\/(recipes|cookbooks|remote-recipes|courses)(?:\/|$)/.test(path)) homeContentRequests.push(path)
+  })
+  page.on('response', (response) => {
+    const browserRequest = response.request()
+    if (new URL(response.url()).pathname === '/api/auth/consume' && browserRequest.method() === 'POST') consumeStatuses.push(response.status())
+  })
+
+  let captureRemoved = false
+  try {
+    const response = await request.post('/api/auth/email', {
+      headers: { Origin: origin },
+      data: { email: 'home-confirm@example.test', display_name: 'Home Browser' },
+    })
+    expect(response.status()).toBe(200)
+
+    let payload: { sign_in_url?: string } | undefined
+    for (let attempt = 0; attempt < 50; attempt++) {
+      try {
+        await stat(capturePath)
+        payload = JSON.parse(await readFile(capturePath, 'utf8')) as { sign_in_url?: string }
+        await unlink(capturePath)
+        captureRemoved = true
+        break
+      } catch {
+        await page.waitForTimeout(50)
+      }
+    }
+    expect(Boolean(payload?.sign_in_url)).toBe(true)
+    const signInURL = new URL(payload!.sign_in_url!)
+    expect(signInURL.pathname).toBe('/auth/confirm')
+
+    await page.goto(payload!.sign_in_url!)
+    await configHeld
+    expect(new URL(page.url()).searchParams.has('token')).toBe(true)
+    expect(consumePosts).toBe(0)
+    expect(homeContentRequests).toEqual([])
+    await expect(page.getByRole('button', { name: /continue to cookbook/i })).toBeVisible()
+    expect((await page.request.get('/api/auth/me')).status()).toBe(401)
+
+    await page.getByRole('button', { name: /continue to cookbook/i }).click()
+    await expect.poll(async () => (await page.request.get('/api/auth/me')).status()).toBe(200)
+    await passkeysHeld
+    expect(consumePosts).toBe(1)
+    expect(consumeStatuses).toEqual([200])
+    expect(new URL(page.url()).searchParams.has('token')).toBe(false)
+    await expect(page.getByRole('button', { name: 'Continue to Home' })).toBeVisible()
+    expect(pendingRoutes).toBeGreaterThanOrEqual(2)
+
+    await page.getByRole('button', { name: 'Continue to Home' }).click()
+    await expect(page).toHaveURL(/\/$/)
+    await expect(page.getByRole('heading', { name: 'Welcome back, Home Browser.', level: 1 })).toBeVisible()
+  } finally {
+    releaseOptionalChecks()
+    await page.unroute('**/api/public/config', holdOptionalRoute)
+    await page.unroute('**/api/auth/passkeys', holdOptionalRoute)
+    if (pendingRoutes > 0) await routesDrained
+    if (!captureRemoved) {
+      try { await unlink(capturePath) } catch { /* No private mail payload was created. */ }
+    }
+  }
 })
 
 test('keeps the root navigation keyboard reachable and retains its legacy hash targets', async ({ page }) => {
@@ -178,6 +316,14 @@ test('email sign-in remains explicit, establishes a session, and rejects replay'
       }
     }
   })
+  let consumePosts = 0
+  const consumeStatuses: number[] = []
+  page.on('request', (browserRequest) => {
+    if (new URL(browserRequest.url()).pathname === '/api/auth/consume' && browserRequest.method() === 'POST') consumePosts += 1
+  })
+  page.on('response', (response) => {
+    if (new URL(response.url()).pathname === '/api/auth/consume' && response.request().method() === 'POST') consumeStatuses.push(response.status())
+  })
   let payload: { sign_in_url: string } | undefined
   await test.step('Email delivery', async () => {
     const response = await request.post('/api/auth/email', {
@@ -198,12 +344,18 @@ test('email sign-in remains explicit, establishes a session, and rejects replay'
     await page.goto(payload!.sign_in_url)
     const confirmationURL = new URL(page.url())
     expect(confirmationURL.pathname).toBe('/auth/confirm')
-    expect(Boolean(confirmationURL.searchParams.get('token'))).toBe(true)
+    expect(confirmationURL.searchParams.has('token')).toBe(true)
+    await expect(page).toHaveTitle(/Confirm your sign-in/)
+    await expect(page.getByRole('heading', { name: 'Sign-in confirmation', level: 1 })).toBeVisible()
+    expect(consumePosts).toBe(0)
     expect((await page.request.get('/api/auth/me')).status()).toBe(401)
   })
   await test.step('Session establishment', async () => {
     await page.getByRole('button', { name: /continue to cookbook/i }).click()
     await expect.poll(async () => (await page.request.get('/api/auth/me')).status()).toBe(200)
+    expect(consumePosts).toBe(1)
+    expect(consumeStatuses).toEqual([200])
+    expect(new URL(page.url()).searchParams.has('token')).toBe(false)
   })
 
   const passkeyDialog = page.getByRole('dialog', { name: 'Add a passkey?' })

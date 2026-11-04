@@ -33,10 +33,12 @@ it("requires a confirmed signed-in session before offering creation forms", asyn
 });
 
 it("offers courses only when the server configuration enables them", async () => {
+  let resolveConfig!: (value: Response) => void;
+  const configResponse = new Promise<Response>((resolve) => { resolveConfig = resolve; });
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     if (url === "/api/auth/me") return Promise.resolve(response({ id: "u1", email: "u@example.test", display_name: "User", is_admin: false }));
-    if (url === "/api/public/config") return Promise.resolve(response({ courses_enabled: false }));
+    if (url === "/api/public/config") return configResponse;
     if (url === "/api/cookbooks") return Promise.resolve(response([]));
     if (url === "/api/instance/authority") return Promise.resolve(response({ is_admin: false, is_instance_owner: false, owner_claimed: true, can_manage_instance_roles: false }));
     if (url === "/api/instance/owner-transfers") return Promise.resolve(response({ transfers: [] }));
@@ -46,8 +48,13 @@ it("offers courses only when the server configuration enables them", async () =>
   render(<CreateRoot />);
   expect(await screen.findByRole("button", { name: "Recipe" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Cookbook" })).toBeTruthy();
+  expect(screen.getByText("Checking enabled features…")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Course" })).toBeNull();
-  expect(fetchMock).toHaveBeenCalledWith("/api/public/config", { cache: "no-store" });
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/public/config", { cache: "no-store" }));
+  expect(screen.queryByRole("button", { name: "Course" })).toBeNull();
+  resolveConfig(response({ courses_enabled: false }));
+  await waitFor(() => expect(screen.queryByText("Checking enabled features…")).toBeNull());
+  expect(screen.queryByRole("button", { name: "Course" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Recipe" }));
   expect(await screen.findByRole("heading", { name: "Add a recipe" })).toBeTruthy();
 });

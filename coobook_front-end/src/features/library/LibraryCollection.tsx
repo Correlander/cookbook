@@ -66,19 +66,40 @@ function RecipeLibraryCard({
   onRemoveUnavailable: (bookmarkID: string) => void;
 }) {
   if (item.availability === "unavailable") {
-    return <UnavailableCard kind="recipe" createdAt={item.created_at} bookmarkID={item.bookmark_id ?? ""} busy={busy} onRemove={onRemoveUnavailable} />;
+    return <UnavailableCard kind="recipe" createdAt={item.created_at} bookmarkID={item.bookmark_id ?? ""} busy={busy} onRemove={onRemoveUnavailable} saveState={item.save_state} moderatedAt={item.moderated_at} moderationReason={item.moderation_reason} sourceState={item.source_state} />;
+  }
+  if (item.target_kind === "remote" && item.snapshot_recipe) {
+    const snapshot = item.snapshot_recipe;
+    const bookmark = bookmarkForRecipe(item, snapshot.object_uri);
+    return (
+      <article className="cookbook-card">
+        <span className="eyebrow">Private saved copy{snapshot.sequence ? ` · source sequence ${snapshot.sequence}` : ""}</span>
+        <a className="recipe-card" href={`/recipe?bookmark_id=${encodeURIComponent(item.bookmark_id ?? "")}`} aria-label={`Open ${snapshot.recipe.title}`}>
+          <RecipeCardContents title={snapshot.recipe.title} creatorName={snapshot.creator_name} stepCount={snapshot.recipe.steps.length} relationshipLabel={`From ${snapshot.source_origin}`} />
+        </a>
+        {item.provenance_state === "user_imported_unverified" ? (
+          <p>Imported copy · source not verified. This label does not verify authorship. Source changes do not update this copy.</p>
+        ) : (
+          <p>Frozen private copy from {snapshot.source_origin}. Source changes do not update this copy.</p>
+        )}
+        {item.source_state && <p>Source status: {formatSourceState(item.source_state)}.</p>}
+        <RelationshipFacts relationships={item.relationships ?? []} ownedByCurrentUser={false} />
+        <BookmarkAction currentUserID={userID} target={{ remote_object_uri: snapshot.object_uri }} bookmark={bookmark} initialStatus="saved" busy={busy} libraryContext onMutation={() => onChange(null)} onMutationUncertain={onMutationUncertain} />
+      </article>
+    );
   }
   if (item.target_kind === "remote" && item.remote_recipe) {
     const remote = item.remote_recipe;
+    const bookmark = bookmarkForRecipe(item, remote.object_uri);
     return (
       <article className="cookbook-card">
-        <span className="eyebrow">Saved remote snapshot</span>
+        <span className="eyebrow">Saved reference</span>
         <a className="recipe-card" href={`/recipe?remote_object_uri=${encodeURIComponent(remote.object_uri)}`} aria-label={`Open ${remote.recipe.title}`}>
           <RecipeCardContents title={remote.recipe.title} creatorName={remote.creator_name} stepCount={remote.recipe.steps.length} relationshipLabel={`From ${remote.source_origin}`} />
         </a>
-        <p>Cached snapshot from {remote.source_origin}; updated {formatDate(remote.updated_at)}. This is not a live feed.</p>
+        <p>Reference to {remote.source_origin}; current cached content may change or become unavailable.</p>
         <RelationshipFacts relationships={item.relationships ?? []} ownedByCurrentUser={false} />
-      <BookmarkAction currentUserID={userID} target={{ remote_object_uri: remote.object_uri }} bookmark={bookmarkForRecipe(item, remote.object_uri)} initialStatus="saved" busy={busy} libraryContext onMutation={() => onChange(null)} onMutationUncertain={onMutationUncertain} />
+      <BookmarkAction currentUserID={userID} target={{ remote_object_uri: remote.object_uri }} bookmark={bookmark} initialStatus="saved" busy={busy} libraryContext onMutation={() => onChange(null)} onMutationUncertain={onMutationUncertain} />
       </article>
     );
   }
@@ -123,12 +144,19 @@ function CourseLibraryCard({ item, userID, busy, onChange, onMutationUncertain, 
   return <article className="cookbook-card"><a href={`/course?id=${encodeURIComponent(course.id)}`} aria-label={`Open ${course.title}`}><span className="eyebrow">{course.visibility} course · {course.lesson_count} lessons</span><h3>{course.title}</h3>{course.description && <p>{course.description}</p>}</a><p>Owner: {course.owner_name}</p><RelationshipFacts relationships={item.relationships} ownedByCurrentUser={item.relationships.includes("owned")} /><CourseBookmarkAction courseID={course.id} title={course.title} currentUserID={userID} initialBookmarkID={item.relationships.includes("saved") ? item.bookmark_id ?? null : undefined} onMutation={() => onChange(null)} onMutationUncertain={onMutationUncertain} /></article>;
 }
 
-function UnavailableCard({ kind, createdAt, bookmarkID, busy, onRemove }: { kind: "recipe" | "cookbook" | "course"; createdAt?: string; bookmarkID: string; busy: boolean; onRemove: (bookmarkID: string) => void }) {
+function UnavailableCard({ kind, createdAt, bookmarkID, busy, onRemove, saveState, moderatedAt, moderationReason, sourceState }: { kind: "recipe" | "cookbook" | "course"; createdAt?: string; bookmarkID: string; busy: boolean; onRemove: (bookmarkID: string) => void; saveState?: string; moderatedAt?: string; moderationReason?: string; sourceState?: string }) {
+  const blocked = saveState === "restricted" || saveState === "removed";
   return (
     <article className="cookbook-card">
-      <span className="eyebrow">Saved reference</span>
-      <h3>Unavailable {kind}</h3>
-      <p>This saved reference is not currently available.</p>
+      <span className="eyebrow">{blocked ? "Private copy blocked" : "Saved reference"}</span>
+      <h3>{blocked ? "Blocked private copy" : `Unavailable ${kind}`}</h3>
+      <p>{saveState === "restricted"
+        ? "This private copy is restricted by this instance and cannot be read."
+        : saveState === "removed"
+        ? "This private copy was removed by this instance and cannot be read."
+        : "This saved reference is not currently available."}</p>
+      {blocked && moderationReason && <p>Reason: {moderationReason}{moderatedAt ? ` · ${formatDate(moderatedAt)}` : ""}</p>}
+      {blocked && sourceState && <p>Source status: {formatSourceState(sourceState)}.</p>}
       {createdAt && <p>Saved <time dateTime={createdAt}>{formatDate(createdAt)}</time></p>}
       <button className="text-link" type="button" disabled={busy || !bookmarkID} onClick={() => onRemove(bookmarkID)}>
         {busy ? "Removing…" : `Remove unavailable ${kind} reference`}
@@ -157,7 +185,14 @@ function libraryKey(item: LibraryItem, index: number): string {
 
 function bookmarkForRecipe(item: LibraryRecipeItem, uri: string): RecipeBookmarkView | undefined {
   if (!item.bookmark_id) return undefined;
-  return { id: item.bookmark_id, target_kind: "remote", target: { remote_object_uri: uri }, availability: "available", created_at: item.created_at ?? "" };
+  return {
+    id: item.bookmark_id, target_kind: "remote", target: { remote_object_uri: uri }, availability: "available", created_at: item.created_at ?? "",
+    ...(item.save_state ? { save_state: item.save_state } : {}),
+    ...(item.version_id ? { version_id: item.version_id } : {}),
+    ...(item.source_state ? { source_state: item.source_state } : {}),
+    ...(item.provenance_state ? { provenance_state: item.provenance_state } : {}),
+    ...(item.publisher_retention_claim ? { publisher_retention_claim: item.publisher_retention_claim } : {}),
+  };
 }
 
 function recipeBookmark(id: string, recipe: NonNullable<LibraryRecipeItem["recipe"]>): RecipeBookmarkView {
@@ -167,4 +202,15 @@ function recipeBookmark(id: string, recipe: NonNullable<LibraryRecipeItem["recip
 function formatDate(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "an unknown date" : date.toLocaleDateString();
+}
+
+function formatSourceState(value: string): string {
+  switch (value) {
+    case "published": return "available at last check";
+    case "withdrawn": return "withdrawn by the source";
+    case "disconnected": return "source disconnected";
+    case "unreachable": return "source unreachable";
+    case "unknown_legacy": return "unavailable or unknown";
+    default: return "status unavailable";
+  }
 }

@@ -143,18 +143,24 @@ export async function fetchRecipeBookmarks(
   });
   const response = await fetch(`/api/library/bookmarks?${params}`, {
     cache: "no-store",
+    credentials: "same-origin",
   });
   if (!response.ok) throw new Error("Could not load Saved recipes.");
-  return response.json() as Promise<RecipeBookmarkPage>;
+  const value: unknown = await response.json();
+  if (!isRecord(value) || !Array.isArray(value.items) || !isNonnegativeInteger(value.total) || !isPositiveInteger(value.limit) || !isNonnegativeInteger(value.offset) || value.offset !== offset)
+    throw new Error("Could not load Saved recipes.");
+  return { items: value.items.map(parseRecipeBookmarkView), total: value.total, limit: value.limit, offset: value.offset };
 }
 
 export async function saveRecipeBookmark(
   target: RecipeBookmarkTarget,
+  saveMode?: "conditional" | "reference" | "snapshot",
 ): Promise<RecipeBookmarkSaveResult> {
   const response = await fetch("/api/library/bookmarks", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ target }),
+    credentials: "same-origin",
+    body: JSON.stringify({ target, ...(saveMode ? { save_mode: saveMode } : {}) }),
   });
   if (!response.ok) {
     const failure = (await response.json().catch(() => ({}))) as {
@@ -164,10 +170,42 @@ export async function saveRecipeBookmark(
       throw new Error("Your Library has reached its saved recipe limit.");
     throw new Error("Could not save this recipe to your Library.");
   }
+  const value: unknown = await response.json();
   return {
-    bookmark: (await response.json()) as RecipeBookmarkView,
+    bookmark: parseRecipeBookmarkView(value),
     created: response.status === 201,
   };
+}
+
+export async function fetchPrivateSnapshot(bookmarkID: string): Promise<PrivateSnapshotRecipeReadView> {
+  if (!bookmarkID) throw new Error("Recipe unavailable");
+  const response = await fetch(`/api/library/bookmarks/${encodeURIComponent(bookmarkID)}/snapshot`, { cache: "no-store", credentials: "same-origin" });
+  if (!response.ok) {
+    const failure = await response.json().catch(() => ({})) as { error?: string };
+    if (failure.error === "snapshot_restricted" || failure.error === "snapshot_removed")
+      throw new PrivateSnapshotUnavailableError(failure.error === "snapshot_restricted" ? "restricted" : "removed");
+    throw new Error("Recipe unavailable");
+  }
+  return parsePrivateSnapshotRecipe(await response.json());
+}
+
+export class PrivateSnapshotUnavailableError extends Error {
+  constructor(readonly state: "restricted" | "removed") {
+    super("This saved copy is blocked and cannot be opened.");
+  }
+}
+
+export async function captureRecipeBookmark(bookmarkID: string): Promise<RecipeBookmarkView> {
+  const response = await fetch(`/api/library/bookmarks/${encodeURIComponent(bookmarkID)}/capture`, { method: "POST", credentials: "same-origin" });
+  if (!response.ok) {
+    const failure = await response.json().catch(() => ({})) as { error?: string };
+    if (failure.error === "snapshot_not_eligible") throw new Error("A private copy is not available for this version.");
+    if (failure.error === "snapshot_limit_reached" || failure.error === "snapshot_storage_limit_reached") throw new Error("Your private snapshot storage limit has been reached.");
+    if (failure.error === "snapshot_capture_too_large") throw new Error("This version is too large to save as a private copy.");
+    if (failure.error === "snapshot_restricted" || failure.error === "snapshot_removed") throw new Error("This saved copy is blocked and cannot be opened.");
+    throw new Error("Could not save a private copy of this version.");
+  }
+  return parseRecipeBookmarkView(await response.json());
 }
 
 export async function removeRecipeBookmark(bookmarkID: string): Promise<void> {
@@ -338,7 +376,10 @@ function parseLibraryRecipe(value: unknown): LibraryRecipeItem {
   if (value.availability === "unavailable") {
     if (typeof value.bookmark_id !== "string" || !value.bookmark_id || typeof value.created_at !== "string")
       throw new Error("Could not load your recipes Library.");
-    return { availability: "unavailable", target_kind: value.target_kind, bookmark_id: value.bookmark_id, created_at: value.created_at };
+    return {
+      availability: "unavailable", target_kind: value.target_kind, bookmark_id: value.bookmark_id, created_at: value.created_at,
+      ...parseSnapshotStateFields(value),
+    };
   }
   if (!Array.isArray(value.relationships) || !value.relationships.every(isLibraryRelationship))
     throw new Error("Could not load your recipes Library.");
@@ -361,8 +402,14 @@ function parseLibraryRecipe(value: unknown): LibraryRecipeItem {
     throw new Error("Could not load your recipes Library.");
   if (value.relationships.length !== 1 || value.relationships[0] !== "saved")
     throw new Error("Could not load your recipes Library.");
-  const remote = parseRemoteRecipe(value.remote_recipe);
-  return { availability: "available", target_kind: "remote", relationships: value.relationships, bookmark_id: requiredString(value.bookmark_id), remote_recipe: remote };
+  const snapshot = value.snapshot_recipe === undefined ? undefined : parsePrivateSnapshotRecipe(value.snapshot_recipe);
+  const remote = value.remote_recipe === undefined ? undefined : parseRemoteRecipe(value.remote_recipe);
+  if (!snapshot && !remote) throw new Error("Could not load your recipes Library.");
+  return {
+    availability: "available", target_kind: "remote", relationships: value.relationships, bookmark_id: requiredString(value.bookmark_id),
+    ...(snapshot ? { snapshot_recipe: snapshot } : { remote_recipe: remote }),
+    ...parseSnapshotStateFields(value),
+  };
 }
 
 function parseLibraryCookbook(value: unknown): LibraryCookbookItem {
@@ -450,12 +497,77 @@ function parseRemoteRecipe(value: unknown): RemoteRecipeReadView {
   };
 }
 
+function parsePrivateSnapshotRecipe(value: unknown): PrivateSnapshotRecipeReadView {
+  if (!isRecord(value)) throw new Error("Could not load your recipes Library.");
+  const sequence = value.sequence === undefined || value.sequence === null ? undefined : isPositiveInteger(value.sequence) ? value.sequence : null;
+  if (sequence === null) throw new Error("Could not load your recipes Library.");
+  return {
+    object_uri: requiredString(value.object_uri), source_origin: requiredString(value.source_origin),
+    source_recipe_id: requiredString(value.source_recipe_id), creator_name: requiredString(value.creator_name),
+    recipe: parsePublicRecipeContent(isRecord(value.recipe) ? value.recipe : null),
+    ...(sequence === undefined ? {} : { sequence }),
+    updated_at: requiredString(value.updated_at ?? value.received_at),
+    ...(typeof value.received_at === "string" ? { received_at: value.received_at } : {}),
+    ...(typeof value.version_id === "string" ? { version_id: value.version_id } : {}),
+    ...(value.provenance_state === "publisher_verified" || value.provenance_state === "user_imported_unverified" ? { provenance_state: value.provenance_state } : {}),
+    ...(typeof value.publisher_retention_claim === "string" ? { publisher_retention_claim: value.publisher_retention_claim } : {}),
+    ...(typeof value.source_state === "string" ? { source_state: value.source_state } : {}),
+  };
+}
+
+function parseSnapshotStateFields(value: Record<string, unknown>) {
+  const saveStates = ["reference", "snapshot", "restricted", "removed"] as const;
+  const state = value.save_state;
+  const provenance = value.provenance_state;
+  const reason = value.moderation_reason;
+  const outcome = value.moderation_outcome;
+  if (state !== undefined && !saveStates.includes(state as typeof saveStates[number])) throw new Error("Could not load your recipes Library.");
+  if (provenance !== undefined && provenance !== "publisher_verified" && provenance !== "user_imported_unverified") throw new Error("Could not load your recipes Library.");
+  if (reason !== undefined && reason !== "legal" && reason !== "security" && reason !== "privacy" && reason !== "policy") throw new Error("Could not load your recipes Library.");
+  if (outcome !== undefined && outcome !== "restricted" && outcome !== "removed") throw new Error("Could not load your recipes Library.");
+  return {
+    ...(state === undefined ? {} : { save_state: state as typeof saveStates[number] }),
+    ...(typeof value.version_id === "string" ? { version_id: value.version_id } : {}),
+    ...(typeof value.source_state === "string" ? { source_state: value.source_state } : {}),
+    ...(provenance === undefined ? {} : { provenance_state: provenance }),
+    ...(typeof value.publisher_retention_claim === "string" ? { publisher_retention_claim: value.publisher_retention_claim } : {}),
+    ...(reason === undefined ? {} : { moderation_reason: reason }),
+    ...(typeof value.moderated_at === "string" ? { moderated_at: value.moderated_at } : {}),
+    ...(outcome === undefined ? {} : { moderation_outcome: outcome }),
+  };
+}
+
+function parseRecipeBookmarkView(value: unknown): RecipeBookmarkView {
+  if (!isRecord(value) || typeof value.id !== "string" || !value.id ||
+      (value.target_kind !== "local" && value.target_kind !== "remote") || !isAvailability(value.availability) || typeof value.created_at !== "string")
+    throw new Error("Could not load Saved recipes.");
+  if (value.availability === "unavailable") {
+    return { id: value.id, target_kind: value.target_kind, availability: "unavailable", created_at: value.created_at, ...parseSnapshotStateFields(value) };
+  }
+  if (!isRecord(value.target)) throw new Error("Could not load Saved recipes.");
+  const target: RecipeBookmarkTarget = value.target_kind === "local"
+    ? { local_recipe_id: requiredString(value.target.local_recipe_id) }
+    : { remote_object_uri: requiredString(value.target.remote_object_uri) };
+  const snapshot = value.snapshot_recipe === undefined ? undefined : parsePrivateSnapshotRecipe(value.snapshot_recipe);
+  const remote = value.remote_recipe === undefined ? undefined : parseRemoteRecipe(value.remote_recipe);
+  const local = value.local_recipe === undefined ? undefined : parseRecipe(value.local_recipe);
+  if (value.target_kind === "remote" && !snapshot && !remote && value.availability === "available") throw new Error("Could not load Saved recipes.");
+  return {
+    id: value.id, target_kind: value.target_kind, target, availability: "available", created_at: value.created_at,
+    ...(snapshot ? { snapshot_recipe: snapshot } : {}), ...(remote ? { remote_recipe: remote } : {}), ...(local ? { local_recipe: local } : {}),
+    ...parseSnapshotStateFields(value),
+    ...(typeof value.saved === "boolean" ? { saved: value.saved } : {}),
+    ...(typeof value.snapshot_available === "boolean" ? { snapshot_available: value.snapshot_available } : {}),
+    ...(typeof value.can_capture_snapshot === "boolean" ? { can_capture_snapshot: value.can_capture_snapshot } : {}),
+  };
+}
+
 function parsePublicRecipeContent(value: Record<string, unknown> | null): PublicRecipeContent {
-  if (!value || !isNonnegativeInteger(value.servings) || !isNonnegativeInteger(value.prep_time_minutes) || !isNonnegativeInteger(value.cook_time_minutes))
+  if (!value || typeof value.description !== "string" || !isNonnegativeInteger(value.servings) || !isNonnegativeInteger(value.prep_time_minutes) || !isNonnegativeInteger(value.cook_time_minutes))
     throw new Error("Could not load your recipes Library.");
   return {
     title: requiredString(value.title),
-    description: requiredString(value.description),
+    description: value.description,
     servings: value.servings,
     prep_time_minutes: value.prep_time_minutes,
     cook_time_minutes: value.cook_time_minutes,
@@ -522,7 +634,8 @@ function parseBookmarkStatus(value: unknown): RecipeBookmarkStatus {
   if (!isRecord(value) || typeof value.saved !== "boolean") throw new Error("Could not check saved status.");
   if (!value.saved) return { saved: false };
   if (typeof value.bookmark_id !== "string" || !value.bookmark_id) throw new Error("Could not check saved status.");
-  return { saved: true, bookmark_id: value.bookmark_id };
+  const bookmark = typeof value.id === "string" ? parseRecipeBookmarkView(value) : undefined;
+  return { saved: true, bookmark_id: value.bookmark_id, ...(bookmark ? { bookmark } : {}), ...(typeof value.can_capture_snapshot === "boolean" ? { can_capture_snapshot: value.can_capture_snapshot } : {}) };
 }
 
 function requiredString(value: unknown): string {

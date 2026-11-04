@@ -6,6 +6,7 @@ import type {
 import { errorMessage } from "../../apiModels";
 import {
   fetchRecipeBookmarkStatus,
+  captureRecipeBookmark,
   removeRecipeBookmark,
   saveRecipeBookmark,
 } from "./libraryApi.ts";
@@ -43,6 +44,7 @@ export default function BookmarkAction({
 }: BookmarkActionProps) {
   const [saved, setSaved] = useState(bookmark ?? null);
   const [saving, setSaving] = useState(false);
+  const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState<"checking" | "unknown" | "known">(
     bookmark ? "known" : "checking",
@@ -59,7 +61,8 @@ export default function BookmarkAction({
   useEffect(() => {
     const currentRequest = ++request.current;
     setLoadedKey(currentKey);
-    if (!currentUserID || (!localID && !remoteURI) || (initialStatus !== undefined && retry === 0) || (bookmark && retry === 0)) {
+    const needsRemoteEligibility = bookmark?.target_kind === "remote" && bookmark.save_state === "reference" && bookmark.can_capture_snapshot === undefined;
+    if (!currentUserID || (!localID && !remoteURI) || (initialStatus !== undefined && retry === 0 && !needsRemoteEligibility) || (bookmark && !needsRemoteEligibility && retry === 0)) {
       setSaved(bookmark ?? null);
       setStatus("known");
       setError("");
@@ -74,12 +77,14 @@ export default function BookmarkAction({
       : { remote_object_uri: remoteURI };
     void fetchRecipeBookmarkStatus(exactTarget).then((result) => {
       if (!active || request.current !== currentRequest) return;
-      setSaved(result.saved ? {
+      setSaved(result.saved ? result.bookmark ?? {
         id: result.bookmark_id,
         target_kind: localID ? "local" : "remote",
         target: exactTarget,
         availability: "available",
         created_at: "",
+        save_state: "reference",
+        can_capture_snapshot: result.can_capture_snapshot,
       } : null);
       setStatus("known");
     }).catch(() => {
@@ -115,7 +120,10 @@ export default function BookmarkAction({
         onMutation?.(null);
       } else {
         if (!target) return;
-        const result = await saveRecipeBookmark(target);
+        const result = await saveRecipeBookmark(
+          target,
+          target.remote_object_uri ? "conditional" : undefined,
+        );
         if (request.current !== operation) return;
         setSaved(result.bookmark);
         setStatus("known");
@@ -133,6 +141,32 @@ export default function BookmarkAction({
     }
   }
 
+  async function keepThisVersion(): Promise<void> {
+    if (!keyMatches || status !== "known" || !saved || !saved.can_capture_snapshot || saving || capturing) return;
+    const operation = ++request.current;
+    setCapturing(true);
+    setError("");
+    try {
+      const captured = await captureRecipeBookmark(saved.id);
+      if (request.current !== operation) return;
+      setSaved(captured);
+      setStatus("known");
+      onChange?.(captured, false);
+      onMutation?.(captured);
+    } catch (caught: unknown) {
+      if (request.current !== operation) return;
+      setError(errorMessage(caught, "Could not save a private copy of this version."));
+      setStatus("known");
+    } finally {
+      if (request.current === operation) setCapturing(false);
+    }
+  }
+
   const label = !keyMatches || status === "checking" ? "Checking saved status…" : status === "unknown" ? "Saved status unavailable" : saving ? (saved ? "Removing…" : "Saving…") : libraryContext ? saved ? "Remove bookmark" : "Bookmark" : saved ? "Remove from Library" : "Save to Library";
-  return <BookmarkActionPresentation label={label} disabled={saving || busy || !keyMatches || status !== "known" || (!saved && !target)} retryDisabled={busy || saving} error={keyMatches ? error : undefined} onActivate={() => void toggle()} onRetry={keyMatches && status === "unknown" ? () => setRetry((value) => value + 1) : undefined} />;
+  const canCapture = saved?.target_kind === "remote" && saved.save_state === "reference" && saved.can_capture_snapshot === true;
+  return <div className="library-action-group">
+    {saved?.save_state === "snapshot" && !libraryContext && <p className="dialog-note">Private copy saved. It remains fixed to the captured version.</p>}
+    {canCapture && <button className="text-link" type="button" disabled={capturing || saving || busy || !keyMatches} onClick={() => void keepThisVersion()}>{capturing ? "Saving private copy…" : "Keep this version"}</button>}
+    <BookmarkActionPresentation label={label} disabled={saving || capturing || busy || !keyMatches || status !== "known" || (!saved && !target)} retryDisabled={busy || saving || capturing} error={keyMatches ? error : undefined} onActivate={() => void toggle()} onRetry={keyMatches && status === "unknown" ? () => setRetry((value) => value + 1) : undefined} />
+  </div>;
 }

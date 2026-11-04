@@ -11,6 +11,9 @@ import {
   fetchCookbookBookmarks,
   removeCookbookBookmark,
   saveCookbookBookmark,
+  saveRecipeBookmark,
+  fetchPrivateSnapshot,
+  captureRecipeBookmark,
 } from "./libraryApi.ts";
 
 function jsonResponse(value: unknown, status = 200): Response {
@@ -103,6 +106,19 @@ it("accepts an owned-cookbook-only recipe relationship without inventing a save 
   expect(page.items[0]?.target_kind === "local" && page.items[0].membership_role).toBeUndefined();
 });
 
+it("parses a private snapshot Library item and keeps blocked items body-free", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [
+    { availability: "available", target_kind: "remote", relationships: ["saved"], bookmark_id: "pin-1", save_state: "snapshot", version_id: "version-1", source_state: "withdrawn", provenance_state: "user_imported_unverified", snapshot_recipe: { object_uri: "https://peer.example/r/1", source_origin: "https://peer.example", source_recipe_id: "1", creator_name: "Claimed cook", sequence: null, updated_at: "then", recipe: { title: "Saved soup", description: "", ingredients: [], steps: [], servings: 1, prep_time_minutes: 0, cook_time_minutes: 0, tags: [] } } },
+    { availability: "unavailable", target_kind: "remote", bookmark_id: "blocked-1", created_at: "then", save_state: "restricted", moderation_reason: "privacy", moderated_at: "now", source_state: "disconnected" },
+  ], total: 2, limit: 24, offset: 0 }));
+  vi.stubGlobal("fetch", fetchMock);
+  const page = await fetchLibraryPage("recipes");
+  expect(page.items[0]).toMatchObject({ save_state: "snapshot", provenance_state: "user_imported_unverified", snapshot_recipe: { recipe: { title: "Saved soup" } } });
+  expect(page.items[0]?.target_kind === "remote" && page.items[0].snapshot_recipe?.sequence).toBeUndefined();
+  expect(page.items[1]).toMatchObject({ availability: "unavailable", save_state: "restricted", moderation_reason: "privacy" });
+  expect(page.items[1]).not.toHaveProperty("snapshot_recipe");
+});
+
 it("checks exact recipe status by one target and never treats an error as unsaved", async () => {
   const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ saved: true, bookmark_id: "bookmark-1" }));
   vi.stubGlobal("fetch", fetchMock);
@@ -110,6 +126,31 @@ it("checks exact recipe status by one target and never treats an error as unsave
   expect(fetchMock).toHaveBeenCalledWith("/api/library/bookmarks/status?remote_object_uri=https%3A%2F%2Fpeer.example%2Ffederation%2Frecipes%2Fabc", { cache: "no-store", credentials: "same-origin" });
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ saved: false }, 404)));
   await expect(fetchRecipeBookmarkStatus({ local_recipe_id: "private-id" })).rejects.toThrow("Could not check saved status.");
+});
+
+it("sends conditional mode for a remote save and parses the frozen-copy result", async () => {
+  const uri = "https://peer.example/federation/recipes/abc";
+  const snapshot = { object_uri: uri, source_origin: "https://peer.example", source_recipe_id: "abc", creator_name: "Remote chef", sequence: 5, updated_at: "2026-11-04", recipe: { title: "Soup", description: "", ingredients: [], steps: [{ text: "Cook" }], servings: 1, prep_time_minutes: 0, cook_time_minutes: 1, tags: [] } };
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: "bm-1", target_kind: "remote", target: { remote_object_uri: uri }, availability: "available", created_at: "now", saved: true, save_state: "snapshot", provenance_state: "publisher_verified", snapshot_recipe: snapshot }, 201));
+  vi.stubGlobal("fetch", fetchMock);
+  const result = await saveRecipeBookmark({ remote_object_uri: uri }, "conditional");
+  expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ target: { remote_object_uri: uri }, save_mode: "conditional" });
+  expect(result).toMatchObject({ created: true, bookmark: { id: "bm-1", save_state: "snapshot", snapshot_recipe: { recipe: { title: "Soup" } } } });
+});
+
+it("reads a private snapshot by bookmark ID and never falls back to remote cache", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ object_uri: "https://peer.example/r/1", source_origin: "https://peer.example", source_recipe_id: "1", creator_name: "Cook", received_at: "then", version_id: "v-1", provenance_state: "user_imported_unverified", source_state: "disconnected", recipe: { title: "Private soup", description: "", ingredients: [], steps: [], servings: 1, prep_time_minutes: 0, cook_time_minutes: 0, tags: [] } }));
+  vi.stubGlobal("fetch", fetchMock);
+  await expect(fetchPrivateSnapshot("bookmark/1")).resolves.toMatchObject({ version_id: "v-1", provenance_state: "user_imported_unverified", updated_at: "then" });
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock).toHaveBeenCalledWith("/api/library/bookmarks/bookmark%2F1/snapshot", { cache: "no-store", credentials: "same-origin" });
+});
+
+it("captures an existing reference only through its explicit bookmark capture route", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: "bm-1", target_kind: "remote", target: { remote_object_uri: "https://peer.example/r/1" }, availability: "available", created_at: "now", save_state: "snapshot", snapshot_recipe: { object_uri: "https://peer.example/r/1", source_origin: "https://peer.example", source_recipe_id: "1", creator_name: "Cook", received_at: "then", recipe: { title: "Soup", description: "", ingredients: [], steps: [], servings: 1, prep_time_minutes: 0, cook_time_minutes: 0, tags: [] } } }));
+  vi.stubGlobal("fetch", fetchMock);
+  await expect(captureRecipeBookmark("bm-1")).resolves.toMatchObject({ save_state: "snapshot" });
+  expect(fetchMock).toHaveBeenCalledWith("/api/library/bookmarks/bm-1/capture", { method: "POST", credentials: "same-origin" });
 });
 
 it("reads one exact cached remote snapshot without a public-feed fallback", async () => {

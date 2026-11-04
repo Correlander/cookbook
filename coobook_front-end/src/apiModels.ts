@@ -161,6 +161,27 @@ export interface RemoteRecipeReadView {
   updated_at: string;
 }
 
+export interface PrivateSnapshotRecipeReadView {
+  object_uri: string;
+  source_origin: string;
+  source_recipe_id: string;
+  creator_name: string;
+  recipe: PublicRecipeContent;
+  sequence?: number;
+  updated_at: string;
+  received_at?: string;
+  version_id?: string;
+  provenance_state?: "publisher_verified" | "user_imported_unverified";
+  publisher_retention_claim?: string;
+  source_state?: string;
+}
+
+export type RecipeBookmarkSaveState =
+  | "reference"
+  | "snapshot"
+  | "restricted"
+  | "removed";
+
 export interface RecipeBookmarkView {
   id: string;
   target_kind: "local" | "remote";
@@ -168,6 +189,18 @@ export interface RecipeBookmarkView {
   availability: "available" | "unavailable";
   local_recipe?: Recipe;
   remote_recipe?: RemoteRecipeReadView;
+  snapshot_recipe?: PrivateSnapshotRecipeReadView;
+  save_state?: RecipeBookmarkSaveState;
+  version_id?: string;
+  source_state?: string;
+  provenance_state?: "publisher_verified" | "user_imported_unverified";
+  publisher_retention_claim?: string;
+  moderation_reason?: "legal" | "security" | "privacy" | "policy";
+  moderated_at?: string;
+  moderation_outcome?: "restricted" | "removed";
+  snapshot_available?: boolean;
+  can_capture_snapshot?: boolean;
+  saved?: boolean;
   created_at: string;
 }
 
@@ -213,6 +246,15 @@ export interface LibraryRecipeItem {
   cookbook_contexts?: LibraryRecipeCookbookContext[];
   recipe?: Recipe;
   remote_recipe?: RemoteRecipeReadView;
+  snapshot_recipe?: PrivateSnapshotRecipeReadView;
+  save_state?: RecipeBookmarkSaveState;
+  version_id?: string;
+  source_state?: string;
+  provenance_state?: "publisher_verified" | "user_imported_unverified";
+  publisher_retention_claim?: string;
+  moderation_reason?: "legal" | "security" | "privacy" | "policy";
+  moderated_at?: string;
+  moderation_outcome?: "restricted" | "removed";
   created_at?: string;
 }
 
@@ -240,7 +282,12 @@ export interface LibraryPage<T> {
 
 export type RecipeBookmarkStatus =
   | { saved: false }
-  | { saved: true; bookmark_id: string };
+  | {
+      saved: true;
+      bookmark_id: string;
+      can_capture_snapshot?: boolean;
+      bookmark?: RecipeBookmarkView;
+    };
 
 export type CookbookBookmarkStatus =
   { saved: false } | { saved: true; bookmark_id: string };

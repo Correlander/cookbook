@@ -131,7 +131,7 @@ it("loads an authenticated exact remote snapshot, keeps it read-only, and checks
   render(<RecipeDetailRoot />);
 
   expect(await screen.findByRole("heading", { name: "Remote stew" })).toBeTruthy();
-  expect(screen.getByText("From https://peer.example. This saved snapshot is read-only.")).toBeTruthy();
+  expect(screen.getByText("Reference from https://peer.example. Its origin or cached version may become unavailable.")).toBeTruthy();
   expect(await screen.findByRole("button", { name: "Remove from Library" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Edit recipe" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Move to trash" })).toBeNull();
@@ -159,6 +159,48 @@ it("does not request an exact remote snapshot when the session is anonymous", as
   expect(await screen.findByRole("heading", { name: "Recipe unavailable" })).toBeTruthy();
   expect(calls).toContain("/api/auth/me");
   expect(calls.some((url) => url.startsWith("/api/recipes/"))).toBe(false);
+  expect(calls.some((url) => url.startsWith("/api/library/recipes/remote?"))).toBe(false);
+});
+
+it("opens a frozen private copy by bookmark ID, keeps cooking available, and never reads source cache", async () => {
+  window.history.replaceState(null, "", "/recipe?bookmark_id=private-pin%2F1");
+  const calls: string[] = [];
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    calls.push(url);
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse(user));
+    if (url === "/api/library/bookmarks/private-pin%2F1/snapshot") return Promise.resolve(jsonResponse({
+      object_uri: "https://peer.example/federation/recipes/soup", source_origin: "https://peer.example", source_recipe_id: "soup", creator_name: "Claimed cook",
+      sequence: null, received_at: "2026-11-01T00:00:00Z", version_id: "private-version", provenance_state: "user_imported_unverified", source_state: "disconnected",
+      recipe: { title: "Saved soup", description: "Frozen", ingredients: [{ name: "Tomato" }], steps: [{ text: "Simmer." }], servings: 2, prep_time_minutes: 0, cook_time_minutes: 10, tags: [] },
+    }));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<RecipeDetailRoot />);
+  expect(await screen.findByRole("heading", { name: "Saved soup" })).toBeTruthy();
+  expect(screen.getByText("Imported private copy · source not verified. This does not establish authorship.")).toBeTruthy();
+  expect(screen.getByText("Source status: source disconnected.")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Start cooking mode" })).toBeTruthy();
+  expect(calls).toContain("/api/library/bookmarks/private-pin%2F1/snapshot");
+  expect(calls.some((url) => url.startsWith("/api/library/recipes/remote?"))).toBe(false);
+  expect(calls.some((url) => url.startsWith("/api/library/bookmarks/status?remote_object_uri"))).toBe(false);
+});
+
+it("shows a blocked private-copy state without requesting the cache", async () => {
+  window.history.replaceState(null, "", "/recipe?bookmark_id=private-pin");
+  const calls: string[] = [];
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    calls.push(url);
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse(user));
+    if (url === "/api/library/bookmarks/private-pin/snapshot") return Promise.resolve(jsonResponse({ error: "snapshot_restricted" }, 404));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<RecipeDetailRoot />);
+  expect(await screen.findByRole("heading", { name: "Saved copy blocked" })).toBeTruthy();
+  expect(screen.getByText(/restricted by this instance/)).toBeTruthy();
   expect(calls.some((url) => url.startsWith("/api/library/recipes/remote?"))).toBe(false);
 });
 

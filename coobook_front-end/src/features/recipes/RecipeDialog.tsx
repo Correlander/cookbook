@@ -15,13 +15,16 @@ import CreatorCredits from "../creator/CreatorCredits.tsx";
 import Icon from "./RecipeIcon.tsx";
 import type { RemoteRecipe } from "./recipeUiTypes.ts";
 
+export type FrozenRemoteRecipe = Omit<RemoteRecipe, "sequence"> & { sequence?: number };
+type RecipeDetailPresentation = Recipe | PublicRecipeDetail | RemoteRecipe | FrozenRemoteRecipe;
+
 const CookingMode = lazy(() => import("../../CookingMode.tsx"));
 const RecipePublicationPanel = lazy(
   () => import("./RecipePublicationPanel.tsx"),
 );
 
 function isLocalRecipe(
-  recipe: Recipe | PublicRecipeDetail | RemoteRecipe,
+  recipe: RecipeDetailPresentation,
 ): recipe is Recipe {
   return "can_edit" in recipe;
 }
@@ -176,7 +179,7 @@ function RecipeHistory({ recipe, onRestored }: RecipeHistoryProps) {
   );
 }
 interface RecipeDialogProps {
-  recipe: Recipe | PublicRecipeDetail | RemoteRecipe | null;
+  recipe: RecipeDetailPresentation | null;
   currentUserID: string | null;
   onClose: () => void;
   onEdit: (recipe: Recipe) => void;
@@ -231,12 +234,14 @@ function RecipeDialog({
     [deleting, setDeleting] = useState(false),
     [targetServings, setTargetServings] = useState(""),
     [publicationOpen, setPublicationOpen] = useState(false);
+  const [savedBookmark, setSavedBookmark] = useState(bookmark);
   useEffect(() => {
     setHistoryOpen(false);
     setPublicationOpen(false);
     setDeleteError("");
     setTargetServings(recipe?.servings ? String(recipe.servings) : "");
   }, [recipe?.id, recipe?.servings]);
+  useEffect(() => setSavedBookmark(bookmark), [bookmark]);
   const servingFactor =
     recipe && recipe.servings > 0 && Number(targetServings) > 0
       ? Number(targetServings) / recipe.servings
@@ -249,6 +254,8 @@ function RecipeDialog({
   if (!recipe) return null;
   const currentRecipe = recipe;
   const isRemote = !("version" in currentRecipe);
+  const isPrivateSnapshot = isRemote && savedBookmark?.save_state === "snapshot";
+  const sourceSequence = "sequence" in currentRecipe ? currentRecipe.sequence : undefined;
   const localRecipe = isLocalRecipe(currentRecipe);
   const bookmarkTarget = isRemote
     ? { remote_object_uri: currentRecipe.id }
@@ -297,6 +304,18 @@ function RecipeDialog({
           </span>
           <h2 id="dialog-title">{recipe.title}</h2>
           <p>{recipe.description}</p>
+          {isPrivateSnapshot && savedBookmark?.provenance_state === "user_imported_unverified" && (
+            <p className="dialog-note">Imported private copy · source not verified. This does not establish authorship.</p>
+          )}
+          {isPrivateSnapshot && savedBookmark?.provenance_state === "publisher_verified" && (
+            <p className="dialog-note">Frozen private copy{sourceSequence === undefined ? "" : ` · source sequence ${sourceSequence}`} · publisher retention claim recorded; this does not establish authorship. Source changes do not update this copy.</p>
+          )}
+          {isPrivateSnapshot && !savedBookmark?.provenance_state && (
+            <p className="dialog-note">Frozen private copy · source verification details are unavailable. Source changes do not update this copy.</p>
+          )}
+          {isPrivateSnapshot && savedBookmark?.source_state && (
+            <p className="dialog-note">Source status: {formatRemoteSourceState(savedBookmark.source_state)}.</p>
+          )}
           {currentUserID && isLocalRecipe(currentRecipe) && (
             <CreatorCredits
               attributions={currentRecipe.creator_attributions}
@@ -405,8 +424,11 @@ function RecipeDialog({
           <BookmarkAction
             currentUserID={currentUserID}
             target={bookmarkTarget}
-            bookmark={bookmark}
-            onChange={onBookmarkChange}
+            bookmark={savedBookmark}
+            onChange={(nextBookmark, created, removed) => {
+              setSavedBookmark(nextBookmark ?? undefined);
+              onBookmarkChange?.(nextBookmark, created, removed);
+            }}
           />
           {!isRemote && (
             <a
@@ -557,7 +579,9 @@ function RecipeDialog({
           </div>
           <p className="dialog-note">
             {isRemote && "source_origin" in recipe
-              ? `From ${recipe.source_origin}. This saved snapshot is read-only.`
+              ? isPrivateSnapshot
+                ? `From ${recipe.source_origin}. This personal copy is read-only.`
+                : `Reference from ${recipe.source_origin}. Its origin or cached version may become unavailable.`
               : "Recipe details from this Cookbook instance."}
           </p>
         </div>
@@ -586,6 +610,17 @@ function RecipeDialog({
       {content}
     </div>
   );
+}
+
+function formatRemoteSourceState(value: string): string {
+  switch (value) {
+    case "published": return "available at last check";
+    case "withdrawn": return "withdrawn by the source";
+    case "disconnected": return "source disconnected";
+    case "unreachable": return "source unreachable";
+    case "unknown_legacy": return "unavailable or unknown";
+    default: return "status unavailable";
+  }
 }
 
 export default RecipeDialog;

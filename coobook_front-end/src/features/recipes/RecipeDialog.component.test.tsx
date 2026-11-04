@@ -1,6 +1,6 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import type { PublicRecipeDetail, Recipe } from "../../apiModels";
+import type { PublicRecipeDetail, Recipe, RecipeBookmarkView } from "../../apiModels";
 import RecipeDialog from "./RecipeDialog.tsx";
 
 const recipe: Recipe = {
@@ -95,4 +95,22 @@ it("does not render typed profile links for the anonymous public projection", ()
   expect(screen.getByText("By Legacy Cook")).toBeTruthy();
   expect(screen.queryByRole("region", { name: "Recipe creator credits" })).toBeNull();
   expect(screen.queryByRole("link", { name: "Legacy Cook" })).toBeNull();
+});
+
+it("labels frozen imported copies without claiming source verification or authorship", () => {
+  const uri = "https://peer.example/federation/recipes/1";
+  const snapshot = {
+    id: uri, title: "Saved soup", description: "Frozen", ingredients: [], steps: [{ text: "Cook." }],
+    servings: 1, prep_time_minutes: 0, cook_time_minutes: 1, tags: [], creator_name: "Claimed cook",
+    source_origin: "https://peer.example",
+  };
+  const bookmark: RecipeBookmarkView = {
+    id: "pin-1", target_kind: "remote", target: { remote_object_uri: uri }, availability: "available", created_at: "then",
+    save_state: "snapshot", provenance_state: "user_imported_unverified", source_state: "withdrawn",
+  };
+  render(<RecipeDialog recipe={snapshot} currentUserID="reader" bookmark={bookmark} onClose={vi.fn()} onEdit={vi.fn()} onRestored={vi.fn()} onDelete={vi.fn(async () => {})} onTransfer={vi.fn()} canEdit={false} canDelete={false} canFork={false} presentation="page" />);
+  expect(screen.getByText("Imported private copy · source not verified. This does not establish authorship.")).toBeTruthy();
+  expect(screen.getByText("Source status: withdrawn by the source.")).toBeTruthy();
+  expect(screen.getByText("From https://peer.example. This personal copy is read-only.")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Create a copy" })).toBeNull();
 });

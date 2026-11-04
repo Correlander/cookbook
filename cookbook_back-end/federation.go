@@ -191,7 +191,16 @@ func acceptFederationEvent(ctx context.Context, db *sql.DB, keyOrigin string, bo
 	if event.EventType == federationEventTombstone {
 		_, err = tx.ExecContext(ctx, `UPDATE federation_remote_recipes SET sequence=?,creator_name='',recipe_json='',deleted=1,updated_at=? WHERE object_id=? AND source_origin=?`, event.Sequence, timestamp(), event.ObjectID, keyOrigin)
 	} else {
-		_, err = tx.ExecContext(ctx, `INSERT INTO federation_remote_recipes(object_id,source_origin,source_recipe_id,sequence,creator_name,recipe_json,deleted,updated_at) VALUES(?,?,?,?,?,?,0,?) ON CONFLICT(object_id) DO UPDATE SET sequence=excluded.sequence,creator_name=excluded.creator_name,recipe_json=excluded.recipe_json,deleted=0,updated_at=excluded.updated_at`, event.ObjectID, keyOrigin, strings.Split(event.ObjectID, "/federation/recipes/")[1], event.Sequence, event.Attribution.CreatorName, string(recipeJSON), timestamp())
+		updatedAt := timestamp()
+		recipeID := strings.TrimPrefix(event.ObjectID, keyOrigin+"/federation/recipes/")
+		_, err = tx.ExecContext(ctx, `INSERT INTO federation_remote_recipes(object_id,source_origin,source_recipe_id,sequence,creator_name,recipe_json,deleted,updated_at) VALUES(?,?,?,?,?,?,0,?) ON CONFLICT(object_id) DO UPDATE SET sequence=excluded.sequence,creator_name=excluded.creator_name,recipe_json=excluded.recipe_json,deleted=0,updated_at=excluded.updated_at`, event.ObjectID, keyOrigin, recipeID, event.Sequence, event.Attribution.CreatorName, string(recipeJSON), updatedAt)
+		if err == nil {
+			source := RemoteRecipeReadView{
+				ObjectURI: event.ObjectID, SourceOrigin: keyOrigin, SourceRecipeID: recipeID,
+				CreatorName: event.Attribution.CreatorName, Sequence: event.Sequence, UpdatedAt: updatedAt,
+			}
+			err = writeRemoteRecipeSearchProjection(ctx, tx, source, string(recipeJSON))
+		}
 	}
 	if err != nil {
 		return 0, nil, err

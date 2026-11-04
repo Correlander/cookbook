@@ -113,10 +113,16 @@ func run() error {
 		return fmt.Errorf("load federation signing key: %w", err)
 	}
 	startFederationOutboxWorker(ctx, db, cfg.federationKeyDir)
+	backfillDone := startLibraryRemoteSearchBackfill(ctx, db)
+	defer stopAndWaitForWorker(stop, backfillDone)
 	log.Printf("Cookbook API listening on %s", cfg.address)
 	serverErr := runHTTPServer(ctx, server, listener, 20*time.Second)
-	stop()
 	return serverErr
+}
+
+func stopAndWaitForWorker(stop context.CancelFunc, done <-chan struct{}) {
+	stop()
+	<-done
 }
 
 func requireSession(db *sql.DB, next http.Handler) http.Handler {

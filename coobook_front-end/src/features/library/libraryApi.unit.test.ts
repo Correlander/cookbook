@@ -32,6 +32,17 @@ it("reads the matching canonical Library endpoint with server paging metadata", 
   expect(page.items[0]?.availability).toBe("available");
 });
 
+it("serializes a trimmed recipe query and never sends search to cookbooks", async () => {
+  const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ items: [], total: 0, limit: 24, offset: 0 })));
+  vi.stubGlobal("fetch", fetchMock);
+  await fetchLibraryPage("recipes", 0, "  tomato soup  ");
+  expect(fetchMock).toHaveBeenLastCalledWith("/api/library/recipes?limit=24&offset=0&q=tomato+soup", { cache: "no-store", credentials: "same-origin" });
+  await fetchLibraryPage("recipes", 0, "   ");
+  expect(fetchMock).toHaveBeenLastCalledWith("/api/library/recipes?limit=24&offset=0", { cache: "no-store", credentials: "same-origin" });
+  await fetchLibraryPage("cookbooks", 0);
+  expect(fetchMock).toHaveBeenLastCalledWith("/api/library/cookbooks?limit=24&offset=0", { cache: "no-store", credentials: "same-origin" });
+});
+
 it("rejects malformed union rows and strips extra metadata from unavailable entries", async () => {
   const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [{ availability: "unavailable", target_kind: "local", bookmark_id: "saved-1", created_at: "2026-01-01", recipe: { title: "stale secret" }, local_recipe_id: "private-id" }], total: 1, limit: 24, offset: 0 }));
   vi.stubGlobal("fetch", fetchMock);

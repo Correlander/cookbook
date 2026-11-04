@@ -103,6 +103,37 @@ func TestRunHTTPServerDrainsInFlightRequestOnCancellation(t *testing.T) {
 	}
 }
 
+func TestBackfillWorkerIsCancelledAndJoinedAfterServerFailure(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	workerStarted := make(chan struct{})
+	workerDone := make(chan struct{})
+	go func() {
+		close(workerStarted)
+		<-ctx.Done()
+		close(workerDone)
+	}()
+	<-workerStarted
+
+	serverErr := runHTTPServer(ctx, newApplicationServer("127.0.0.1:0", http.NotFoundHandler()), listener, time.Second)
+	if serverErr == nil {
+		t.Fatal("closed listener did not report a server failure")
+	}
+	stopAndWaitForWorker(cancel, workerDone)
+	select {
+	case <-workerDone:
+	default:
+		t.Fatal("backfill worker was not joined after server failure")
+	}
+}
+
 func TestHealthEndpoint(t *testing.T) {
 	db := testDatabase(t)
 	recorder := httptest.NewRecorder()

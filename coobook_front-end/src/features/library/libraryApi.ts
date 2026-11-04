@@ -21,16 +21,18 @@ import type {
 
 export const LIBRARY_PAGE_SIZE = 24;
 
-export function fetchLibraryPage(type: "recipes", offset?: number): Promise<LibraryPage<LibraryRecipeItem>>;
+export function fetchLibraryPage(type: "recipes", offset?: number, query?: string): Promise<LibraryPage<LibraryRecipeItem>>;
 export function fetchLibraryPage(type: "cookbooks", offset?: number): Promise<LibraryPage<LibraryCookbookItem>>;
 export async function fetchLibraryPage(
   type: LibraryType,
   offset = 0,
+  query = "",
 ): Promise<LibraryPage<LibraryRecipeItem> | LibraryPage<LibraryCookbookItem>> {
   const params = new URLSearchParams({
     limit: String(LIBRARY_PAGE_SIZE),
     offset: String(offset),
   });
+  if (type === "recipes" && query.trim()) params.set("q", query.trim());
   const response = await fetch(`/api/library/${type}?${params}`, {
     cache: "no-store",
     credentials: "same-origin",

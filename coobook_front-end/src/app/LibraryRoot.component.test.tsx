@@ -36,6 +36,148 @@ it("reads only the selected canonical recipes page and renders current relations
   expect(calls.some((url) => url === "/api/recipes?limit=24&offset=0" || url.startsWith("/api/library/bookmarks?"))).toBe(false);
 });
 
+it("restores a multiword URL query and ignores a stale query response", async () => {
+  window.history.replaceState(null, "", "/library?type=recipes&q=tomato+soup");
+  let resolveOld!: (response: Response) => void;
+  const calls: string[] = [];
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input); calls.push(url);
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse(user));
+    if (url === "/api/library/recipes?limit=24&offset=0&q=tomato+soup") return new Promise<Response>((resolve) => { resolveOld = resolve; });
+    if (url === "/api/library/recipes?limit=24&offset=0&q=lentil+soup") return Promise.resolve(jsonResponse({ items: [], total: 0, limit: 24, offset: 0 }));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<LibraryRoot />);
+  const input = await screen.findByRole("searchbox", { name: "Search your recipes" });
+  expect((input as HTMLInputElement).value).toBe("tomato soup");
+  fireEvent.change(input, { target: { value: "lentil soup" } });
+  await screen.findByText("Unavailable saved references cannot be searched because their source content is unavailable.");
+  expect(window.location.search).toBe("?type=recipes&q=lentil+soup");
+  await act(async () => resolveOld(jsonResponse({ items: [{ availability: "available", target_kind: "local", relationships: ["owned"], recipe: { ...recipe, id: "old", title: "Stale tomato soup" } }], total: 25, limit: 24, offset: 0 })));
+  expect(screen.queryByText("Stale tomato soup")).toBeNull();
+  expect(calls).toContain("/api/library/recipes?limit=24&offset=0&q=tomato+soup");
+  expect(calls).toContain("/api/library/recipes?limit=24&offset=0&q=lentil+soup");
+  expect(calls.some((url) => url.includes("/api/library/cookbooks?") && url.includes("q="))).toBe(false);
+});
+
+it("resets a later recipe page to offset zero when the search query changes", async () => {
+  window.history.replaceState(null, "", "/library?type=recipes&q=older");
+  const calls: string[] = [];
+  const firstItems = Array.from({ length: 24 }, (_, index) => ({
+    availability: "available",
+    target_kind: "local",
+    relationships: ["owned"],
+    recipe: { ...recipe, id: `older-${index}`, title: `Older recipe ${index}` },
+  }));
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input); calls.push(url);
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse(user));
+    if (url === "/api/library/recipes?limit=24&offset=0&q=older")
+      return Promise.resolve(jsonResponse({ items: firstItems, total: 50, limit: 24, offset: 0 }));
+    if (url === "/api/library/recipes?limit=24&offset=24&q=older")
+      return Promise.resolve(jsonResponse({ items: [{ availability: "available", target_kind: "local", relationships: ["owned"], recipe: { ...recipe, id: "older-24", title: "Older recipe 24" } }], total: 50, limit: 24, offset: 24 }));
+    if (url === "/api/library/recipes?limit=24&offset=0&q=newer")
+      return Promise.resolve(jsonResponse({ items: [], total: 0, limit: 24, offset: 0 }));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<LibraryRoot />);
+  await screen.findByText("Showing 24 of 50 recipes.");
+  fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+  await screen.findByText("Showing 25 of 50 recipes.");
+  expect(calls).toContain("/api/library/recipes?limit=24&offset=24&q=older");
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search your recipes" }), { target: { value: "newer" } });
+  await screen.findByText("Unavailable saved references cannot be searched because their source content is unavailable.");
+  expect(calls).toContain("/api/library/recipes?limit=24&offset=0&q=newer");
+  expect(calls.some((url) => url.includes("offset=24") && url.includes("q=newer"))).toBe(false);
+});
+
+it("ignores a pending recipe search response after the signed-in actor changes", async () => {
+  window.history.replaceState(null, "", "/library?type=recipes&q=actor");
+  const nextUser = { ...user, id: "reader-2", email: "second@example.test", display_name: "Second Reader" };
+  let sessionChecks = 0;
+  let searchRequests = 0;
+  let resolveFirstSearch!: (response: Response) => void;
+  const calls: string[] = [];
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input); calls.push(url);
+    if (url === "/api/auth/me") {
+      sessionChecks += 1;
+      return Promise.resolve(jsonResponse(sessionChecks === 1 ? user : nextUser));
+    }
+    if (url === "/api/auth/logout" && init?.method === "POST") return Promise.resolve(new Response(null, { status: 204 }));
+    if (url === "/api/library/recipes?limit=24&offset=0&q=actor") {
+      searchRequests += 1;
+      if (searchRequests === 1) return new Promise<Response>((resolve) => { resolveFirstSearch = resolve; });
+      return Promise.resolve(jsonResponse({ items: [{ availability: "available", target_kind: "local", relationships: ["owned"], recipe: { ...recipe, id: "second-actor", title: "Second actor recipe" } }], total: 1, limit: 24, offset: 0 }));
+    }
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<LibraryRoot />);
+  await screen.findByRole("searchbox", { name: "Search your recipes" });
+  fireEvent.click(screen.getByRole("button", { name: "Reader account menu" }));
+  fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+  expect(await screen.findByRole("link", { name: "Open Second actor recipe" })).toBeTruthy();
+  await act(async () => resolveFirstSearch(jsonResponse({ items: [{ availability: "available", target_kind: "local", relationships: ["owned"], recipe: { ...recipe, id: "first-actor-secret", title: "First actor stale recipe" } }], total: 25, limit: 24, offset: 0 })));
+  expect(screen.queryByText("First actor stale recipe")).toBeNull();
+  expect(screen.getByRole("link", { name: "Open Second actor recipe" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+  expect(calls.filter((url) => url === "/api/library/recipes?limit=24&offset=0&q=actor")).toHaveLength(2);
+  expect(calls.some((url) => url.includes("offset=24") && url.includes("q=actor"))).toBe(false);
+});
+
+it("hides old-query Load more after the new query fails", async () => {
+  window.history.replaceState(null, "", "/library?type=recipes&q=older");
+  const calls: string[] = [];
+  const oldItems = Array.from({ length: 24 }, (_, index) => ({
+    availability: "available",
+    target_kind: "local",
+    relationships: ["owned"],
+    recipe: { ...recipe, id: `old-${index}`, title: `Old recipe ${index}` },
+  }));
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input); calls.push(url);
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse(user));
+    if (url === "/api/library/recipes?limit=24&offset=0&q=older")
+      return Promise.resolve(jsonResponse({ items: oldItems, total: 25, limit: 24, offset: 0 }));
+    if (url === "/api/library/recipes?limit=24&offset=0&q=newer")
+      return Promise.resolve(jsonResponse({}, 503));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<LibraryRoot />);
+  expect(await screen.findByRole("button", { name: "Load more" })).toBeTruthy();
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search your recipes" }), { target: { value: "newer" } });
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+  expect(screen.queryByText("Old recipe 0")).toBeNull();
+  expect(calls).toContain("/api/library/recipes?limit=24&offset=0&q=newer");
+  expect(calls.some((url) => url.includes("offset=24") && url.includes("q=older"))).toBe(false);
+});
+
+it("clears recipe search when switching to cookbooks and restores it through history", async () => {
+  window.history.replaceState(null, "", "/library?type=recipes&q=tomato+soup");
+  const calls: string[] = [];
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input); calls.push(url);
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse(user));
+    if (url.startsWith("/api/library/")) return Promise.resolve(jsonResponse({ items: [], total: 0, limit: 24, offset: 0 }));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<LibraryRoot />);
+  await screen.findByText("Items you own, can access through a cookbook, or save appear here.");
+  fireEvent.click(screen.getByRole("button", { name: "Cookbooks" }));
+  await waitFor(() => expect(window.location.search).toBe("?type=cookbooks"));
+  expect(screen.queryByRole("searchbox", { name: "Search your recipes" })).toBeNull();
+  expect(calls.some((url) => url.startsWith("/api/library/cookbooks?") && url.includes("q="))).toBe(false);
+  window.history.back();
+  act(() => window.dispatchEvent(new PopStateEvent("popstate")));
+  await waitFor(() => expect((screen.getByRole("searchbox", { name: "Search your recipes" }) as HTMLInputElement).value).toBe("tomato soup"));
+});
+
 it("switches types through browser history and requests only the matching endpoint", async () => {
   window.history.replaceState(null, "", "/library?type=recipes");
   const calls: string[] = [];

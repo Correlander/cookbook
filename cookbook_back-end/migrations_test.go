@@ -58,18 +58,25 @@ func TestFreshDatabaseRecordsAllRegisteredMigrations(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if got := migrationVersion(t, db); got != 8 {
-		t.Fatalf("migration version=%d, want 8", got)
+	if got := migrationVersion(t, db); got != 9 {
+		t.Fatalf("migration version=%d, want 9", got)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != 8 {
-		t.Fatalf("migration ledger rows=%d err=%v, want 8", count, err)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != 9 {
+		t.Fatalf("migration ledger rows=%d err=%v, want 9", count, err)
 	}
-	for version, name := range map[int]string{1: "legacy-baseline", 2: "instance-owner-authority", 3: "recipe-publication-policy", 4: "offline-passkey-enrollment", 5: "person-actor-identity", 6: "personal-library-bookmarks", 7: "creator-profile-household-foundation", 8: "personal-library-cookbook-bookmarks"} {
+	for version, name := range map[int]string{1: "legacy-baseline", 2: "instance-owner-authority", 3: "recipe-publication-policy", 4: "offline-passkey-enrollment", 5: "person-actor-identity", 6: "personal-library-bookmarks", 7: "creator-profile-household-foundation", 8: "personal-library-cookbook-bookmarks", 9: "library-remote-search-projection"} {
 		var got string
 		if err := db.QueryRow(`SELECT name FROM schema_migrations WHERE version=?`, version).Scan(&got); err != nil || got != name {
 			t.Fatalf("migration %d name=%q err=%v, want %q", version, got, err, name)
 		}
+	}
+	if !migrationObjectExists(t, db, "table", "federation_remote_recipe_search") || !migrationObjectExists(t, db, "trigger", "federation_remote_recipe_search_invalidate_after_update") {
+		t.Fatal("fresh migration omitted the remote recipe projection table or invalidation trigger")
+	}
+	var projections int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_remote_recipe_search`).Scan(&projections); err != nil || projections != 0 {
+		t.Fatalf("fresh projection rows=%d err=%v, want zero", projections, err)
 	}
 	var owner sql.NullString
 	var generation int64
@@ -78,7 +85,7 @@ func TestFreshDatabaseRecordsAllRegisteredMigrations(t *testing.T) {
 	}
 }
 
-func TestMigrationV1ToV7ChecksumsRemainImmutable(t *testing.T) {
+func TestMigrationV1ToV8ChecksumsRemainImmutable(t *testing.T) {
 	migrations := registeredSchemaMigrations()
 	want := []string{
 		"c77f29249dfa71f9c86b38cf6a3db05331f790156314647230d80868342f11ba",
@@ -88,9 +95,10 @@ func TestMigrationV1ToV7ChecksumsRemainImmutable(t *testing.T) {
 		"533bc6b05a609de6a66ca71fb5ea272bf6476c5a0a8c957025498e3d301cd02d",
 		"0134ad6cbd8b0798fc648fe693cdff4f61f9e1fb2df8c16a6acf901e0c6bd3b3",
 		"b6359ac22a017f3269fde15bc9f66167368e54a84fb8fa3b1e901be2703de453",
+		"3b37e28d24ba0090c8b278603cb6dd16580ee149189e6377657d3c8c7bf68d30",
 	}
-	if len(migrations) < 8 {
-		t.Fatalf("registered migrations=%d, want the seven historical migrations and appended v8", len(migrations))
+	if len(migrations) < 9 {
+		t.Fatalf("registered migrations=%d, want the eight historical migrations and appended v9", len(migrations))
 	}
 	for index, checksum := range want {
 		if migrations[index].checksum != checksum {
@@ -99,7 +107,161 @@ func TestMigrationV1ToV7ChecksumsRemainImmutable(t *testing.T) {
 	}
 }
 
-func TestV4DatabaseUpgradesToV8WithoutChangingEarlierLedgerRows(t *testing.T) {
+func TestV8DatabaseUpgradePreservesRemoteSnapshotsAndLeavesProjectionEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v8-library-projection-upgrade.db")
+	db := rawMigrationDB(t, path)
+	ctx := context.Background()
+	migrations := registeredSchemaMigrations()
+	if err := runSchemaMigrations(ctx, db, migrations[:8]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO federation_peers(origin,enabled,created_at,updated_at) VALUES('https://remote.example',1,'created','updated');
+		INSERT INTO federation_remote_recipes(object_id,source_origin,source_recipe_id,sequence,creator_name,recipe_json,deleted,updated_at)
+		VALUES('https://remote.example/federation/recipes/recipe-one','https://remote.example','recipe-one',7,'Remote cook','{"title":"Legacy snapshot"}',0,'snapshot-time')`); err != nil {
+		t.Fatal(err)
+	}
+	type migrationRecord struct {
+		version        int
+		name, checksum string
+	}
+	var before []migrationRecord
+	rows, err := db.Query(`SELECT version,name,checksum FROM schema_migrations ORDER BY version`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var item migrationRecord
+		if err := rows.Scan(&item.version, &item.name, &item.checksum); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		before = append(before, item)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 8 {
+		t.Fatalf("pre-upgrade ledger rows=%d, want 8", len(before))
+	}
+	if err := runSchemaMigrations(ctx, db, migrations); err != nil {
+		t.Fatal(err)
+	}
+	if got := migrationVersion(t, db); got != 9 {
+		t.Fatalf("upgraded version=%d, want 9", got)
+	}
+	for _, item := range before {
+		var name, checksum string
+		if err := db.QueryRow(`SELECT name,checksum FROM schema_migrations WHERE version=?`, item.version).Scan(&name, &checksum); err != nil || name != item.name || checksum != item.checksum {
+			t.Fatalf("migration v%d changed: name=%q checksum=%q err=%v", item.version, name, checksum, err)
+		}
+	}
+	var cachedBody string
+	if err := db.QueryRow(`SELECT recipe_json FROM federation_remote_recipes WHERE object_id='https://remote.example/federation/recipes/recipe-one'`).Scan(&cachedBody); err != nil || cachedBody != `{"title":"Legacy snapshot"}` {
+		t.Fatalf("cached remote snapshot changed: body=%q err=%v", cachedBody, err)
+	}
+	var projections int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_remote_recipe_search`).Scan(&projections); err != nil || projections != 0 {
+		t.Fatalf("v8 upgrade populated projection rows=%d err=%v, want zero", projections, err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = openDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if got := migrationVersion(t, db); got != 9 {
+		t.Fatalf("restarted version=%d, want 9", got)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_remote_recipe_search`).Scan(&projections); err != nil || projections != 0 {
+		t.Fatalf("restart populated projection rows=%d err=%v, want zero", projections, err)
+	}
+}
+
+func TestLibraryRemoteRecipeSearchMigrationFailureRollsBackDDLAndLedger(t *testing.T) {
+	db := rawMigrationDB(t, ":memory:")
+	migrations := registeredSchemaMigrations()
+	if err := runSchemaMigrations(context.Background(), db, migrations[:8]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER federation_remote_recipe_search_invalidate_after_update AFTER INSERT ON users BEGIN SELECT 1; END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := runSchemaMigrations(context.Background(), db, migrations); err == nil {
+		t.Fatal("migration unexpectedly succeeded with a conflicting trigger name")
+	}
+	if migrationObjectExists(t, db, "table", "federation_remote_recipe_search") || migrationVersion(t, db) != 8 {
+		t.Fatal("failed v9 migration left partial DDL or advanced the ledger")
+	}
+	if _, err := db.Exec(`DROP TRIGGER federation_remote_recipe_search_invalidate_after_update`); err != nil {
+		t.Fatal(err)
+	}
+	if err := runSchemaMigrations(context.Background(), db, migrations); err != nil {
+		t.Fatal(err)
+	}
+	if migrationVersion(t, db) != 9 || !migrationObjectExists(t, db, "table", "federation_remote_recipe_search") || !migrationObjectExists(t, db, "trigger", "federation_remote_recipe_search_invalidate_after_update") {
+		t.Fatal("retry did not complete v9 schema and ledger")
+	}
+}
+
+func TestLibraryRemoteRecipeSearchProjectionInvalidatesOnSourceUpdatesAndDelete(t *testing.T) {
+	db, err := openDatabase(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO federation_peers(origin,enabled,created_at,updated_at) VALUES
+		('https://remote.example',1,'created','updated'),('https://other.example',1,'created','updated');
+		INSERT INTO federation_remote_recipes(object_id,source_origin,source_recipe_id,sequence,creator_name,recipe_json,deleted,updated_at)
+		VALUES('https://remote.example/federation/recipes/recipe-one','https://remote.example','recipe-one',7,'Remote cook','{"title":"Legacy snapshot"}',0,'snapshot-time')`); err != nil {
+		t.Fatal(err)
+	}
+	updates := []struct {
+		name, statement string
+		value           any
+		nextObjectID    string
+	}{
+		{name: "object identity", statement: `UPDATE federation_remote_recipes SET object_id=? WHERE object_id=?`, value: "https://remote.example/federation/recipes/recipe-renamed", nextObjectID: "https://remote.example/federation/recipes/recipe-renamed"},
+		{name: "source origin", statement: `UPDATE federation_remote_recipes SET source_origin=? WHERE object_id=?`, value: "https://other.example"},
+		{name: "source recipe id", statement: `UPDATE federation_remote_recipes SET source_recipe_id=? WHERE object_id=?`, value: "recipe-two"},
+		{name: "sequence", statement: `UPDATE federation_remote_recipes SET sequence=? WHERE object_id=?`, value: 8},
+		{name: "creator metadata", statement: `UPDATE federation_remote_recipes SET creator_name=? WHERE object_id=?`, value: "Updated cook"},
+		{name: "snapshot body", statement: `UPDATE federation_remote_recipes SET recipe_json=? WHERE object_id=?`, value: `{"title":"Updated snapshot"}`},
+		{name: "updated timestamp", statement: `UPDATE federation_remote_recipes SET updated_at=? WHERE object_id=?`, value: "updated-time"},
+		{name: "tombstone", statement: `UPDATE federation_remote_recipes SET deleted=? WHERE object_id=?`, value: 1},
+	}
+	objectID := "https://remote.example/federation/recipes/recipe-one"
+	for _, update := range updates {
+		t.Run(update.name, func(t *testing.T) {
+			if _, err := db.Exec(`INSERT INTO federation_remote_recipe_search(object_id,projection_version,available,title,description,tags_json) VALUES(?,1,1,'Projected','Searchable','[]')`, objectID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(update.statement, update.value, objectID); err != nil {
+				t.Fatal(err)
+			}
+			var remaining int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM federation_remote_recipe_search WHERE object_id=?`, objectID).Scan(&remaining); err != nil || remaining != 0 {
+				t.Fatalf("projection survived source update: count=%d err=%v", remaining, err)
+			}
+			if update.nextObjectID != "" {
+				objectID = update.nextObjectID
+			}
+		})
+	}
+	if _, err := db.Exec(`INSERT INTO federation_remote_recipe_search(object_id,projection_version,available,title,description,tags_json) VALUES(?,1,1,'Projected','Searchable','[]')`, objectID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM federation_remote_recipes WHERE object_id=?`, objectID); err != nil {
+		t.Fatal(err)
+	}
+	var remaining int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_remote_recipe_search WHERE object_id=?`, objectID).Scan(&remaining); err != nil || remaining != 0 {
+		t.Fatalf("projection survived cache-row delete cascade: count=%d err=%v", remaining, err)
+	}
+}
+
+func TestV4DatabaseUpgradesToV9WithoutChangingEarlierLedgerRows(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v4-upgrade.db")
 	db := rawMigrationDB(t, path)
 	ctx := context.Background()
@@ -140,8 +302,8 @@ func TestV4DatabaseUpgradesToV8WithoutChangingEarlierLedgerRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := migrationVersion(t, db); got != 8 {
-		t.Fatalf("upgraded migration version=%d, want 8", got)
+	if got := migrationVersion(t, db); got != 9 {
+		t.Fatalf("upgraded migration version=%d, want 9", got)
 	}
 	for _, entry := range before {
 		var name, checksum string
@@ -168,12 +330,12 @@ func TestV4DatabaseUpgradesToV8WithoutChangingEarlierLedgerRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if got := migrationVersion(t, db); got != 8 {
-		t.Fatalf("restarted migration version=%d, want 8", got)
+	if got := migrationVersion(t, db); got != 9 {
+		t.Fatalf("restarted migration version=%d, want 9", got)
 	}
 }
 
-func TestV5DatabaseUpgradesToV8WithStableLibraryNamespace(t *testing.T) {
+func TestV5DatabaseUpgradesToV9WithStableLibraryNamespace(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v5-bookmarks-upgrade.db")
 	db := rawMigrationDB(t, path)
 	ctx := context.Background()
@@ -215,9 +377,9 @@ func TestV5DatabaseUpgradesToV8WithStableLibraryNamespace(t *testing.T) {
 		db.Close()
 		t.Fatalf("new library namespace=%q err=%v", namespace, err)
 	}
-	if got := migrationVersion(t, db); got != 8 {
+	if got := migrationVersion(t, db); got != 9 {
 		db.Close()
-		t.Fatalf("upgraded version=%d, want 8", got)
+		t.Fatalf("upgraded version=%d, want 9", got)
 	}
 	for _, entry := range before {
 		var name, checksum string
@@ -332,8 +494,8 @@ DROP TRIGGER recipe_bookmarks_account_limit; DROP TABLE recipe_bookmarks; DROP T
 	if public != 1 || admin != 1 || creator != "Claimed Creator" || title != "Preserve me" || version != 4 || sessionID != "stable-session" || revisionCount != beforeRevisions {
 		t.Fatalf("adopted data changed: public=%d admin=%d creator=%q title=%q version=%d session=%q revisions=%d", public, admin, creator, title, version, sessionID, revisionCount)
 	}
-	if got := migrationVersion(t, db); got != 8 {
-		t.Fatalf("adopted migration version=%d, want 8", got)
+	if got := migrationVersion(t, db); got != 9 {
+		t.Fatalf("adopted migration version=%d, want 9", got)
 	}
 	var owner sql.NullString
 	var generation int64
@@ -342,7 +504,7 @@ DROP TRIGGER recipe_bookmarks_account_limit; DROP TABLE recipe_bookmarks; DROP T
 	}
 }
 
-func TestV6DatabaseUpgradesToV8WithoutBackfillAndSurvivesRestart(t *testing.T) {
+func TestV6DatabaseUpgradesToV9WithoutBackfillAndSurvivesRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v6-creator-upgrade.db")
 	db := rawMigrationDB(t, path)
 	ctx := context.Background()
@@ -361,8 +523,8 @@ func TestV6DatabaseUpgradesToV8WithoutBackfillAndSurvivesRestart(t *testing.T) {
 	if err := runSchemaMigrations(ctx, db, registeredSchemaMigrations()); err != nil {
 		t.Fatal(err)
 	}
-	if got := migrationVersion(t, db); got != 8 {
-		t.Fatalf("upgraded version=%d, want 8", got)
+	if got := migrationVersion(t, db); got != 9 {
+		t.Fatalf("upgraded version=%d, want 9", got)
 	}
 	var unchanged string
 	if err := db.QueryRow(`SELECT checksum FROM schema_migrations WHERE version=6`).Scan(&unchanged); err != nil || unchanged != v6Checksum {
@@ -433,8 +595,8 @@ func TestV6DatabaseUpgradesToV8WithoutBackfillAndSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if got := migrationVersion(t, db); got != 8 {
-		t.Fatalf("restart migration version=%d, want 8", got)
+	if got := migrationVersion(t, db); got != 9 {
+		t.Fatalf("restart migration version=%d, want 9", got)
 	}
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM creator_profiles`).Scan(&count); err != nil || count != 0 {
@@ -442,7 +604,7 @@ func TestV6DatabaseUpgradesToV8WithoutBackfillAndSurvivesRestart(t *testing.T) {
 	}
 }
 
-func TestV7DatabaseUpgradesToV8WithoutChangingLedgerOrExistingBookmarks(t *testing.T) {
+func TestV7DatabaseUpgradesToV9WithoutChangingLedgerOrExistingBookmarks(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v7-cookbook-bookmarks-upgrade.db")
 	db := rawMigrationDB(t, path)
 	ctx := context.Background()
@@ -486,8 +648,8 @@ func TestV7DatabaseUpgradesToV8WithoutChangingLedgerOrExistingBookmarks(t *testi
 	if err := runSchemaMigrations(ctx, db, registeredSchemaMigrations()); err != nil {
 		t.Fatal(err)
 	}
-	if got := migrationVersion(t, db); got != 8 {
-		t.Fatalf("upgraded version=%d, want 8", got)
+	if got := migrationVersion(t, db); got != 9 {
+		t.Fatalf("upgraded version=%d, want 9", got)
 	}
 	for _, item := range before {
 		var name, checksum string
@@ -510,8 +672,8 @@ func TestV7DatabaseUpgradesToV8WithoutChangingLedgerOrExistingBookmarks(t *testi
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if got := migrationVersion(t, db); got != 8 {
-		t.Fatalf("restart version=%d, want 8", got)
+	if got := migrationVersion(t, db); got != 9 {
+		t.Fatalf("restart version=%d, want 9", got)
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM recipe_bookmarks WHERE id='existing-recipe-ref'`).Scan(&recipeRows); err != nil || recipeRows != 1 {
 		t.Fatalf("restart changed recipe reference: count=%d err=%v", recipeRows, err)
@@ -549,8 +711,8 @@ func TestInstanceOwnerMigrationPreservesV1RowsAndLeavesAuthorityUnclaimed(t *tes
 	if err := runSchemaMigrations(ctx, db, registeredSchemaMigrations()); err != nil {
 		t.Fatal(err)
 	}
-	if got := migrationVersion(t, db); got != 8 {
-		t.Fatalf("migration version=%d, want 8", got)
+	if got := migrationVersion(t, db); got != 9 {
+		t.Fatalf("migration version=%d, want 9", got)
 	}
 	var owner sql.NullString
 	var claimedAt sql.NullString
@@ -619,7 +781,7 @@ func TestFutureMigrationRunsOnceAndFailureRollsBackStepAndLedger(t *testing.T) {
 	defer db.Close()
 	fail := true
 	runs := 0
-	step := migrationTestStep(9, "test-marker", func(ctx context.Context, exec migrationExecutor) error {
+	step := migrationTestStep(10, "test-marker", func(ctx context.Context, exec migrationExecutor) error {
 		runs++
 		if _, err := exec.ExecContext(ctx, `CREATE TABLE migration_marker(value TEXT NOT NULL); INSERT INTO migration_marker(value) VALUES('applied')`); err != nil {
 			return err
@@ -633,14 +795,14 @@ func TestFutureMigrationRunsOnceAndFailureRollsBackStepAndLedger(t *testing.T) {
 	if err := runSchemaMigrations(context.Background(), db, migrations); err == nil || !strings.Contains(err.Error(), "injected migration failure") {
 		t.Fatalf("failed migration error=%v", err)
 	}
-	if migrationObjectExists(t, db, "table", "migration_marker") || migrationVersion(t, db) != 8 {
+	if migrationObjectExists(t, db, "table", "migration_marker") || migrationVersion(t, db) != 9 {
 		t.Fatal("failed migration left partial DDL/data or advanced the ledger")
 	}
 	fail = false
 	if err := runSchemaMigrations(context.Background(), db, migrations); err != nil {
 		t.Fatal(err)
 	}
-	if migrationVersion(t, db) != 9 || !migrationObjectExists(t, db, "table", "migration_marker") {
+	if migrationVersion(t, db) != 10 || !migrationObjectExists(t, db, "table", "migration_marker") {
 		t.Fatal("pending migration did not apply")
 	}
 	if err := runSchemaMigrations(context.Background(), db, migrations); err != nil {
@@ -702,7 +864,7 @@ func TestMigrationNameChecksumAndNewerVersionAreValidated(t *testing.T) {
 	}{
 		{name: "name", update: `UPDATE schema_migrations SET name='other' WHERE version=2`, wantErrSub: `name`},
 		{name: "checksum", update: `UPDATE schema_migrations SET checksum=lower(hex(randomblob(32))) WHERE version=2`, wantErrSub: `checksum mismatch`},
-		{name: "newer version", update: `UPDATE schema_migrations SET version=999 WHERE version=8`, wantErrSub: `newer than this binary`},
+		{name: "newer version", update: `UPDATE schema_migrations SET version=999 WHERE version=9`, wantErrSub: `newer than this binary`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "ledger.db")
@@ -812,8 +974,8 @@ func TestConcurrentStartupSerializesBaselineMigration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := migrationVersion(t, first); got != 8 {
-		t.Fatalf("concurrent migration version=%d, want 8", got)
+	if got := migrationVersion(t, first); got != 9 {
+		t.Fatalf("concurrent migration version=%d, want 9", got)
 	}
 }
 

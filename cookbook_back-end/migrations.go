@@ -74,7 +74,37 @@ func registeredSchemaMigrations() []schemaMigration {
 		name:     "personal-library-cookbook-bookmarks",
 		checksum: migrationChecksum("personal-library-cookbook-bookmarks", cookbookBookmarkSchemaDDL+"\x00"+cookbookBookmarkLimitTriggerDDL),
 		apply:    ApplyCookbookBookmarkMigration,
+	}, {
+		version:  9,
+		name:     "library-remote-search-projection",
+		checksum: migrationChecksum("library-remote-search-projection", libraryRemoteRecipeSearchProjectionDDL+"\x00"+libraryRemoteRecipeSearchInvalidationTriggerDDL),
+		apply:    applyLibraryRemoteRecipeSearchProjectionMigration,
 	}}
+}
+
+const libraryRemoteRecipeSearchProjectionDDL = `CREATE TABLE federation_remote_recipe_search (
+	object_id TEXT PRIMARY KEY REFERENCES federation_remote_recipes(object_id) ON DELETE CASCADE,
+	projection_version INTEGER NOT NULL,
+	available INTEGER NOT NULL CHECK(available IN (0,1)),
+	title TEXT NOT NULL DEFAULT '',
+	description TEXT NOT NULL DEFAULT '',
+	tags_json TEXT NOT NULL DEFAULT '[]'
+)`
+
+const libraryRemoteRecipeSearchInvalidationTriggerDDL = `CREATE TRIGGER federation_remote_recipe_search_invalidate_after_update
+AFTER UPDATE ON federation_remote_recipes
+BEGIN
+	DELETE FROM federation_remote_recipe_search WHERE object_id=OLD.object_id;
+END`
+
+func applyLibraryRemoteRecipeSearchProjectionMigration(ctx context.Context, exec migrationExecutor) error {
+	if _, err := exec.ExecContext(ctx, libraryRemoteRecipeSearchProjectionDDL); err != nil {
+		return fmt.Errorf("create remote recipe search projection: %w", err)
+	}
+	if _, err := exec.ExecContext(ctx, libraryRemoteRecipeSearchInvalidationTriggerDDL); err != nil {
+		return fmt.Errorf("create remote recipe search invalidation trigger: %w", err)
+	}
+	return nil
 }
 
 func legacyBaselineDefinition() string {

@@ -92,6 +92,72 @@ func readCachedPublicRemoteRecipe(ctx context.Context, queryer interface {
 	return decodeCachedPublicRemoteRecipe(objectURI, origin, recipeID, result, body)
 }
 
+type cachedPublicRemoteRecipeResult struct {
+	View      RemoteRecipeReadView
+	Available bool
+}
+
+// readCachedPublicRemoteRecipeResults resolves a bounded batch through the
+// canonical decoder while treating absent or invalid cached objects as
+// unavailable references. SQL and row-scan failures remain errors.
+func readCachedPublicRemoteRecipeResults(ctx context.Context, queryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, actor ContentActor, objectURIs []string) (map[string]cachedPublicRemoteRecipeResult, error) {
+	result := make(map[string]cachedPublicRemoteRecipeResult, len(objectURIs))
+	if strings.TrimSpace(actor.AccountID) == "" || len(objectURIs) == 0 {
+		return result, nil
+	}
+	origins := make(map[string][2]string, len(objectURIs))
+	placeholders := make([]string, 0, len(objectURIs))
+	args := make([]any, 0, len(objectURIs))
+	for _, uri := range objectURIs {
+		origin, recipeID, err := parseFederationRecipeObjectURI(uri)
+		if err != nil {
+			result[uri] = cachedPublicRemoteRecipeResult{}
+			continue
+		}
+		if _, duplicate := origins[uri]; duplicate {
+			continue
+		}
+		origins[uri] = [2]string{origin, recipeID}
+		placeholders = append(placeholders, "?")
+		args = append(args, uri)
+	}
+	if len(args) == 0 {
+		return result, nil
+	}
+	rows, err := queryer.QueryContext(ctx, `SELECT object_id,source_origin,source_recipe_id,creator_name,recipe_json,sequence,updated_at
+		FROM federation_remote_recipes WHERE deleted=0 AND object_id IN (`+strings.Join(placeholders, ",")+")", args...)
+	if err != nil {
+		return nil, fmt.Errorf("read cached remote recipe batch: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item RemoteRecipeReadView
+		var body string
+		if err := rows.Scan(&item.ObjectURI, &item.SourceOrigin, &item.SourceRecipeID, &item.CreatorName, &body, &item.Sequence, &item.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan cached remote recipe batch: %w", err)
+		}
+		identity, ok := origins[item.ObjectURI]
+		if !ok {
+			continue
+		}
+		view, decodeErr := decodeCachedPublicRemoteRecipe(item.ObjectURI, identity[0], identity[1], item, body)
+		if decodeErr != nil {
+			result[item.ObjectURI] = cachedPublicRemoteRecipeResult{}
+			continue
+		}
+		result[item.ObjectURI] = cachedPublicRemoteRecipeResult{View: view, Available: true}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read cached remote recipe batch: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close cached remote recipe batch: %w", err)
+	}
+	return result, nil
+}
+
 // readCachedPublicRemoteRecipes resolves a bounded set of already-cached remote
 // objects in one query. It applies the same URI/source/body validation as the
 // single-object reader and never performs discovery or network access.

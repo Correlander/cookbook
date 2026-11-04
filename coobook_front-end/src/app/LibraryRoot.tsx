@@ -8,10 +8,14 @@ import { fetchLibraryPage, removeCookbookBookmark, removeRecipeBookmark } from "
 import ViewSwitcher from "../components/ViewSwitcher.tsx";
 
 type LibraryItem = LibraryRecipeItem | LibraryCookbookItem;
-type LibraryPageState = LibraryPage<LibraryItem> & { type: LibraryType; actorID: string };
+type LibraryPageState = LibraryPage<LibraryItem> & { type: LibraryType; actorID: string; query: string };
 
 function readType(): LibraryType {
   return new URLSearchParams(window.location.search).get("type") === "cookbooks" ? "cookbooks" : "recipes";
+}
+
+function readQuery(): string {
+  return new URLSearchParams(window.location.search).get("q") ?? "";
 }
 
 const libraryTypeOptions = [
@@ -33,7 +37,9 @@ function LibraryPageView() {
   const { state, currentUser, refreshSession } = useAppSession();
   const authenticatedActorID = state.status === "authenticated" ? state.currentUser.id : "";
   const [type, setType] = useState<LibraryType>("recipes");
+  const [query, setQuery] = useState("");
   const typeRef = useRef<LibraryType>("recipes");
+  const queryRef = useRef("");
   const [page, setPage] = useState<LibraryPageState | null>(null);
   const [nextOffset, setNextOffset] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -57,6 +63,14 @@ function LibraryPageView() {
         window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
       }
       typeRef.current = nextType;
+      const nextQuery = nextType === "recipes" ? readQuery() : "";
+      queryRef.current = nextQuery;
+      setQuery(nextQuery);
+      if (nextType !== "recipes" && new URLSearchParams(window.location.search).has("q")) {
+        const params = new URLSearchParams(window.location.search);
+        params.delete("q");
+        window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
+      }
       setType(nextType);
     };
     synchronize();
@@ -64,7 +78,7 @@ function LibraryPageView() {
     return () => window.removeEventListener("popstate", synchronize);
   }, []);
 
-  const loadFirstPage = useCallback(async (requestedType: LibraryType, actorID: string, keepNotice = false) => {
+  const loadFirstPage = useCallback(async (requestedType: LibraryType, actorID: string, requestedQuery: string, keepNotice = false) => {
     const request = ++generation.current;
     loadingMoreRef.current = false;
     setLoading(true);
@@ -74,16 +88,16 @@ function LibraryPageView() {
     if (!keepNotice) setNotice("");
     try {
       const result = requestedType === "recipes"
-        ? await fetchLibraryPage("recipes", 0)
+        ? await fetchLibraryPage("recipes", 0, requestedQuery)
         : await fetchLibraryPage("cookbooks", 0);
-      if (generation.current !== request || typeRef.current !== requestedType || actorRef.current !== actorID) return;
-      setPage({ ...result, type: requestedType, actorID });
+      if (generation.current !== request || typeRef.current !== requestedType || queryRef.current.trim() !== requestedQuery.trim() || actorRef.current !== actorID) return;
+      setPage({ ...result, type: requestedType, actorID, query: requestedQuery.trim() });
       setNextOffset(result.offset + result.items.length);
     } catch (caught: unknown) {
-      if (generation.current === request && typeRef.current === requestedType && actorRef.current === actorID)
-        setError(caught instanceof Error ? caught.message : `Could not load your ${requestedType} Library.`);
+      if (generation.current === request && typeRef.current === requestedType && queryRef.current.trim() === requestedQuery.trim() && actorRef.current === actorID)
+        setError(`${caught instanceof Error ? caught.message : `Could not load your ${requestedType} Library.`}${requestedQuery.trim() ? ` Search: “${requestedQuery.trim()}”.` : ""}`);
     } finally {
-      if (generation.current === request && typeRef.current === requestedType && actorRef.current === actorID) setLoading(false);
+      if (generation.current === request && typeRef.current === requestedType && queryRef.current.trim() === requestedQuery.trim() && actorRef.current === actorID) setLoading(false);
     }
   }, []);
 
@@ -96,22 +110,38 @@ function LibraryPageView() {
       setError("");
       return;
     }
-    void loadFirstPage(type, authenticatedActorID);
+    void loadFirstPage(type, authenticatedActorID, type === "recipes" ? query.trim() : "");
     return () => { generation.current += 1; };
-  }, [authenticatedActorID, loadFirstPage, state.status, type]);
+  }, [authenticatedActorID, loadFirstPage, state.status, type, query]);
 
   function selectType(nextType: LibraryType): void {
     if (typeRef.current === nextType) return;
     typeRef.current = nextType;
     const params = new URLSearchParams(window.location.search);
     params.set("type", nextType);
+    if (nextType === "cookbooks") params.delete("q");
+    else if (query.trim()) params.set("q", query.trim());
     window.history.pushState(null, "", `${window.location.pathname}?${params}`);
     setType(nextType);
+    const nextQuery = nextType === "recipes" ? query : "";
+    queryRef.current = nextQuery;
+    setQuery(nextQuery);
+  }
+
+  function updateQuery(nextQuery: string): void {
+    const params = new URLSearchParams(window.location.search);
+    params.set("type", "recipes");
+    if (nextQuery.trim()) params.set("q", nextQuery.trim());
+    else params.delete("q");
+    window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
+    queryRef.current = nextQuery;
+    setQuery(nextQuery);
   }
 
   async function loadMore(): Promise<void> {
     const currentPage = page;
-    if (!currentPage || currentPage.type !== type || loading || loadingMoreRef.current || nextOffset >= currentPage.total) return;
+    const currentQuery = type === "recipes" ? queryRef.current.trim() : "";
+    if (!currentPage || currentPage.type !== type || currentPage.actorID !== actorRef.current || currentPage.query !== currentQuery || loading || loadingMoreRef.current || nextOffset >= currentPage.total) return;
     const request = generation.current;
     const requestedType = type;
     const requestedActor = currentPage.actorID;
@@ -121,9 +151,9 @@ function LibraryPageView() {
     setMoreError("");
     try {
       const result = requestedType === "recipes"
-        ? await fetchLibraryPage("recipes", requestedOffset)
+      ? await fetchLibraryPage("recipes", requestedOffset, currentPage.query)
         : await fetchLibraryPage("cookbooks", requestedOffset);
-      if (generation.current !== request || typeRef.current !== requestedType || actorRef.current !== requestedActor) return;
+      if (generation.current !== request || typeRef.current !== requestedType || (requestedType === "recipes" && queryRef.current.trim() !== currentPage.query) || actorRef.current !== requestedActor) return;
       setPage((current) => {
         if (!current || current.type !== requestedType) return current;
         const known = new Set(current.items.map(libraryIdentity));
@@ -131,10 +161,10 @@ function LibraryPageView() {
       });
       setNextOffset(result.offset + result.items.length);
     } catch (caught: unknown) {
-      if (generation.current === request && typeRef.current === requestedType && actorRef.current === requestedActor)
-        setMoreError(caught instanceof Error ? caught.message : `Could not load more ${requestedType}.`);
+      if (generation.current === request && typeRef.current === requestedType && (requestedType !== "recipes" || queryRef.current.trim() === currentPage.query) && actorRef.current === requestedActor)
+        setMoreError(`${caught instanceof Error ? caught.message : `Could not load more ${requestedType}.`}${requestedType === "recipes" && currentPage.query ? ` Search: “${currentPage.query}”.` : ""}`);
     } finally {
-      if (generation.current === request && typeRef.current === requestedType && actorRef.current === requestedActor) {
+      if (generation.current === request && typeRef.current === requestedType && (requestedType !== "recipes" || queryRef.current.trim() === currentPage.query) && actorRef.current === requestedActor) {
         loadingMoreRef.current = false;
         setLoadingMore(false);
       }
@@ -152,18 +182,19 @@ function LibraryPageView() {
       else await removeCookbookBookmark(bookmarkID);
       if (generation.current !== request || typeRef.current !== selectedType || actorRef.current !== selectedActor) return;
       setNotice("Saved reference removed.");
-      await loadFirstPage(selectedType, selectedActor, true);
+      await loadFirstPage(selectedType, selectedActor, selectedType === "recipes" ? queryRef.current.trim() : "", true);
     } catch {
       if (generation.current !== request || typeRef.current !== selectedType || actorRef.current !== selectedActor) return;
       setNotice("Could not remove that saved reference. The current Library was reloaded.");
-      await loadFirstPage(selectedType, selectedActor, true);
+      await loadFirstPage(selectedType, selectedActor, selectedType === "recipes" ? queryRef.current.trim() : "", true);
     } finally {
-      if (typeRef.current === selectedType) setBusyBookmarkID("");
+      if (typeRef.current === selectedType && actorRef.current === selectedActor) setBusyBookmarkID("");
     }
   }
 
-  const hasMore = Boolean(page && page.type === type && nextOffset < page.total);
-  const activePage = page?.type === type && page.actorID === currentUser?.id ? page : null;
+  const activeQuery = type === "recipes" ? query.trim() : "";
+  const activePage = page?.type === type && page.actorID === currentUser?.id && page.query === activeQuery ? page : null;
+  const hasMore = Boolean(activePage && nextOffset < activePage.total);
 
   return (
     <div className="app-content">
@@ -180,10 +211,11 @@ function LibraryPageView() {
                   <ViewSwitcher label="Library type" value={type} options={libraryTypeOptions} onChange={selectType} />
                   <a className="text-link" href={`/create?type=${type}`}>Create {type === "recipes" ? "recipe" : "cookbook"}</a>
                 </div>
+                {type === "recipes" && <div className="library-search"><label htmlFor="library-recipe-search">Search your recipes</label><input id="library-recipe-search" type="search" value={query} onChange={(event) => updateQuery(event.currentTarget.value)} placeholder="Title, description, or tag" autoComplete="off" /></div>}
                 {notice && <p role="status">{notice}</p>}
-                {loading && !activePage && <p role="status">Loading your {type} Library…</p>}
-                {error && <div><p role="alert" className="form-message">{error}</p><button type="button" className="text-link" onClick={() => { if (currentUser) void loadFirstPage(type, currentUser.id); }}>Retry loading {type}</button></div>}
-                {activePage && currentUser && <LibraryCollection type={type} page={activePage} userID={currentUser.id} busyBookmarkID={busyBookmarkID} onBookmarkChange={() => { setNotice("Library updated."); void loadFirstPage(type, currentUser.id, true); }} onMutationUncertain={() => void loadFirstPage(type, currentUser.id, true)} onRemoveUnavailable={(id) => void removeUnavailable(id)} />}
+                {loading && !activePage && <p role="status">Loading your {type} Library{activeQuery ? ` for “${activeQuery}”` : ""}…</p>}
+                {error && <div><p role="alert" className="form-message">{error}</p><button type="button" className="text-link" onClick={() => { if (currentUser) void loadFirstPage(type, currentUser.id, activeQuery); }}>Retry loading {type}{activeQuery ? ` for “${activeQuery}”` : ""}</button></div>}
+                {activePage && currentUser && <>{type === "recipes" && activeQuery && activePage.items.length === 0 && <p className="cookbook-empty">No recipes match “{activeQuery}” in your Library.</p>}<LibraryCollection type={type} page={activePage} userID={currentUser.id} busyBookmarkID={busyBookmarkID} onBookmarkChange={() => { setNotice("Library updated."); void loadFirstPage(type, currentUser.id, activeQuery, true); }} onMutationUncertain={() => void loadFirstPage(type, currentUser.id, activeQuery, true)} onRemoveUnavailable={(id) => void removeUnavailable(id)} />{type === "recipes" && activeQuery && activePage.items.length === 0 && <p className="cookbook-empty">Unavailable saved references cannot be searched because their source content is unavailable.</p>}</>}
                 {moreError && <div><p role="alert" className="form-message">{moreError}</p><button type="button" className="text-link" disabled={loadingMore} onClick={() => void loadMore()}>Retry loading more</button></div>}
                 {hasMore && !loading && <button className="button button--green" type="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? "Loading…" : "Load more"}</button>}
                 {loadingMore && <p role="status">Loading more {type}…</p>}

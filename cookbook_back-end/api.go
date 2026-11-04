@@ -943,6 +943,7 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 405, "method_not_allowed")
 		return
 	}
+	w.Header().Set("Cache-Control", "private, no-store")
 	uid, q := authenticatedUser(r), strings.TrimSpace(r.URL.Query().Get("q"))
 	if len(q) > 200 {
 		writeError(w, http.StatusBadRequest, "invalid_query")

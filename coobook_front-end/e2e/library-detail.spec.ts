@@ -141,6 +141,26 @@ test("Library and recipe detail preserve account, public, saved, unavailable, an
     expect(libraryReads.some((path) => path.startsWith("/api/library/cookbooks?"))).toBe(false);
     expect(legacyRecipeFeeds).toEqual([]);
 
+    const search = admin.page.getByRole("searchbox", { name: "Search your recipes" });
+    await search.fill("Library private");
+    await expect(admin.page).toHaveURL(/\/library\?type=recipes&q=Library\+private$/);
+    await expect(admin.page.getByRole("link", { name: `Open ${privateRecipe.title}` })).toBeVisible();
+    await admin.page.reload();
+    await expect(admin.page.getByRole("searchbox", { name: "Search your recipes" })).toHaveValue("Library private");
+    await expect(admin.page.getByRole("link", { name: `Open ${privateRecipe.title}` })).toBeVisible();
+    await admin.page.getByRole("button", { name: "Cookbooks" }).click();
+    await expect(admin.page).toHaveURL(/\/library\?type=cookbooks$/);
+    await expect(admin.page.getByRole("searchbox", { name: "Search your recipes" })).toHaveCount(0);
+    await admin.page.goBack();
+    await expect(admin.page).toHaveURL(/\/library\?type=recipes&q=Library\+private$/);
+    await expect(admin.page.getByRole("searchbox", { name: "Search your recipes" })).toHaveValue("Library private");
+    await expect(admin.page.getByRole("link", { name: `Open ${privateRecipe.title}` })).toBeVisible();
+    await admin.page.goForward();
+    await expect(admin.page.getByRole("searchbox", { name: "Search your recipes" })).toHaveCount(0);
+    await admin.page.goBack();
+    await expect(admin.page.getByRole("searchbox", { name: "Search your recipes" })).toHaveValue("Library private");
+    await admin.page.getByRole("searchbox", { name: "Search your recipes" }).fill("");
+
     const library = admin.page.locator(
       'section[aria-labelledby="library-collection-title"]',
     );

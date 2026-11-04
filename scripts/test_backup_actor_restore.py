@@ -244,6 +244,10 @@ func TestBackupActorFixture(t *testing.T) {
             foreign_source_id = "c" * 32
             foreign_creator_id = "d" * 32
             external_attribution_id = "e" * 32
+            library_local_instance = "1" * 32
+            library_foreign_instance = "2" * 32
+            saved_local_time = "2026-11-04T02:30:00Z"
+            saved_foreign_time = "2026-11-04T02:31:00Z"
             connection.execute(
                 """INSERT INTO creator_profiles
                    (creator_id,user_id,public_name,bio,visibility,created_at,updated_at)
@@ -267,6 +271,15 @@ func TestBackupActorFixture(t *testing.T) {
                    (id,recipe_id,subject_kind,claim_source_instance_id,claim_creator_id,claim_name,role,provenance,created_at)
                    VALUES(?,?,'external_claim',?,?,?,'contributor','portable_import','created')""",
                 (external_attribution_id, "profile-proof-recipe", foreign_source_id, foreign_creator_id, "Foreign Claim"),
+            )
+            connection.execute(
+                """INSERT INTO cookbook_bookmarks
+                   (id,user_id,local_instance_id,local_cookbook_id,created_at)
+                   VALUES(?,?,?,?,?),(?,?,?,?,?)""",
+                ("local-saved-book", "fixture-user", library_local_instance,
+                 "local-source-book", saved_local_time,
+                 "foreign-saved-book", "fixture-user", library_foreign_instance,
+                 "foreign-source-book", saved_foreign_time),
             )
             connection.commit()
             if not Path(str(database) + "-wal").is_file():
@@ -359,6 +372,20 @@ volumes:
             self.assertEqual(marker, ("cold-restore-proof",))
             with sqlite3.connect(recovered_snapshot / "cookbook.db") as restored_db:
                 restored_db.execute("PRAGMA foreign_keys=ON")
+                version = restored_db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
+                self.assertEqual(version, (8,))
+                self.assertEqual(restored_db.execute("PRAGMA integrity_check").fetchone(), ("ok",))
+                self.assertEqual(restored_db.execute("PRAGMA foreign_key_check").fetchall(), [])
+                saved_references = restored_db.execute(
+                    "SELECT id,user_id,local_instance_id,local_cookbook_id,created_at "
+                    "FROM cookbook_bookmarks ORDER BY id"
+                ).fetchall()
+                self.assertEqual(saved_references, [
+                    ("foreign-saved-book", "fixture-user", library_foreign_instance,
+                     "foreign-source-book", saved_foreign_time),
+                    ("local-saved-book", "fixture-user", library_local_instance,
+                     "local-source-book", saved_local_time),
+                ])
                 tables = {row[0] for row in restored_db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 self.assertTrue({"creator_profiles", "content_attributions"}.issubset(tables))
                 profile = restored_db.execute(
@@ -379,7 +406,6 @@ volumes:
                     external_attribution,
                     ("profile-proof-recipe", None, "external_claim", None, foreign_source_id, foreign_creator_id, "Foreign Claim", "contributor", "portable_import"),
                 )
-                self.assertEqual(restored_db.execute("PRAGMA foreign_key_check").fetchall(), [])
                 with self.assertRaises(sqlite3.IntegrityError):
                     restored_db.execute("DELETE FROM creator_profiles WHERE creator_id=?", (profile_id,))
                 with self.assertRaises(sqlite3.IntegrityError):

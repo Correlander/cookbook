@@ -23,6 +23,7 @@ export default function AccountSecurity() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [importBusy, setImportBusy] = useState(false);
+  const [preservePersonalSnapshots, setPreservePersonalSnapshots] = useState(false);
 
   async function reload() {
     const [passkeysResponse, sessionsResponse] = await Promise.all([
@@ -185,9 +186,31 @@ export default function AccountSecurity() {
         <a className="button button--green" href="/api/export">
           Download export
         </a>
+        <p>
+          Exports stop if a saved copy is restricted or removed; the server will
+          show that error without substituting another copy.
+        </p>
         <label htmlFor="cookbook-import">
           Import a Cookbook export (ZIP or legacy JSON)
         </label>
+        <div>
+          <input
+            id="preserve-personal-snapshots"
+            type="checkbox"
+            checked={preservePersonalSnapshots}
+            disabled={importBusy}
+            onChange={(event) => setPreservePersonalSnapshots(event.target.checked)}
+          />
+          <label htmlFor="preserve-personal-snapshots">
+            I am restoring my own personal account and want to preserve saved
+            private copies from this export
+          </label>
+          <p>
+            Preserved copies remain private and unverified. This choice does not
+            prove source permission, authorship, or account identity. Leave this
+            unchecked to import saved copies as references only.
+          </p>
+        </div>
         <input
           id="cookbook-import"
           type="file"
@@ -201,15 +224,36 @@ export default function AccountSecurity() {
             try {
               if (file.size > 100 * 1024 * 1024)
                 throw new Error("Export files must be 100 MiB or smaller.");
+              const headers: Record<string, string> = {
+                "Content-Type": "application/json",
+              };
+              if (preservePersonalSnapshots)
+                headers["X-Cookbook-Preserve-Personal-Snapshots"] = "true";
               const response = await fetch("/api/import", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers,
                 body: file,
               });
-              if (!response.ok)
+              if (!response.ok) {
+                const body = (await response.clone().json().catch(() => null)) as
+                  | { error?: string }
+                  | null;
+                if (body?.error === "snapshot_already_pinned")
+                  throw new Error(
+                    "A saved copy already exists in this account. The import stopped without replacing it.",
+                  );
+                if (body?.error === "snapshot_restricted")
+                  throw new Error(
+                    "A restricted saved copy already exists in this account. The import stopped without substituting a reference.",
+                  );
+                if (body?.error === "snapshot_removed")
+                  throw new Error(
+                    "A removed saved copy already exists in this account. The import stopped without substituting a reference.",
+                  );
                 throw new Error(
                   "This export could not be imported. Check that it is a valid Cookbook export.",
                 );
+              }
               const result = (await response.json()) as {
                 recipes: number;
                 cookbooks: number;
@@ -217,14 +261,22 @@ export default function AccountSecurity() {
                 courses?: number;
                 course_lessons?: number;
                 omitted_course_recipe_links?: number;
+                snapshot_copies?: number;
+                snapshot_references?: number;
               };
+              const snapshotSummary =
+                Number.isInteger(result.snapshot_copies) &&
+                Number.isInteger(result.snapshot_references)
+                  ? `; ${result.snapshot_copies} private saved ${result.snapshot_copies === 1 ? "copy" : "copies"} preserved as unverified and ${result.snapshot_references} saved ${result.snapshot_references === 1 ? "reference" : "references"} imported as references`
+                  : "";
               window.alert(
-                `Imported ${result.recipes} recipes and ${result.cookbooks} cookbooks as private copies${typeof result.courses === "number" ? `, ${result.courses} courses and ${result.course_lessons ?? 0} lessons` : ""}${typeof result.omitted_course_recipe_links === "number" && result.omitted_course_recipe_links > 0 ? `; ${result.omitted_course_recipe_links} course recipe links were omitted and need relinking` : ""}${typeof result.course_bookmarks === "number" ? `, plus ${result.course_bookmarks} saved course references` : ""}.`,
+                `Imported ${result.recipes} recipes and ${result.cookbooks} cookbooks as private copies${typeof result.courses === "number" ? `, ${result.courses} courses and ${result.course_lessons ?? 0} lessons` : ""}${typeof result.omitted_course_recipe_links === "number" && result.omitted_course_recipe_links > 0 ? `; ${result.omitted_course_recipe_links} course recipe links were omitted and need relinking` : ""}${typeof result.course_bookmarks === "number" ? `, plus ${result.course_bookmarks} saved course references` : ""}${snapshotSummary}.`,
               );
             } catch (err: unknown) {
               setError(errorMessage(err, "This export could not be imported."));
             } finally {
               setImportBusy(false);
+              setPreservePersonalSnapshots(false);
               event.target.value = "";
             }
           }}

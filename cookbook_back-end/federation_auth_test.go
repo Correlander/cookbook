@@ -204,6 +204,111 @@ func TestFederationNonceStorageEnforcesPeerAndGlobalCapsWithDuplicateFirst(t *te
 	}
 }
 
+func TestLastKeyRevocationPreservesQueuedWithdrawalForReenrollment(t *testing.T) {
+	db := testDatabase(t)
+	peerOrigin := "https://peer.example.org"
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.org','Owner','now')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1,federation_enabled=1,federation_origin=? WHERE id=1`, testFederationOrigin); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO recipes(id,owner_id,creator_name,title,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at) VALUES(?,'owner','Owner','Dish','[]','[]','[]','public','owner_only','now','now')`, testFederationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at) VALUES(?,'published','followers',0,'now')`, testFederationID); err != nil {
+		t.Fatal(err)
+	}
+	if err := registerFederationPeer(db, peerOrigin, true); err != nil {
+		t.Fatal(err)
+	}
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registerFederationPeerKey(db, peerOrigin, "peer-key-1", publicKey); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := enqueueFederationChange(tx, testFederationID); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	// Model successful delivery of the snapshot while retaining peer history.
+	if _, err := db.Exec(`DELETE FROM federation_outbox WHERE peer_origin=?`, peerOrigin); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE recipes SET visibility='private' WHERE id=?`, testFederationID); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := enqueueFederationChange(tx, testFederationID); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var priorSequence int64
+	if err := db.QueryRow(`SELECT sequence FROM federation_outbox WHERE peer_origin=?`, peerOrigin).Scan(&priorSequence); err != nil || priorSequence != 2 {
+		t.Fatalf("pending withdrawal sequence=%d err=%v", priorSequence, err)
+	}
+	if err := revokeFederationPeerKey(db, peerOrigin, "peer-key-1"); err != nil {
+		t.Fatal(err)
+	}
+	if federationPeerEnabled(db, peerOrigin) {
+		t.Fatal("last-key revocation left peer enabled")
+	}
+	var marker int
+	if err := db.QueryRow(`SELECT published FROM federation_local_peer_objects WHERE peer_origin=? AND recipe_id=?`, peerOrigin, testFederationID).Scan(&marker); err != nil || marker != 1 {
+		t.Fatalf("last-key revocation did not preserve reconciliation marker: published=%d err=%v", marker, err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_outbox WHERE peer_origin=?`, peerOrigin).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("last-key revocation left queue rows=%d err=%v", count, err)
+	}
+	newKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registerFederationPeerKey(db, peerOrigin, "peer-key-2", newKey); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE federation_peers SET enabled=1 WHERE origin=?`, peerOrigin); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := queueFederationSnapshotsForAll(tx, peerOrigin); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var payload []byte
+	var sequence int64
+	if err := db.QueryRow(`SELECT payload,sequence FROM federation_outbox WHERE peer_origin=?`, peerOrigin).Scan(&payload, &sequence); err != nil {
+		t.Fatal(err)
+	}
+	event, _, err := decodeFederationEvent(payload)
+	if err != nil || event.EventType != federationEventTombstone || sequence <= priorSequence || event.Recipe != nil || bytes.Contains(payload, []byte("retention_grant")) {
+		t.Fatalf("reenrollment did not queue fresh body-free grantless withdrawal: event=%+v sequence=%d err=%v payload=%s", event, sequence, err, payload)
+	}
+}
+
 func TestFederationNonceDatabaseFailureIsDistinctFromCapacity(t *testing.T) {
 	db := testDatabase(t)
 	if err := db.Close(); err != nil {

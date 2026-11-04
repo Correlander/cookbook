@@ -533,6 +533,61 @@ func federationObjectRecipeID(origin, objectID string) (string, bool) {
 	return recipeID, true
 }
 
+// markFederationPeerOutboxObjectsForResync preserves publication intent when
+// queued events are discarded during peer disable or last-key revocation. A
+// later re-enable can then reconcile each affected recipe from current state.
+// It never changes the immutable outbox payloads or advances object sequences.
+func markFederationPeerOutboxObjectsForResync(ctx context.Context, tx sqliteExecutor, peerOrigin string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT object_id FROM federation_outbox WHERE peer_origin=? ORDER BY object_id`, peerOrigin)
+	if err != nil {
+		return err
+	}
+	var objectIDs []string
+	for rows.Next() {
+		var objectID string
+		if err := rows.Scan(&objectID); err != nil {
+			rows.Close()
+			return err
+		}
+		objectIDs = append(objectIDs, objectID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if len(objectIDs) == 0 {
+		return nil
+	}
+	var localOrigin string
+	if err := tx.QueryRowContext(ctx, `SELECT federation_origin FROM instance_settings WHERE id=1`).Scan(&localOrigin); err != nil {
+		return err
+	}
+	if !validFederationEgressOrigin(localOrigin) {
+		return errors.New("federation origin is unavailable while preserving peer resync state")
+	}
+	for _, objectID := range objectIDs {
+		recipeID, ok := federationObjectRecipeID(localOrigin, objectID)
+		if !ok {
+			return errors.New("federation outbox object does not match local origin")
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE federation_local_peer_objects SET published=1,updated_at=? WHERE peer_origin=? AND recipe_id=?`, timestamp(), peerOrigin, recipeID)
+		if err != nil {
+			return err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if changed != 1 {
+			return errors.New("federation outbox object has no peer publication state")
+		}
+	}
+	return nil
+}
+
 func validFederationEgressOrigin(origin string) bool {
 	canonical, err := canonicalFederationOrigin(origin)
 	return err == nil && canonical == origin

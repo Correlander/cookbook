@@ -599,6 +599,173 @@ func TestDisabledPeerDropsQueueAndResynchronizesTombstonesAndSnapshots(t *testin
 	}
 }
 
+func TestDisabledPeerPreservesQueuedWithdrawalForCurrentStateResync(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,is_admin,created_at) VALUES('admin','admin@example.org','Admin',1,'now'),('owner','owner@example.org','Owner',0,'now')`); err != nil {
+		t.Fatal(err)
+	}
+	peerOrigin := "https://peer.example.org"
+	otherOrigin := "https://other.example.org"
+	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1,federation_enabled=1,federation_origin=? WHERE id=1`, testFederationOrigin); err != nil {
+		t.Fatal(err)
+	}
+	withdrawnID := "11111111111111111111111111111111"
+	publicID := "22222222222222222222222222222222"
+	for _, id := range []string{withdrawnID, publicID} {
+		if _, err := db.Exec(`INSERT INTO recipes(id,owner_id,creator_name,title,ingredients_json,steps_json,tags_json,visibility,edit_policy,created_at,updated_at) VALUES(?,'owner','Owner','Original title','[]','[]','[]','public','owner_only','now','now')`, id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at)
+			VALUES(?,'published','followers',0,'now')`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := registerFederationPeer(db, peerOrigin, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := registerFederationPeer(db, otherOrigin, true); err != nil {
+		t.Fatal(err)
+	}
+	peerKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registerFederationPeerKey(db, peerOrigin, "peer-key", peerKey); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{withdrawnID, publicID} {
+		if err := enqueueFederationChange(tx, id); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	api := apiHandler{db: db}
+	call := func(method, body string) *httptest.ResponseRecorder {
+		req := requestForUser(method, "/api/admin/federation/peers", "admin")
+		req.Body = io.NopCloser(strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		api.ServeHTTP(rec, req)
+		return rec
+	}
+	if response := call(http.MethodPost, `{"origin":"`+peerOrigin+`","enabled":true}`); response.Code != http.StatusOK {
+		t.Fatalf("enable peer status=%d body=%s", response.Code, response.Body)
+	}
+	if _, err := db.Exec(`DELETE FROM federation_outbox WHERE peer_origin=?`, peerOrigin); err != nil {
+		t.Fatal(err)
+	}
+	// These rows represent events already delivered to peerOrigin. Its
+	// publication markers remain set while the unrelated peer's queue remains.
+	for _, id := range []string{withdrawnID, publicID} {
+		var published int
+		if err := db.QueryRow(`SELECT published FROM federation_local_peer_objects WHERE peer_origin=? AND recipe_id=?`, peerOrigin, id).Scan(&published); err != nil || published != 1 {
+			t.Fatalf("delivered peer state recipe=%s published=%d err=%v", id, published, err)
+		}
+	}
+	if _, err := db.Exec(`UPDATE recipes SET visibility='private' WHERE id=?`, withdrawnID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE recipes SET title='Current public title' WHERE id=?`, publicID); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{withdrawnID, publicID} {
+		if err := enqueueFederationChange(tx, id); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var withdrawalSequence int64
+	if err := db.QueryRow(`SELECT sequence FROM federation_outbox WHERE peer_origin=? AND object_id=?`, peerOrigin, testFederationOrigin+"/federation/recipes/"+withdrawnID).Scan(&withdrawalSequence); err != nil || withdrawalSequence != 3 {
+		t.Fatalf("queued withdrawal sequence=%d err=%v", withdrawalSequence, err)
+	}
+	var otherQueueBefore int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_outbox WHERE peer_origin=?`, otherOrigin).Scan(&otherQueueBefore); err != nil || otherQueueBefore != 3 {
+		t.Fatalf("other peer queue before disable=%d err=%v", otherQueueBefore, err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER reject_peer_outbox_purge BEFORE DELETE ON federation_outbox WHEN OLD.peer_origin='https://peer.example.org' BEGIN SELECT RAISE(ABORT,'injected purge failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if response := call(http.MethodDelete, `{"origin":"`+peerOrigin+`"}`); response.Code != http.StatusInternalServerError {
+		t.Fatalf("injected disable failure status=%d body=%s", response.Code, response.Body)
+	}
+	if !federationPeerEnabled(db, peerOrigin) {
+		t.Fatal("failed disable did not roll back peer enabled state")
+	}
+	var targetQueueAfterRollback int
+	var markerAfterRollback int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_outbox WHERE peer_origin=?`, peerOrigin).Scan(&targetQueueAfterRollback); err != nil || targetQueueAfterRollback != 2 {
+		t.Fatalf("target queue after rollback=%d err=%v", targetQueueAfterRollback, err)
+	}
+	if err := db.QueryRow(`SELECT published FROM federation_local_peer_objects WHERE peer_origin=? AND recipe_id=?`, peerOrigin, withdrawnID).Scan(&markerAfterRollback); err != nil || markerAfterRollback != 0 {
+		t.Fatalf("withdrawal marker after rollback=%d err=%v", markerAfterRollback, err)
+	}
+	if _, err := db.Exec(`DROP TRIGGER reject_peer_outbox_purge`); err != nil {
+		t.Fatal(err)
+	}
+	if response := call(http.MethodDelete, `{"origin":"`+peerOrigin+`"}`); response.Code != http.StatusOK {
+		t.Fatalf("disable peer status=%d body=%s", response.Code, response.Body)
+	}
+	var marked int
+	if err := db.QueryRow(`SELECT published FROM federation_local_peer_objects WHERE peer_origin=? AND recipe_id=?`, peerOrigin, withdrawnID).Scan(&marked); err != nil || marked != 1 {
+		t.Fatalf("queued withdrawal was not marked for reconciliation: published=%d err=%v", marked, err)
+	}
+	var otherQueueAfterDisable int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_outbox WHERE peer_origin=?`, otherOrigin).Scan(&otherQueueAfterDisable); err != nil || otherQueueAfterDisable != otherQueueBefore {
+		t.Fatalf("disable changed other peer queue: before=%d after=%d err=%v", otherQueueBefore, otherQueueAfterDisable, err)
+	}
+	if response := call(http.MethodPost, `{"origin":"`+peerOrigin+`","enabled":true}`); response.Code != http.StatusOK {
+		t.Fatalf("re-enable peer status=%d body=%s", response.Code, response.Body)
+	}
+	rows, err := db.Query(`SELECT object_id,payload FROM federation_outbox WHERE peer_origin=? ORDER BY object_id`, peerOrigin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	events := map[string]federationEvent{}
+	for rows.Next() {
+		var objectID string
+		var payload []byte
+		if err := rows.Scan(&objectID, &payload); err != nil {
+			t.Fatal(err)
+		}
+		decoded, _, err := decodeFederationEvent(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		events[objectID] = decoded
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	withdrawnObject := testFederationOrigin + "/federation/recipes/" + withdrawnID
+	withdrawal, ok := events[withdrawnObject]
+	if !ok || withdrawal.EventType != federationEventTombstone || withdrawal.Sequence <= withdrawalSequence || withdrawal.Recipe != nil {
+		t.Fatalf("current withdrawn state was not resynchronized as a fresh body-free tombstone: event=%+v exists=%v", withdrawal, ok)
+	}
+	publicObject := testFederationOrigin + "/federation/recipes/" + publicID
+	publicEvent, ok := events[publicObject]
+	if !ok || publicEvent.EventType != federationEventSnapshot || publicEvent.Sequence != 4 || publicEvent.Recipe == nil || publicEvent.Recipe.Title != "Current public title" {
+		t.Fatalf("current public state was not resynchronized as a fresh snapshot: event=%+v exists=%v", publicEvent, ok)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_outbox WHERE peer_origin=?`, otherOrigin).Scan(&otherQueueAfterDisable); err != nil || otherQueueAfterDisable != otherQueueBefore {
+		t.Fatalf("re-enable changed other peer queue: before=%d after=%d err=%v", otherQueueBefore, otherQueueAfterDisable, err)
+	}
+}
+
 func TestFederationSigningKeyPersistsAndRejectsBroadPermissions(t *testing.T) {
 	dir := t.TempDir()
 	key, err := loadOrCreateFederationSigningKey(dir)

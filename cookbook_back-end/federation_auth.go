@@ -461,6 +461,9 @@ func revokeFederationPeerKey(db *sql.DB, origin, keyID string) error {
 		if _, err := tx.Exec(`UPDATE federation_peers SET enabled=0,updated_at=? WHERE origin=?`, timestamp(), origin); err != nil {
 			return err
 		}
+		if err := markFederationPeerOutboxObjectsForResync(context.Background(), tx, origin); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(`DELETE FROM federation_outbox WHERE peer_origin=?`, origin); err != nil {
 			return err
 		}

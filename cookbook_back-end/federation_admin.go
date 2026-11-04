@@ -297,6 +297,11 @@ func (h apiHandler) federationPeers(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found")
 			return
 		}
+		if err := markFederationPeerOutboxObjectsForResync(r.Context(), tx, origin); err != nil {
+			_ = tx.Rollback()
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
 		if _, err := tx.Exec(`DELETE FROM federation_outbox WHERE peer_origin=?`, origin); err != nil {
 			_ = tx.Rollback()
 			writeError(w, http.StatusInternalServerError, "storage_error")

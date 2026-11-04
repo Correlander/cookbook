@@ -75,8 +75,6 @@ def create_raw_archive(source_path, raw_path, *, legacy=False):
 
 class ComposeBackupScriptTests(unittest.TestCase):
     def setUp(self):
-        self.actor_cli = mock.patch.object(backup_validation, "_run_actor_verifier", side_effect=_fake_actor_cli)
-        self.actor_cli.start()
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.bin_dir = self.root / "bin"
@@ -87,53 +85,83 @@ class ComposeBackupScriptTests(unittest.TestCase):
         self.archive = self.root / "source.tar.gz"
         self.raw_archive = self.root / "raw.tar.gz"
         self._create_fake_docker()
-        create_valid_archive(self.archive)
+        with mock.patch.object(backup_validation, "_run_actor_verifier", side_effect=_fake_actor_cli):
+            create_valid_archive(self.archive)
         create_raw_archive(self.archive, self.raw_archive)
 
     def tearDown(self):
-        self.actor_cli.stop()
         self.temporary.cleanup()
 
     def _create_fake_docker(self):
         docker = self.bin_dir / "docker"
-        docker.write_text(
-            "#!/bin/sh\n"
-            "set -eu\n"
-            "if [ \"$1\" = image ]; then [ \"${MOCK_IMAGE_FAIL:-no}\" != yes ] || exit 43; echo sha256:0000000000000000000000000000000000000000000000000000000000000000; exit 0; fi\n"
-            "if [ \"$1\" = run ]; then echo '{\"version\":1,\"actors\":[]}'; exit 0; fi\n"
-            "if [ \"$1\" = ps ]; then exit 0; fi\n"
-            "[ \"$1\" = compose ] || exit 90\n"
-            "shift\n"
-            "command=$1\n"
-            "shift\n"
-            "case \"$command\" in\n"
-            "  images) echo sha256:service ;;\n"
-            "  ps) echo ps >> \"$MOCK_LOG\"; [ \"${MOCK_RUNNING:-yes}\" = yes ] && echo cookbook ;;\n"
-            "  stop) echo stop >> \"$MOCK_LOG\" ;;\n"
-            "  start) echo start >> \"$MOCK_LOG\" ;;\n"
-            "  run)\n"
-            "    echo run >> \"$MOCK_LOG\"\n"
-            "    count=$(cat \"$MOCK_RUN_COUNT\" 2>/dev/null || echo 0)\n"
-            "    count=$((count + 1))\n"
-            "    echo \"$count\" > \"$MOCK_RUN_COUNT\"\n"
-            "    [ \"${MOCK_FAIL_RUN_AT:-0}\" != \"$count\" ] || exit 42\n"
-            "    if [ \"$count\" = 1 ] && [ -n \"${MOCK_ARCHIVE:-}\" ]; then\n"
-            "      volume=\n"
-            "      snapshot=\n"
-            "      while [ $# -gt 0 ]; do\n"
-            "        if [ \"$1\" = --volume ]; then case \"$2\" in *:/snapshot) snapshot=${2%:/snapshot} ;; *) volume=${2%%:*} ;; esac; shift 2; continue; fi\n"
-            "        shift\n"
-            "      done\n"
-            "      for target in \"$volume\"/.cookbook-backup.*; do [ ! -e \"$target\" ] || cp \"$MOCK_ARCHIVE\" \"$target\"; done\n"
-            "      if [ -n \"$snapshot\" ]; then : > \"$snapshot/cookbook.db\"; fi\n"
-            "    fi\n"
-            "    ;;\n"
-            "  *) exit 91 ;;\n"
-            "esac\n"
-        )
+        docker.write_text("""#!/usr/bin/env python3
+import json, os, pathlib, sys
+args = sys.argv[1:]
+def fail(code=90): raise SystemExit(code)
+if args[:2] == ["image", "inspect"]:
+    if os.environ.get("MOCK_IMAGE_FAIL", "no") == "yes": fail(43)
+    print("sha256:" + "0" * 64); raise SystemExit(0)
+if args and args[0] == "run":
+    interactive = "--interactive" in args
+    try: image_index = args.index("sha256:" + "0" * 64)
+    except ValueError: fail()
+    command = args[image_index + 1:]
+    if args[image_index] != "sha256:" + "0" * 64: fail()
+    required = ("--pull=never", "--network=none", "--read-only", "--cap-drop=all", "--security-opt=no-new-privileges", "--user=0:0")
+    if any(option not in args for option in required) or any(option not in args for option in ("--label", "--name", "--volume")): fail()
+    if not args[args.index("--volume") + 1].endswith(":/snapshot:rw"): fail()
+    if command[:3] not in (["instance", "recovery", "describe"], ["instance", "recovery", "verify"]): fail()
+    operation = command[2]
+    base = ["--database", "/snapshot/cookbook.db"]
+    if operation == "describe":
+        if interactive or command[3:] != base: fail()
+        print('{"version":1,"actors":[]}')
+    else:
+        if not interactive or command[3:] != base + ["--manifest", "-"]: fail()
+        payload = sys.stdin.buffer.read(4097)
+        try: manifest = json.loads(payload)
+        except (UnicodeDecodeError, json.JSONDecodeError): manifest = None
+        if (len(payload) > 4096 or not payload.endswith(b"\\n") or not isinstance(manifest, dict)
+                or set(manifest) != {"version", "actors"} or manifest.get("version") != 1
+                or not isinstance(manifest.get("actors"), list)):
+            print("invalid Person actor recovery manifest", file=sys.stderr); fail(2)
+    if os.environ.get("MOCK_ACTOR_LOG"):
+        with open(os.environ["MOCK_ACTOR_LOG"], "a") as stream: stream.write(operation + "\\n")
+    if operation == "verify" and os.environ.get("MOCK_ACTOR_FAIL") == "verify":
+        print("Person actor recovery manifest does not match the database", file=sys.stderr); fail(2)
+    raise SystemExit(0)
+if args and args[0] == "ps": raise SystemExit(0)
+if not args or args[0] != "compose": fail()
+command, *rest = args[1:]
+if command == "images": print("sha256:service")
+elif command == "ps":
+    with open(os.environ["MOCK_LOG"], "a") as stream: stream.write("ps\\n")
+    if os.environ.get("MOCK_RUNNING", "yes") == "yes": print("cookbook")
+elif command in ("stop", "start"):
+    with open(os.environ["MOCK_LOG"], "a") as stream: stream.write(command + "\\n")
+elif command == "run":
+    with open(os.environ["MOCK_LOG"], "a") as stream: stream.write("run\\n")
+    counter = pathlib.Path(os.environ["MOCK_RUN_COUNT"])
+    count = int(counter.read_text() if counter.exists() else "0") + 1
+    counter.write_text(str(count))
+    if int(os.environ.get("MOCK_FAIL_RUN_AT", "0")) == count: fail(42)
+    if count == 1 and os.environ.get("MOCK_ARCHIVE"):
+        volume = snapshot = None
+        for index, value in enumerate(rest[:-1]):
+            if value == "--volume":
+                mount = rest[index + 1]
+                if mount.endswith(":/snapshot"): snapshot = mount[:-len(":/snapshot")]
+                elif mount.endswith(":/backup") or mount.endswith(":/backup:ro"):
+                    volume = mount.rsplit(":/backup", 1)[0]
+        if volume:
+            for target in pathlib.Path(volume).glob(".cookbook-backup.*"):
+                target.write_bytes(pathlib.Path(os.environ["MOCK_ARCHIVE"]).read_bytes())
+        if snapshot: pathlib.Path(snapshot, "cookbook.db").touch()
+else: fail(91)
+""")
         docker.chmod(0o755)
 
-    def _run(self, script, *args, fail_run_at=0, running="yes", image_fail="no"):
+    def _run(self, script, *args, fail_run_at=0, running="yes", image_fail="no", actor_fail=""):
         env = os.environ.copy()
         env.update(
             {
@@ -142,6 +170,8 @@ class ComposeBackupScriptTests(unittest.TestCase):
                 "MOCK_RUN_COUNT": str(self.run_count),
                 "MOCK_FAIL_RUN_AT": str(fail_run_at),
                 "MOCK_IMAGE_FAIL": image_fail,
+                "MOCK_ACTOR_FAIL": actor_fail,
+                "MOCK_ACTOR_LOG": str(self.root / "actor.log"),
                 "MOCK_RUNNING": running,
                 "COOKBOOK_BACKUP_DIR": str(self.backup_dir),
                 "MOCK_ARCHIVE": str(self.raw_archive),
@@ -157,6 +187,7 @@ class ComposeBackupScriptTests(unittest.TestCase):
         backup = self._run("backup-compose.sh", self.backup_dir)
         self.assertEqual(backup.returncode, 0, backup.stderr)
         self.assertEqual(self._events(), ["ps", "stop", "run", "start"])
+        self.assertEqual((self.root / "actor.log").read_text().splitlines(), ["describe", "verify"])
 
         self.log.unlink()
         self.run_count.unlink()
@@ -168,6 +199,13 @@ class ComposeBackupScriptTests(unittest.TestCase):
         result = self._run("backup-compose.sh", self.backup_dir, fail_run_at=1)
         self.assertEqual(result.returncode, 42)
         self.assertEqual(self._events(), ["ps", "stop", "run", "start"])
+
+    def test_backup_fails_closed_when_actor_verification_rejects_manifest(self):
+        result = self._run("backup-compose.sh", self.backup_dir, actor_fail="verify")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Person actor recovery manifest does not match the database", result.stderr)
+        self.assertEqual(self._events(), ["ps", "stop", "run", "start"])
+        self.assertEqual((self.root / "actor.log").read_text().splitlines(), ["describe", "verify"])
 
     def test_backup_requires_resolvable_local_image_before_stopping(self):
         result = self._run("backup-compose.sh", self.backup_dir, image_fail="yes")

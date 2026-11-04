@@ -110,7 +110,7 @@ test('signed-in account users can open Account Security and cannot open instance
     if (url.pathname === '/api/admin/settings') adminSettingsRequests.push(url.pathname)
   })
   await page.goto('/admin/settings')
-  await expect(page.getByRole('heading', { name: 'Administrator access required' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Instance settings access required' })).toBeVisible()
   expect(adminSettingsRequests).toEqual([])
 })
 
@@ -131,7 +131,7 @@ test('signed-in instance administrators can open settings directly and through t
 
   await page.goto('/admin')
   await expect(page.getByRole('heading', { name: 'Instance access', level: 1 })).toBeVisible()
-  await page.getByRole('link', { name: 'Open Admin Settings' }).click()
+  await page.getByRole('link', { name: 'Open Instance Settings' }).click()
   await expect(page).toHaveURL(/\/admin\/settings$/)
   await expect(page.getByRole('heading', { name: 'Instance administration', level: 1 })).toBeVisible()
 })

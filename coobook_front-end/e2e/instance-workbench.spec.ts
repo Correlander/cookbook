@@ -68,7 +68,7 @@ test('pre-claim administrator sees role management but no browser owner claim or
     await expect(page.getByRole('heading', { name: 'Audit log' })).toBeVisible()
     await expect(page.getByRole('link', { name: 'Instance' })).toBeVisible()
     await expect(page.getByRole('link', { name: 'Administration' })).toHaveCount(0)
-    await expect(page.getByRole('link', { name: 'Open Admin Settings' })).toHaveAttribute('href', '/admin/settings')
+    await expect(page.getByRole('link', { name: 'Open Instance Settings' })).toHaveAttribute('href', '/admin/settings')
     await expect(page.getByRole('button', { name: /claim owner/i })).toHaveCount(0)
     await expect(page.getByRole('button', { name: /transfer ownership/i })).toHaveCount(0)
   }

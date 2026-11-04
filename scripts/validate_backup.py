@@ -49,10 +49,11 @@ def _run_actor_verifier(engine: str, image: str, command: str, snapshot: Path, m
     label = "cookbook.backup-verifier=" + uuid.uuid4().hex
     name = "cookbook-backup-verifier-" + uuid.uuid4().hex[:20]
     args = [engine, "run", "--rm", "--pull=never", "--network=none", "--read-only",
-            "--cap-drop=all", "--security-opt=no-new-privileges", "--user=0:0", "--name", name,
-            "--label", label, "--volume", f"{snapshot}:/snapshot:rw", image,
-            "instance", "recovery", command,
-            "--database", "/snapshot/cookbook.db"]
+            "--cap-drop=all", "--security-opt=no-new-privileges"]
+    if engine == "docker":
+        args.extend(("--user", _docker_verifier_user(engine)))
+    args.extend(("--name", name, "--label", label, "--volume", f"{snapshot}:/snapshot:rw", image,
+                 "instance", "recovery", command, "--database", "/snapshot/cookbook.db"))
     if command == "verify":
         args.insert(2, "--interactive")
         args.extend(("--manifest", "-"))
@@ -120,6 +121,28 @@ def _run_actor_verifier(engine: str, image: str, command: str, snapshot: Path, m
             or result.get("version") != 1 or not isinstance(result.get("actors"), list)):
         raise BackupValidationError("Person actor verifier returned an invalid manifest")
     return result
+
+
+def _docker_verifier_user(engine: str) -> str:
+    """Match the snapshot owner on rootful Docker; reject daemon UID remapping.
+
+    A root caller deliberately runs the verifier as 0:0. This avoids forcing
+    root for non-root callers while preserving the caller's existing authority.
+    """
+    try:
+        info = subprocess.run(
+            [engine, "info", "--format", "{{json .SecurityOptions}}"],
+            check=True, capture_output=True, text=True, timeout=10,
+        )
+        security_options = json.loads(info.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        raise BackupValidationError("Docker verifier user namespace mode could not be determined") from exc
+    if not isinstance(security_options, list) or any(not isinstance(option, str) for option in security_options):
+        raise BackupValidationError("Docker verifier user namespace mode could not be determined")
+    normalized_options = {option.strip().lower() for option in security_options}
+    if any(option in ("rootless", "name=rootless", "userns", "name=userns") for option in normalized_options):
+        raise BackupValidationError("Docker actor verifier does not support rootless or user-namespace-remapped daemons")
+    return f"{os.getuid()}:{os.getgid()}"
 
 
 def _cleanup_verifier(engine: str, label: str, name: str) -> None:

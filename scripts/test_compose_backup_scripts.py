@@ -101,14 +101,22 @@ def fail(code=90): raise SystemExit(code)
 if args[:2] == ["image", "inspect"]:
     if os.environ.get("MOCK_IMAGE_FAIL", "no") == "yes": fail(43)
     print("sha256:" + "0" * 64); raise SystemExit(0)
+if args[:2] == ["info", "--format"]:
+    if args[2:] != ["{{json .SecurityOptions}}"]: fail()
+    print('["name=seccomp,profile=builtin", "name=cgroupns"]'); raise SystemExit(0)
 if args and args[0] == "run":
     interactive = "--interactive" in args
+    is_podman = pathlib.Path(sys.argv[0]).name == "podman"
     try: image_index = args.index("sha256:" + "0" * 64)
     except ValueError: fail()
     command = args[image_index + 1:]
     if args[image_index] != "sha256:" + "0" * 64: fail()
-    required = ("--pull=never", "--network=none", "--read-only", "--cap-drop=all", "--security-opt=no-new-privileges", "--user=0:0")
+    required = ("--pull=never", "--network=none", "--read-only", "--cap-drop=all", "--security-opt=no-new-privileges")
     if any(option not in args for option in required) or any(option not in args for option in ("--label", "--name", "--volume")): fail()
+    if is_podman:
+        if "--user" in args: fail()
+    elif "--user" not in args or args[args.index("--user") + 1] != f"{os.getuid()}:{os.getgid()}":
+        fail()
     if not args[args.index("--volume") + 1].endswith(":/snapshot:rw"): fail()
     if command[:3] not in (["instance", "recovery", "describe"], ["instance", "recovery", "verify"]): fail()
     operation = command[2]

@@ -269,6 +269,33 @@ case "$1" in run) sleep 5;; ps) exit 0;; esac
         finally:
             self.actor_cli.start()
 
+    def test_docker_verifier_matches_caller_ids_only_for_supported_daemon_modes(self):
+        command = ["docker", "info", "--format", "{{json .SecurityOptions}}"]
+        rootful = subprocess.CompletedProcess(command, 0, '["name=seccomp,profile=builtin", "name=cgroupns"]', "")
+        with mock.patch.object(backup_validation.subprocess, "run", return_value=rootful) as run, \
+             mock.patch.object(backup_validation.os, "getuid", return_value=12345), \
+             mock.patch.object(backup_validation.os, "getgid", return_value=23456):
+            self.assertEqual(backup_validation._docker_verifier_user("docker"), "12345:23456")
+        run.assert_called_once_with(command, check=True, capture_output=True, text=True, timeout=10)
+
+        with mock.patch.object(backup_validation.subprocess, "run", return_value=rootful), \
+             mock.patch.object(backup_validation.os, "getuid", return_value=0), \
+             mock.patch.object(backup_validation.os, "getgid", return_value=0):
+            self.assertEqual(backup_validation._docker_verifier_user("docker"), "0:0")
+
+    def test_docker_verifier_rejects_rootless_remapped_and_unknown_daemon_modes(self):
+        command = ["docker", "info", "--format", "{{json .SecurityOptions}}"]
+        for options in ('["name=rootless", "name=seccomp"]', '["name=userns"]', "null", "{}", '["name=seccomp", 7]'):
+            with self.subTest(options=options), \
+                 mock.patch.object(backup_validation.subprocess, "run", return_value=subprocess.CompletedProcess(command, 0, options, "")):
+                with self.assertRaisesRegex(BackupValidationError, "user namespace mode could not be determined|does not support rootless"):
+                    backup_validation._docker_verifier_user("docker")
+
+        failure = subprocess.CompletedProcess(command, 1, "", "daemon unavailable")
+        with mock.patch.object(backup_validation.subprocess, "run", return_value=failure):
+            with self.assertRaisesRegex(BackupValidationError, "user namespace mode could not be determined"):
+                backup_validation._docker_verifier_user("docker")
+
     def test_archive_preserves_active_and_pending_key_file_fingerprints(self):
         path = self.archive(include_pending=True)
         manifest = validate_backup(path)

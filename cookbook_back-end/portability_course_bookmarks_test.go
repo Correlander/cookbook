@@ -24,7 +24,7 @@ func TestPortableV6CourseBookmarksPreserveOnlyReferenceIdentity(t *testing.T) {
 	}
 	h := apiHandler{db: db}
 	manifest, bundle := exportPortableBookmarkManifest(t, h, "source")
-	if bundle.Format != portableFormatV8 {
+	if bundle.Format != portableFormatV9 {
 		t.Fatalf("format=%q", bundle.Format)
 	}
 	items, err := portableCourseBookmarksFromBundle(bundle)

@@ -233,7 +233,7 @@ func validatePortableSnapshotReferences(bundle portableBundle, files map[string]
 		}
 		return 0, nil
 	}
-	if bundle.Format != portableFormatV8 || len(*bundle.SnapshotEntries) > maxPortableSnapshotEntries || len(*bundle.SnapshotEntries) != len(files) {
+	if !portableFormatHasSnapshots(bundle.Format) || len(*bundle.SnapshotEntries) > maxPortableSnapshotEntries || len(*bundle.SnapshotEntries) != len(files) {
 		return 0, errors.New("invalid portable snapshot entry references")
 	}
 	seenIndexes := make(map[int]struct{}, len(*bundle.SnapshotEntries))

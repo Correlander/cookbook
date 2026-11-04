@@ -132,12 +132,12 @@ func exportPortableSnapshotArchive(t *testing.T, h http.Handler, userID string) 
 	return append([]byte(nil), response.Body.Bytes()...)
 }
 
-func TestPortableSnapshotV8SamePersonImportPreservesOpaqueClaim(t *testing.T) {
+func TestPortableSnapshotV9SamePersonImportPreservesOpaqueClaim(t *testing.T) {
 	db, h, _, objectURI, original, eventBody := createPortableSnapshotFixture(t)
 	sourceArchive := exportPortableSnapshotArchive(t, h, "viewer")
 	bundle, entries, files := portableSnapshotArchive(t, sourceArchive)
-	if bundle.Format != portableFormatV8 || len(entries) != 1 || len(files) != 1 {
-		t.Fatalf("v8 snapshot export format/count=%q/%d files=%d", bundle.Format, len(entries), len(files))
+	if bundle.Format != portableFormatV9 || len(entries) != 1 || len(files) != 1 {
+		t.Fatalf("v9 snapshot export format/count=%q/%d files=%d", bundle.Format, len(entries), len(files))
 	}
 	entry := entries[0]
 	if !strings.HasPrefix(string(entry.Claim), portableSnapshotClaimMagic) || !bytes.Contains(entry.Claim, eventBody) || !bytes.Equal(entry.Payload, original.Payload) || !bytes.Equal(entry.PayloadSHA256, original.PayloadDigest) {
@@ -198,6 +198,46 @@ func TestPortableSnapshotV8SamePersonImportPreservesOpaqueClaim(t *testing.T) {
 		if conflict.Code != http.StatusConflict || !strings.Contains(conflict.Body.String(), "snapshot_already_pinned") {
 			t.Fatalf("existing pin was replaced/downgraded for preserve=%s: %d %s", preserve, conflict.Code, conflict.Body)
 		}
+	}
+}
+
+func TestPortableSnapshotV8LegacyArchiveImportsReferenceAndUnverifiedCopy(t *testing.T) {
+	db, h, _, objectURI, original, _ := createPortableSnapshotFixture(t)
+	current := exportPortableSnapshotArchive(t, h, "viewer")
+	bundle, _, files := portableSnapshotArchive(t, current)
+	bundle.Format = portableFormatV8
+	manifest, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyArchive, err := buildPortableExportArchive(manifest, "", nil, files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyBundle, entries, _ := portableSnapshotArchive(t, legacyArchive)
+	if legacyBundle.Format != portableFormatV8 || len(entries) != 1 {
+		t.Fatalf("legacy v8 archive format/references=%q/%d", legacyBundle.Format, len(entries))
+	}
+	entry := entries[0]
+	referenceOnly := importPortableSnapshotArchive(t, h, "reference-only", legacyArchive, "")
+	if referenceOnly.Code != http.StatusCreated || !strings.Contains(referenceOnly.Body.String(), `"snapshot_copies":0`) || !strings.Contains(referenceOnly.Body.String(), `"snapshot_references":1`) {
+		t.Fatalf("v8 default import did not remain reference-only: %d %s", referenceOnly.Code, referenceOnly.Body)
+	}
+	var pins int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM library_remote_snapshot_pins p JOIN recipe_bookmarks b ON b.id=p.bookmark_id WHERE b.user_id='reference-only'`).Scan(&pins); err != nil || pins != 0 {
+		t.Fatalf("v8 reference-only import created a pin: count=%d err=%v", pins, err)
+	}
+	preserved := importPortableSnapshotArchive(t, h, "importer", legacyArchive, "true")
+	if preserved.Code != http.StatusCreated || !strings.Contains(preserved.Body.String(), `"snapshot_copies":1`) || !strings.Contains(preserved.Body.String(), `"snapshot_references":0`) {
+		t.Fatalf("v8 explicit preservation import failed: %d %s", preserved.Code, preserved.Body)
+	}
+	var bookmarkID string
+	if err := db.QueryRow(`SELECT id FROM recipe_bookmarks WHERE user_id='importer' AND remote_object_uri=?`, objectURI).Scan(&bookmarkID); err != nil {
+		t.Fatal(err)
+	}
+	imported, err := readOwnedActiveSnapshotForExport(context.Background(), db, "importer", bookmarkID)
+	if err != nil || imported.Provenance != "user_imported_unverified" || !bytes.Equal(imported.Payload, original.Payload) || !bytes.Equal(imported.UntrustedClaim, entry.Claim) {
+		t.Fatalf("v8 copy changed opaque claim or promoted trust: provenance=%q err=%v", imported.Provenance, err)
 	}
 }
 

@@ -46,4 +46,33 @@ export default defineConfig([
       'react-hooks/exhaustive-deps': 'warn',
     },
   },
+  {
+    files: ['src/**/*.{js,jsx,ts,tsx}'],
+    rules: {
+      'no-restricted-imports': ['error', {
+        patterns: [{
+          group: ['react-router', 'react-router/*', 'react-router-dom', 'react-router-dom/*'],
+          message: 'Use Astro document routes and ordinary links for page navigation.',
+        }],
+      }],
+    },
+  },
+  {
+    files: ['src/app/*Root.tsx'],
+    ignores: ['src/app/AppRoot.tsx'],
+    rules: {
+      'no-restricted-imports': ['error', {
+        patterns: [
+          {
+            group: ['react-router', 'react-router/*', 'react-router-dom', 'react-router-dom/*'],
+            message: 'Use Astro document routes and ordinary links for page navigation.',
+          },
+          {
+            group: ['../App', '../App.*'],
+            message: 'Route roots must own their workflow; only AppRoot may mount Home App.',
+          },
+        ],
+      }],
+    },
+  },
 ])

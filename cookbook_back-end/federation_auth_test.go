@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -144,6 +146,137 @@ func TestFederationSignatureMiddleware(t *testing.T) {
 	handler.ServeHTTP(staleResponse, staleRequest)
 	if staleResponse.Code != http.StatusUnauthorized {
 		t.Fatalf("stale signature status=%d body=%s", staleResponse.Code, staleResponse.Body)
+	}
+}
+
+func TestFederationNonceStorageEnforcesPeerAndGlobalCapsWithDuplicateFirst(t *testing.T) {
+	db := testDatabase(t)
+	peerA, peerB := "https://peer-a.example.org", "https://peer-b.example.org"
+	for _, origin := range []string{peerA, peerB} {
+		if err := registerFederationPeer(db, origin, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	global := defaultFederationGlobalResourceLimits()
+	global.NonceRows = 2
+	global.NonceBytes = 2 * federationNonceLogicalBytes(peerA)
+	defaults := defaultFederationResourceLimits()
+	defaults.NonceRows = 1
+	defaults.NonceBytes = federationNonceLogicalBytes(peerA)
+	if err := setFederationResourceLimits(t.Context(), db, global, defaults, nil); err != nil {
+		t.Fatal(err)
+	}
+	storage := federationNonceStorage{db: db}
+	ctx := func(origin string) context.Context {
+		return context.WithValue(context.Background(), federationNonceAttemptKey{}, &federationNonceAttempt{sourceOrigin: origin})
+	}
+	nonceA := strings.Repeat("a", 40)
+	if seen, err := storage.Seen(ctx(peerA), nonceA); err != nil || seen {
+		t.Fatalf("first peer nonce seen=%v err=%v", seen, err)
+	}
+	if seen, err := storage.Seen(ctx(peerA), nonceA); err != nil || !seen {
+		t.Fatalf("known nonce at cap seen=%v err=%v", seen, err)
+	}
+	if _, err := storage.Seen(ctx(peerA), strings.Repeat("b", 40)); !errors.Is(err, errFederationNonceCapacity) {
+		t.Fatalf("per-peer capacity error=%v", err)
+	}
+	if seen, err := storage.Seen(ctx(peerB), strings.Repeat("c", 40)); err != nil || seen {
+		t.Fatalf("other peer nonce seen=%v err=%v", seen, err)
+	}
+	if _, err := storage.Seen(ctx(peerB), strings.Repeat("d", 40)); !errors.Is(err, errFederationNonceCapacity) {
+		t.Fatalf("global capacity error=%v", err)
+	}
+	usageA, err := readFederationResourceUsage(t.Context(), db, peerA, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usageB, err := readFederationResourceUsage(t.Context(), db, peerB, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	globalUsage, err := readFederationResourceUsage(t.Context(), db, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usageA.NonceRows != 1 || usageB.NonceRows != 1 || globalUsage.NonceRows != 2 || globalUsage.NonceBytes != global.NonceBytes {
+		t.Fatalf("unexpected nonce accounting: peerA=%+v peerB=%+v global=%+v", usageA, usageB, globalUsage)
+	}
+}
+
+func TestFederationNonceDatabaseFailureIsDistinctFromCapacity(t *testing.T) {
+	db := testDatabase(t)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err := (federationNonceStorage{db: db}).Seen(context.Background(), strings.Repeat("z", 40))
+	if !errors.Is(err, errFederationNonceUnavailable) || errors.Is(err, errFederationNonceCapacity) {
+		t.Fatalf("database error classification=%v", err)
+	}
+}
+
+func TestFederationSignatureMiddlewareReleasesInvalidNonceAndEnforcesCapacity(t *testing.T) {
+	db := testDatabase(t)
+	origin := "https://peer.example.org"
+	if err := registerFederationPeer(db, origin, true); err != nil {
+		t.Fatal(err)
+	}
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registerFederationPeerKey(db, origin, "peer-key-1", publicKey); err != nil {
+		t.Fatal(err)
+	}
+	peerLimits := defaultFederationResourceLimits()
+	peerLimits.NonceRows = 1
+	peerLimits.NonceBytes = federationNonceLogicalBytes(origin)
+	if err := setFederationResourceLimits(t.Context(), db, defaultFederationGlobalResourceLimits(), peerLimits, nil); err != nil {
+		t.Fatal(err)
+	}
+	handler := federationSignatureMiddleware(db, "https://local.example", nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	invalid := signedFederationRequest(t, privateKey, "peer-key-1", strings.Repeat("i", 40), `{"event":"invalid"}`)
+	set, err := sigset.Unmarshal(invalid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := set.Find(federationSignatureTag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message.Signature = []byte("invalid signature")
+	if err := set.Include(invalid); err != nil {
+		t.Fatal(err)
+	}
+	invalidResponse := httptest.NewRecorder()
+	handler.ServeHTTP(invalidResponse, invalid)
+	if invalidResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid signature status=%d body=%s", invalidResponse.Code, invalidResponse.Body)
+	}
+	var nonceRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_nonces`).Scan(&nonceRows); err != nil || nonceRows != 0 {
+		t.Fatalf("invalid signature retained nonce rows=%d err=%v", nonceRows, err)
+	}
+
+	valid := signedFederationRequest(t, privateKey, "peer-key-1", strings.Repeat("v", 40), `{"event":"valid"}`)
+	validResponse := httptest.NewRecorder()
+	handler.ServeHTTP(validResponse, valid)
+	if validResponse.Code != http.StatusNoContent {
+		t.Fatalf("valid signature status=%d body=%s", validResponse.Code, validResponse.Body)
+	}
+	replay := signedFederationRequest(t, privateKey, "peer-key-1", strings.Repeat("v", 40), `{"event":"valid"}`)
+	replayResponse := httptest.NewRecorder()
+	handler.ServeHTTP(replayResponse, replay)
+	if replayResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("known nonce replay status=%d body=%s", replayResponse.Code, replayResponse.Body)
+	}
+	full := signedFederationRequest(t, privateKey, "peer-key-1", strings.Repeat("c", 40), `{"event":"capacity"}`)
+	fullResponse := httptest.NewRecorder()
+	handler.ServeHTTP(fullResponse, full)
+	if fullResponse.Code != http.StatusServiceUnavailable || fullResponse.Header().Get("Retry-After") != "3600" || !strings.Contains(fullResponse.Body.String(), "federation_nonce_capacity") {
+		t.Fatalf("capacity response status=%d retry-after=%q body=%s", fullResponse.Code, fullResponse.Header().Get("Retry-After"), fullResponse.Body)
 	}
 }
 

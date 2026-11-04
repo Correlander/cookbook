@@ -84,6 +84,11 @@ func registeredSchemaMigrations() []schemaMigration {
 		name:     "personal-library-course-bookmarks",
 		checksum: migrationChecksum("personal-library-course-bookmarks", courseBookmarkSchemaDDL+"\x00"+courseBookmarkLimitTriggerDDL),
 		apply:    ApplyCourseBookmarkMigration,
+	}, {
+		version:  11,
+		name:     "federation-resource-limits",
+		checksum: migrationChecksum("federation-resource-limits", federationResourceLimitsDDL+"\x00"+federationReceivedEventsV11DDL+"\x00"+federationNonceResourceSchemaDDL),
+		apply:    applyFederationResourceLimitsMigration,
 	}}
 }
 

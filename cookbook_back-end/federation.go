@@ -101,6 +101,11 @@ func (h federationInboxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 				writeError(w, http.StatusConflict, "federation_conflict")
 				return
 			}
+			if errors.Is(err, errFederationResourceCapacity) {
+				w.Header().Set("Retry-After", "3600")
+				writeError(w, http.StatusServiceUnavailable, "federation_resource_capacity")
+				return
+			}
 			writeError(w, http.StatusBadRequest, "invalid_federation_event")
 			return
 		}
@@ -149,70 +154,129 @@ func acceptFederationEvent(ctx context.Context, db *sql.DB, keyOrigin string, bo
 	if err != nil {
 		return 0, nil, err
 	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer tx.Rollback()
-	var previousDigest []byte
-	var previousStatus int
-	var previousResponse string
-	err = tx.QueryRowContext(ctx, `SELECT body_digest,response_status,response_body FROM federation_received_events WHERE source_origin=? AND event_id=?`, keyOrigin, event.EventID).Scan(&previousDigest, &previousStatus, &previousResponse)
-	if err == nil {
-		if !bytes.Equal(previousDigest, digest[:]) {
-			return 0, nil, errFederationConflict
-		}
-		if err := tx.Commit(); err != nil {
-			return 0, nil, err
-		}
-		return previousStatus, []byte(previousResponse), nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return 0, nil, err
-	}
-	var peerEnabled int
-	if err := tx.QueryRowContext(ctx, `SELECT enabled FROM federation_peers WHERE origin=?`, keyOrigin).Scan(&peerEnabled); err != nil || peerEnabled != 1 {
-		return 0, nil, errors.New("federation peer is disabled")
-	}
-	var latestSequence int64
-	var deleted int
-	err = tx.QueryRowContext(ctx, `SELECT sequence,deleted FROM federation_remote_recipes WHERE object_id=? AND source_origin=?`, event.ObjectID, keyOrigin).Scan(&latestSequence, &deleted)
-	if errors.Is(err, sql.ErrNoRows) {
-		if event.EventType != federationEventSnapshot {
-			return 0, nil, errFederationConflict
-		}
-		latestSequence = 0
-	} else if err != nil {
-		return 0, nil, err
-	}
-	if event.Sequence <= latestSequence || (event.EventType == federationEventUpdate && deleted == 1) {
-		return 0, nil, errFederationConflict
-	}
-	if event.EventType == federationEventTombstone {
-		_, err = tx.ExecContext(ctx, `UPDATE federation_remote_recipes SET sequence=?,creator_name='',recipe_json='',deleted=1,updated_at=? WHERE object_id=? AND source_origin=?`, event.Sequence, timestamp(), event.ObjectID, keyOrigin)
-	} else {
-		updatedAt := timestamp()
-		recipeID := strings.TrimPrefix(event.ObjectID, keyOrigin+"/federation/recipes/")
-		_, err = tx.ExecContext(ctx, `INSERT INTO federation_remote_recipes(object_id,source_origin,source_recipe_id,sequence,creator_name,recipe_json,deleted,updated_at) VALUES(?,?,?,?,?,?,0,?) ON CONFLICT(object_id) DO UPDATE SET sequence=excluded.sequence,creator_name=excluded.creator_name,recipe_json=excluded.recipe_json,deleted=0,updated_at=excluded.updated_at`, event.ObjectID, keyOrigin, recipeID, event.Sequence, event.Attribution.CreatorName, string(recipeJSON), updatedAt)
+	acceptedStatus := 0
+	acceptedResponse := []byte(nil)
+	err = withImmediateSQLiteWriteTx(ctx, db, func(tx sqliteExecutor) error {
+		var previousDigest []byte
+		var previousStatus int
+		var previousResponse string
+		err := tx.QueryRowContext(ctx, `SELECT body_digest,response_status,response_body FROM federation_received_events WHERE source_origin=? AND event_id=?`, keyOrigin, event.EventID).Scan(&previousDigest, &previousStatus, &previousResponse)
 		if err == nil {
-			source := RemoteRecipeReadView{
-				ObjectURI: event.ObjectID, SourceOrigin: keyOrigin, SourceRecipeID: recipeID,
-				CreatorName: event.Attribution.CreatorName, Sequence: event.Sequence, UpdatedAt: updatedAt,
+			if !bytes.Equal(previousDigest, digest[:]) {
+				return errFederationConflict
 			}
-			err = writeRemoteRecipeSearchProjection(ctx, tx, source, string(recipeJSON))
+			acceptedStatus, acceptedResponse = previousStatus, []byte(previousResponse)
+			return nil
 		}
-	}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		var peerEnabled int
+		if err := tx.QueryRowContext(ctx, `SELECT enabled FROM federation_peers WHERE origin=?`, keyOrigin).Scan(&peerEnabled); err != nil || peerEnabled != 1 {
+			return errors.New("federation peer is disabled")
+		}
+		var latestSequence int64
+		var priorDeleted int
+		var priorStateKnown int
+		var priorObjectBytes int64
+		err = tx.QueryRowContext(ctx, `SELECT high_water_sequence,deleted,state_known,logical_bytes FROM federation_remote_catalog WHERE object_id=? AND source_origin=?`, event.ObjectID, keyOrigin).Scan(&latestSequence, &priorDeleted, &priorStateKnown, &priorObjectBytes)
+		catalogExists := err == nil
+		if errors.Is(err, sql.ErrNoRows) {
+			if event.EventType != federationEventSnapshot {
+				return errFederationConflict
+			}
+			latestSequence = 0
+		} else if err != nil {
+			return err
+		}
+		if event.Sequence <= latestSequence || (event.EventType == federationEventUpdate && (priorDeleted == 1 || priorStateKnown == 0)) {
+			return errFederationConflict
+		}
+		now := timestamp()
+		recipeID := strings.TrimPrefix(event.ObjectID, keyOrigin+"/federation/recipes/")
+		creatorName, rawRecipe := "", ""
+		deleted := 1
+		if event.EventType != federationEventTombstone {
+			creatorName, rawRecipe, deleted = event.Attribution.CreatorName, string(recipeJSON), 0
+		}
+		title, description, tagsJSON := "", "", "[]"
+		if deleted == 0 {
+			cached := RemoteRecipeReadView{ObjectURI: event.ObjectID, SourceOrigin: keyOrigin, SourceRecipeID: recipeID, CreatorName: creatorName, Sequence: event.Sequence, UpdatedAt: now}
+			if view, decodeErr := decodeCachedPublicRemoteRecipe(event.ObjectID, keyOrigin, recipeID, cached, rawRecipe); decodeErr == nil {
+				title, description = view.Recipe.Title, view.Recipe.Description
+				if encoded, marshalErr := json.Marshal(view.Recipe.Tags); marshalErr != nil {
+					return marshalErr
+				} else {
+					tagsJSON = string(encoded)
+				}
+			}
+		}
+		nextObjectBytes := remoteCatalogLogicalBytes(keyOrigin, event.ObjectID, recipeID, creatorName, rawRecipe, title, description, tagsJSON, event.Sequence, deleted)
+		objectDelta := nextObjectBytes
+		objectRows := int64(1)
+		if catalogExists {
+			objectDelta -= priorObjectBytes
+			objectRows = 0
+		}
+		receivedAt := now
+		receiptBytes := receivedEventLogicalBytes(keyOrigin, event.EventID, digest[:], event.ObjectID, event.Sequence, receivedAt, http.StatusAccepted, string(response))
+		if err := checkFederationResourceLimits(ctx, tx, keyOrigin,
+			federationResourceUsage{ObjectRows: objectRows, ObjectBytes: objectDelta},
+			federationResourceUsage{EventRows: 1, EventBytes: receiptBytes}); err != nil {
+			return err
+		}
+		if catalogExists {
+			if _, err := tx.ExecContext(ctx, `UPDATE federation_remote_catalog SET source_recipe_id=?,high_water_sequence=?,deleted=?,state_known=1,logical_bytes=? WHERE source_origin=? AND object_id=?`, recipeID, event.Sequence, deleted, nextObjectBytes, keyOrigin, event.ObjectID); err != nil {
+				return err
+			}
+		} else if _, err := tx.ExecContext(ctx, `INSERT INTO federation_remote_catalog(source_origin,object_id,source_recipe_id,high_water_sequence,deleted,state_known,logical_bytes) VALUES(?,?,?,?,?,1,?)`, keyOrigin, event.ObjectID, recipeID, event.Sequence, deleted, nextObjectBytes); err != nil {
+			return err
+		}
+		if deleted == 1 {
+			if catalogExists {
+				if _, err := tx.ExecContext(ctx, `UPDATE federation_remote_recipes SET sequence=?,creator_name='',recipe_json='',deleted=1,updated_at=? WHERE object_id=? AND source_origin=?`, event.Sequence, now, event.ObjectID, keyOrigin); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM federation_remote_recipe_search WHERE object_id=?`, event.ObjectID); err != nil {
+				return err
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO federation_remote_recipes(object_id,source_origin,source_recipe_id,sequence,creator_name,recipe_json,deleted,updated_at) VALUES(?,?,?,?,?,?,0,?) ON CONFLICT(object_id) DO UPDATE SET sequence=excluded.sequence,creator_name=excluded.creator_name,recipe_json=excluded.recipe_json,deleted=0,updated_at=excluded.updated_at`, event.ObjectID, keyOrigin, recipeID, event.Sequence, creatorName, rawRecipe, now); err != nil {
+				return err
+			}
+			if err := writeRemoteRecipeSearchProjectionExec(ctx, tx, RemoteRecipeReadView{ObjectURI: event.ObjectID, SourceOrigin: keyOrigin, SourceRecipeID: recipeID, CreatorName: creatorName, Sequence: event.Sequence, UpdatedAt: now}, rawRecipe); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO federation_received_events(source_origin,event_id,body_digest,object_id,sequence,received_at,response_status,response_body,logical_bytes) VALUES(?,?,?,?,?,?,?,?,?)`, keyOrigin, event.EventID, digest[:], event.ObjectID, event.Sequence, receivedAt, http.StatusAccepted, string(response), receiptBytes); err != nil {
+			return err
+		}
+		acceptedStatus, acceptedResponse = http.StatusAccepted, response
+		return nil
+	})
 	if err != nil {
 		return 0, nil, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO federation_received_events(source_origin,event_id,body_digest,object_id,sequence,received_at,response_status,response_body) VALUES(?,?,?,?,?,?,?,?)`, keyOrigin, event.EventID, digest[:], event.ObjectID, event.Sequence, timestamp(), http.StatusAccepted, string(response))
-	if err != nil {
-		return 0, nil, err
+	return acceptedStatus, acceptedResponse, nil
+}
+
+func writeRemoteRecipeSearchProjectionExec(ctx context.Context, tx sqliteExecutor, source RemoteRecipeReadView, rawBody string) error {
+	view, decodeErr := decodeCachedPublicRemoteRecipe(source.ObjectURI, source.SourceOrigin, source.SourceRecipeID, source, rawBody)
+	available, title, description, tagsJSON := 1, "", "", "[]"
+	if decodeErr != nil {
+		available = 0
+	} else {
+		encoded, err := json.Marshal(view.Recipe.Tags)
+		if err != nil {
+			return err
+		}
+		title, description, tagsJSON = view.Recipe.Title, view.Recipe.Description, string(encoded)
 	}
-	if err := tx.Commit(); err != nil {
-		return 0, nil, err
-	}
-	return http.StatusAccepted, response, nil
+	_, err := tx.ExecContext(ctx, `INSERT INTO federation_remote_recipe_search(object_id,projection_version,available,title,description,tags_json)
+		VALUES(?,?,?,?,?,?) ON CONFLICT(object_id) DO UPDATE SET projection_version=excluded.projection_version,available=excluded.available,title=excluded.title,description=excluded.description,tags_json=excluded.tags_json
+		WHERE federation_remote_recipe_search.projection_version<=excluded.projection_version`, source.ObjectURI, remoteRecipeSearchProjectionVersion, available, title, description, tagsJSON)
+	return err
 }
 
 func enqueueFederationChange(tx *sql.Tx, recipeID string) error {

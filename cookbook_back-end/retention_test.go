@@ -216,6 +216,36 @@ func TestExpiredAuthenticationStateIsPurgedInBoundedBatches(t *testing.T) {
 	}
 }
 
+func TestExpiredFederationNoncesArePurgedInBoundedBatches(t *testing.T) {
+	db := testDatabase(t)
+	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	for index := 0; index < authCleanupBatchSize+1; index++ {
+		hash := fmt.Sprintf("expired-nonce-%064d", index)
+		if _, err := db.Exec(`INSERT INTO federation_nonces(nonce_hash,expires_at,source_origin,logical_bytes) VALUES(?,?,?,?)`, hash, now.Add(-time.Second).Unix(), "https://peer.example.org", federationNonceLogicalBytes("https://peer.example.org")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO federation_nonces(nonce_hash,expires_at,source_origin,logical_bytes) VALUES('valid-nonce',?,?,?)`, now.Unix(), "https://peer.example.org", federationNonceLogicalBytes("https://peer.example.org")); err != nil {
+		t.Fatal(err)
+	}
+	if err := purgeExpiredAuthState(db, now); err != nil {
+		t.Fatal(err)
+	}
+	var expiredRows, validRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_nonces WHERE nonce_hash LIKE 'expired-nonce-%'`).Scan(&expiredRows); err != nil || expiredRows != 1 {
+		t.Fatalf("first nonce cleanup batch left=%d err=%v; want one expired row", expiredRows, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_nonces WHERE nonce_hash='valid-nonce'`).Scan(&validRows); err != nil || validRows != 1 {
+		t.Fatalf("nonce cleanup removed unexpired row count=%d err=%v", validRows, err)
+	}
+	if err := purgeExpiredAuthState(db, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_nonces WHERE nonce_hash LIKE 'expired-nonce-%'`).Scan(&expiredRows); err != nil || expiredRows != 0 {
+		t.Fatalf("second nonce cleanup batch left=%d err=%v", expiredRows, err)
+	}
+}
+
 func insertTestRevision(db *sql.DB, id, recipeID string, version int, createdAt string) error {
 	_, err := db.Exec(`INSERT INTO recipe_revisions(id,recipe_id,version,editor_id,title,description,ingredients_json,steps_json,visibility,created_at) VALUES(?,?,?,'owner','Test','','[]','[]','private',?)`, id, recipeID, version, createdAt)
 	return err

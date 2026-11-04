@@ -66,20 +66,120 @@ func (d federationKeyDirectory) GetKey(ctx context.Context, keyID, clientAlgorit
 
 type federationNonceStorage struct{ db *sql.DB }
 
+var errFederationNonceCapacity = errors.New("federation request nonce capacity reached")
+var errFederationNonceUnavailable = errors.New("federation request nonce storage unavailable")
+
+type federationNonceAttemptKey struct{}
+
+type federationNonceAttempt struct {
+	sourceOrigin  string
+	nonceHash     string
+	reserved      bool
+	validationErr error
+}
+
 func (s federationNonceStorage) Seen(ctx context.Context, nonce string) (bool, error) {
 	if len(nonce) < 32 || len(nonce) > 256 {
 		return false, errors.New("invalid federation nonce")
 	}
 	hash := sha256.Sum256([]byte(nonce))
-	var inserted string
-	err := s.db.QueryRowContext(ctx, `INSERT INTO federation_nonces(nonce_hash,expires_at) VALUES(?,?) ON CONFLICT(nonce_hash) DO NOTHING RETURNING nonce_hash`, hex.EncodeToString(hash[:]), time.Now().Add(federationNonceTTL).Unix()).Scan(&inserted)
-	if errors.Is(err, sql.ErrNoRows) {
+	hashText := hex.EncodeToString(hash[:])
+	attempt, _ := ctx.Value(federationNonceAttemptKey{}).(*federationNonceAttempt)
+	origin := ""
+	if attempt != nil {
+		origin = attempt.sourceOrigin
+	}
+	now := time.Now()
+	seen, capacity, stored := false, false, false
+	err := withImmediateSQLiteWriteTx(ctx, s.db, func(tx sqliteExecutor) error {
+		var expiresAt int64
+		lookupErr := tx.QueryRowContext(ctx, `SELECT expires_at FROM federation_nonces WHERE nonce_hash=?`, hashText).Scan(&expiresAt)
+		if lookupErr == nil && expiresAt >= now.Unix() {
+			seen = true
+			return nil
+		}
+		if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+			return lookupErr
+		}
+		if lookupErr == nil {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM federation_nonces WHERE nonce_hash=?`, hashText); err != nil {
+				return err
+			}
+		}
+		if err := purgeExpiredFederationNonceBatch(ctx, tx, now); err != nil {
+			return err
+		}
+		globalRows, globalBytes, err := federationNonceUsage(ctx, tx, "", true)
+		if err != nil {
+			return err
+		}
+		globalLimits, err := readFederationGlobalLimits(ctx, tx)
+		if err != nil {
+			return err
+		}
+		peerLimits, peerRows, peerBytes := defaultFederationResourceLimits(), int64(0), int64(0)
+		if origin != "" {
+			peerLimits, err = readFederationResourceLimits(ctx, tx, origin)
+			if err != nil {
+				return err
+			}
+			peerRows, peerBytes, err = federationNonceUsage(ctx, tx, origin, false)
+			if err != nil {
+				return err
+			}
+		}
+		logicalBytes := federationNonceLogicalBytes(origin)
+		if globalRows+1 > globalLimits.NonceRows || globalBytes+logicalBytes > globalLimits.NonceBytes ||
+			(origin != "" && (peerRows+1 > peerLimits.NonceRows || peerBytes+logicalBytes > peerLimits.NonceBytes)) {
+			capacity = true
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO federation_nonces(nonce_hash,expires_at,source_origin,logical_bytes) VALUES(?,?,?,?)`, hashText, now.Add(federationNonceTTL).Unix(), origin, logicalBytes); err != nil {
+			return err
+		}
+		stored = true
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("%w: %v", errFederationNonceUnavailable, err)
+	}
+	if seen {
 		return true, nil
 	}
-	if err != nil {
-		return false, err
+	if capacity {
+		return false, errFederationNonceCapacity
+	}
+	if stored && attempt != nil {
+		attempt.nonceHash, attempt.reserved = hashText, true
 	}
 	return false, nil
+}
+
+func federationNonceLogicalBytes(origin string) int64 { return int64(64 + 8 + len(origin)) }
+
+func federationNonceUsage(ctx context.Context, tx sqliteExecutor, origin string, global bool) (int64, int64, error) {
+	var rows, bytes int64
+	if global {
+		err := tx.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(logical_bytes),0) FROM (SELECT logical_bytes FROM federation_nonces LIMIT ?)`, maxGlobalNonceRows+1).Scan(&rows, &bytes)
+		return rows, bytes, err
+	}
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(logical_bytes),0) FROM (SELECT logical_bytes FROM federation_nonces WHERE source_origin=? LIMIT ?)`, origin, maxPeerNonceRows+1).Scan(&rows, &bytes)
+	return rows, bytes, err
+}
+
+func purgeExpiredFederationNonceBatch(ctx context.Context, tx sqliteExecutor, now time.Time) error {
+	_, err := tx.ExecContext(ctx, `DELETE FROM federation_nonces WHERE nonce_hash IN (SELECT nonce_hash FROM federation_nonces WHERE expires_at<? ORDER BY expires_at,nonce_hash LIMIT ?)`, now.Unix(), authCleanupBatchSize)
+	return err
+}
+
+func releaseFederationNonce(ctx context.Context, db *sql.DB, hash string) error {
+	if hash == "" {
+		return nil
+	}
+	return withImmediateSQLiteWriteTx(ctx, db, func(tx sqliteExecutor) error {
+		_, err := tx.ExecContext(ctx, `DELETE FROM federation_nonces WHERE nonce_hash=?`, hash)
+		return err
+	})
 }
 
 func federationSignatureMiddleware(db *sql.DB, origin string, trustedProxies []*net.IPNet, next http.Handler) http.Handler {
@@ -96,6 +196,11 @@ func federationSignatureMiddleware(db *sql.DB, origin string, trustedProxies []*
 		NonceStorage: federationNonceStorage{db: db},
 		KeyDirectory: federationKeyDirectory{db: db},
 		Tag:          federationSignatureTag, Validation: &validation,
+		OnValidationError: func(ctx context.Context, err error) {
+			if attempt, ok := ctx.Value(federationNonceAttemptKey{}).(*federationNonceAttempt); ok {
+				attempt.validationErr = err
+			}
+		},
 		Scheme: "https", Authority: strings.TrimPrefix(origin, "https://"),
 	})(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -131,8 +236,73 @@ func federationSignatureMiddleware(db *sql.DB, origin string, trustedProxies []*
 			writeError(w, http.StatusUnauthorized, "invalid_signature_profile")
 			return
 		}
-		verify.ServeHTTP(w, r)
+		attempt := &federationNonceAttempt{sourceOrigin: federationSignaturePeerOrigin(r, db)}
+		r = r.WithContext(context.WithValue(r.Context(), federationNonceAttemptKey{}, attempt))
+		captured := newFederationSignatureResponse()
+		verify.ServeHTTP(captured, r)
+		if attempt.validationErr != nil && attempt.reserved {
+			_ = releaseFederationNonce(r.Context(), db, attempt.nonceHash)
+		}
+		if errors.Is(attempt.validationErr, errFederationNonceCapacity) {
+			w.Header().Set("Retry-After", "3600")
+			writeError(w, http.StatusServiceUnavailable, "federation_nonce_capacity")
+			return
+		}
+		if errors.Is(attempt.validationErr, errFederationNonceUnavailable) {
+			writeError(w, http.StatusServiceUnavailable, "federation_nonce_unavailable")
+			return
+		}
+		captured.writeTo(w)
 	})
+}
+
+func federationSignaturePeerOrigin(r *http.Request, db *sql.DB) string {
+	set, err := sigset.Unmarshal(r)
+	if err != nil {
+		return ""
+	}
+	message, err := set.Find(federationSignatureTag)
+	if err != nil || message.Input.KeyID == "" {
+		return ""
+	}
+	var origin string
+	if err := db.QueryRowContext(r.Context(), `SELECT k.origin FROM federation_peer_keys k JOIN federation_peers p ON p.origin=k.origin WHERE k.key_id=? AND k.status='active' AND p.enabled=1`, message.Input.KeyID).Scan(&origin); err != nil {
+		return ""
+	}
+	return origin
+}
+
+type federationSignatureResponse struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func newFederationSignatureResponse() *federationSignatureResponse {
+	return &federationSignatureResponse{header: make(http.Header)}
+}
+func (r *federationSignatureResponse) Header() http.Header { return r.header }
+func (r *federationSignatureResponse) WriteHeader(status int) {
+	if r.status == 0 {
+		r.status = status
+	}
+}
+func (r *federationSignatureResponse) Write(body []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.body.Write(body)
+}
+func (r *federationSignatureResponse) writeTo(w http.ResponseWriter) {
+	for key, values := range r.header {
+		w.Header()[key] = append([]string(nil), values...)
+	}
+	status := r.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write(r.body.Bytes())
 }
 
 func validateFederationSignatureProfile(r *http.Request) error {

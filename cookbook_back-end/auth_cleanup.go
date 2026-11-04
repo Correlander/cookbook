@@ -34,10 +34,6 @@ func purgeExpiredAuthStateContext(ctx context.Context, db *sql.DB, now time.Time
 			sql:  `DELETE FROM sessions WHERE token_hash IN (SELECT token_hash FROM sessions WHERE expires_at<? ORDER BY expires_at,token_hash LIMIT ?)`,
 			args: []any{nowText, authCleanupBatchSize},
 		},
-		{
-			sql:  `DELETE FROM federation_nonces WHERE nonce_hash IN (SELECT nonce_hash FROM federation_nonces WHERE expires_at<? ORDER BY expires_at,nonce_hash LIMIT ?)`,
-			args: []any{now.Unix(), authCleanupBatchSize},
-		},
 	}
 	for _, query := range queries {
 		if _, err := db.ExecContext(ctx, query.sql, query.args...); err != nil {
@@ -45,6 +41,9 @@ func purgeExpiredAuthStateContext(ctx context.Context, db *sql.DB, now time.Time
 		}
 	}
 	return withImmediateSQLiteWriteTx(ctx, db, func(tx sqliteExecutor) error {
+		if err := purgeExpiredFederationNonceBatch(ctx, tx, now); err != nil {
+			return err
+		}
 		return purgeStaleAuthRateLimitBatch(ctx, tx, now)
 	})
 }

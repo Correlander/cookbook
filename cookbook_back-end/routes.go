@@ -57,6 +57,8 @@ func handlerWithAuthConfig(db *sql.DB, auth authHandler, cfg config) http.Handle
 	mux.Handle("DELETE /api/admin/federation/peers", recentPasskeyChange(api))
 	mux.Handle("POST /api/admin/federation/keys", recentPasskeyChange(api))
 	mux.Handle("DELETE /api/admin/federation/keys", recentPasskeyChange(api))
+	mux.Handle("GET /api/admin/federation/resources", requireSession(db, http.HandlerFunc(api.federationResources)))
+	mux.Handle("PATCH /api/admin/federation/resources", recentPasskeyChange(http.HandlerFunc(api.federationResources)))
 	mux.Handle("GET /api/admin/federation/identity", requireSession(db, api))
 	mux.Handle("POST /api/admin/federation/identity/rotation", recentPasskeyChange(api))
 	mux.Handle("GET /api/admin/federation/outbox", requireSession(db, api))

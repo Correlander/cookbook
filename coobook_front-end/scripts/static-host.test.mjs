@@ -173,7 +173,9 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
       for (const alias of [page.path, `${page.path}.html`]) {
         const response = await fetch(`${base}${alias}?id=synthetic-id`)
         assert.equal(response.status, 200, alias)
-        assert.match(await response.text(), page.title)
+        const html = await response.text()
+        assert.match(html, page.title)
+        if (page.path === '/course') assert.match(html, /<meta name="robots" content="noindex,nofollow">/)
         assert.equal(response.headers.get('cache-control'), 'no-store')
         assert.equal(response.headers.get('content-security-policy'), page.policy)
       }

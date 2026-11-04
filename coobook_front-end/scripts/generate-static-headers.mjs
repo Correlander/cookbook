@@ -1,24 +1,8 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import { join, relative, resolve, sep } from 'node:path'
+import { staticRoutes } from './static-routes.mjs'
 
 const dist = resolve(process.argv[2] ?? 'dist')
-const pages = [
-  { file: 'index.html', route: '/' },
-  { file: 'auth/confirm.html', route: '/auth/confirm' },
-  { file: 'auth/enroll.html', route: '/auth/enroll' },
-  { file: 'account/security.html', route: '/account/security' },
-  { file: 'account/creator-profile.html', route: '/account/creator-profile' },
-  { file: 'creator.html', route: '/creator' },
-  { file: 'admin.html', route: '/admin' },
-  { file: 'admin/settings.html', route: '/admin/settings' },
-  { file: 'library.html', route: '/library' },
-  { file: 'recipe.html', route: '/recipe' },
-  { file: 'cookbooks.html', route: '/cookbooks' },
-  { file: 'cookbook.html', route: '/cookbook' },
-  { file: 'course.html', route: '/course' },
-  { file: 'discover.html', route: '/discover' },
-  { file: 'create.html', route: '/create' },
-]
 const defaults = {
   'default-src': ["'self'"],
   'object-src': ["'none'"],
@@ -81,37 +65,32 @@ function parsePolicy(html, file) {
 }
 
 const records = []
-for (const { file, route } of pages) {
+for (const { file, route, aliases } of staticRoutes) {
   let html
   try { html = await readFile(join(dist, file), 'utf8') } catch { fail(`missing built page ${file}`) }
   const policy = parsePolicy(html, file)
-  records.push({ file, route, policy })
+  records.push({ file, route, aliases, policy })
 }
 
 const headers = [
-  ...records.flatMap(({ route, file, policy }) => [
-    route, `  Content-Security-Policy: ${policy}`,
-    ...(file !== 'index.html' ? [`/${file}`, `  Content-Security-Policy: ${policy}`] : []),
-  ]),
+  ...records.flatMap(({ route, aliases, policy }) => aliases.flatMap((alias) => [
+    alias, `  Content-Security-Policy: ${policy}`,
+  ])),
   '/*',
   '  X-Content-Type-Options: nosniff',
   '  Referrer-Policy: no-referrer',
-  ...records.flatMap(({ route, file }) => {
-    const htmlPath = `/${file}`
-    const aliases = route === '/' ? ['/', htmlPath] : [route, htmlPath]
-    return [...new Set(aliases)].flatMap((path) => [path, '  Cache-Control: no-store'])
-  }),
+  ...records.flatMap(({ aliases }) => [...new Set(aliases)].flatMap((path) => [path, '  Cache-Control: no-store'])),
   '/_astro/*',
   '  Cache-Control: public, max-age=31536000, immutable',
   '',
 ].join('\n')
 await writeFile(join(dist, '_headers'), headers)
 await writeFile(join(dist, 'static-csp.json'), `${JSON.stringify(records, null, 2)}\n`)
-const caddy = records.map(({ route, file, policy }, index) => {
-  const paths = `${route} /${file}`
+const caddy = records.map(({ aliases, policy }, index) => {
+  const paths = [...new Set(aliases)].join(' ')
   return `@document${index} path ${paths}\nheader @document${index} Content-Security-Policy "${policy}"`
 }).join('\n\n') + '\n'
-const htmlPaths = [...new Set(records.flatMap(({ route, file }) => route === '/' ? ['/', `/${file}`] : [route, `/${file}`]))]
+const htmlPaths = [...new Set(records.flatMap(({ aliases }) => aliases))]
 const cacheCaddy = `@html path ${htmlPaths.join(' ')}\nheader @html Cache-Control "no-store"\n`
 await writeFile(join(dist, 'static-csp.caddy'), `${caddy}\n${cacheCaddy}`)
 console.log(`Generated static headers for ${records.length} HTML pages in ${relative(process.cwd(), dist).split(sep).join('/')}`)

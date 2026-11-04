@@ -3,44 +3,14 @@ import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { readFile, stat } from 'node:fs/promises'
 import { extname, resolve, sep } from 'node:path'
+import { staticRoutes } from './static-routes.mjs'
 
 const dist = resolve(process.env.STATIC_DIST ?? 'dist')
 const apiOrigin = process.env.API_ORIGIN
 const port = Number(process.env.STATIC_PORT ?? 4178)
 if (!apiOrigin || !Number.isInteger(port)) throw new Error('API_ORIGIN and STATIC_PORT are required')
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.ico': 'image/x-icon', '.json': 'application/json; charset=utf-8', '.woff2': 'font/woff2' }
-const pageAliases = new Map([
-  ['', { file: 'index.html', route: '/' }],
-  ['index.html', { file: 'index.html', route: '/' }],
-  ['auth/confirm', { file: 'auth/confirm.html', route: '/auth/confirm' }],
-  ['auth/confirm.html', { file: 'auth/confirm.html', route: '/auth/confirm' }],
-  ['auth/enroll', { file: 'auth/enroll.html', route: '/auth/enroll' }],
-  ['auth/enroll.html', { file: 'auth/enroll.html', route: '/auth/enroll' }],
-  ['account/security', { file: 'account/security.html', route: '/account/security' }],
-  ['account/security.html', { file: 'account/security.html', route: '/account/security' }],
-  ['account/creator-profile', { file: 'account/creator-profile.html', route: '/account/creator-profile' }],
-  ['account/creator-profile.html', { file: 'account/creator-profile.html', route: '/account/creator-profile' }],
-  ['admin', { file: 'admin.html', route: '/admin' }],
-  ['admin.html', { file: 'admin.html', route: '/admin' }],
-  ['admin/settings', { file: 'admin/settings.html', route: '/admin/settings' }],
-  ['admin/settings.html', { file: 'admin/settings.html', route: '/admin/settings' }],
-  ['library', { file: 'library.html', route: '/library' }],
-  ['library.html', { file: 'library.html', route: '/library' }],
-  ['recipe', { file: 'recipe.html', route: '/recipe' }],
-  ['recipe.html', { file: 'recipe.html', route: '/recipe' }],
-  ['cookbooks', { file: 'cookbooks.html', route: '/cookbooks' }],
-  ['cookbooks.html', { file: 'cookbooks.html', route: '/cookbooks' }],
-  ['cookbook', { file: 'cookbook.html', route: '/cookbook' }],
-  ['cookbook.html', { file: 'cookbook.html', route: '/cookbook' }],
-  ['course', { file: 'course.html', route: '/course' }],
-  ['course.html', { file: 'course.html', route: '/course' }],
-  ['discover', { file: 'discover.html', route: '/discover' }],
-  ['discover.html', { file: 'discover.html', route: '/discover' }],
-  ['create', { file: 'create.html', route: '/create' }],
-  ['create.html', { file: 'create.html', route: '/create' }],
-  ['creator', { file: 'creator.html', route: '/creator' }],
-  ['creator.html', { file: 'creator.html', route: '/creator' }],
-])
+const pageAliases = new Map(staticRoutes.flatMap((page) => page.aliases.map((alias) => [alias.replace(/^\//, ''), page])))
 
 const server = createServer(async (request, response) => {
   try {

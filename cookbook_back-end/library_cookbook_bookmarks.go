@@ -106,6 +106,61 @@ func (h apiHandler) cookbookBookmarks(w http.ResponseWriter, r *http.Request, bo
 	}
 }
 
+func (h apiHandler) cookbookBookmarkStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "private, no-store")
+	userID := authenticatedUser(r)
+	if userID == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	query := r.URL.Query()
+	ids, hasCookbookID := query["local_cookbook_id"]
+	if !hasCookbookID || len(query) != 1 || len(ids) != 1 || !validCookbookBookmarkTargetID(ids[0]) {
+		writeError(w, http.StatusBadRequest, "invalid_bookmark_target")
+		return
+	}
+
+	tx, err := h.db.BeginTx(r.Context(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	defer tx.Rollback()
+	if _, err := readCookbookDetail(r.Context(), tx, userID, ids[0]); errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	instanceID, err := currentLibraryInstanceID(r.Context(), tx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	var response struct {
+		Saved      bool   `json:"saved"`
+		BookmarkID string `json:"bookmark_id,omitempty"`
+	}
+	err = tx.QueryRowContext(r.Context(), `SELECT id FROM cookbook_bookmarks
+		WHERE user_id=? AND local_instance_id=? AND local_cookbook_id=?`, userID, instanceID, ids[0]).Scan(&response.BookmarkID)
+	if err == nil {
+		response.Saved = true
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
 func (h apiHandler) listCookbookBookmarks(w http.ResponseWriter, r *http.Request, actor ContentActor) {
 	limit, offset, err := listPage(r)
 	if err != nil {
@@ -193,7 +248,7 @@ func (h apiHandler) saveCookbookBookmark(w http.ResponseWriter, r *http.Request,
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	if input.LocalCookbookID == "" || strings.TrimSpace(input.LocalCookbookID) != input.LocalCookbookID || len(input.LocalCookbookID) > 80 || strings.ContainsRune(input.LocalCookbookID, '\x00') {
+	if !validCookbookBookmarkTargetID(input.LocalCookbookID) {
 		writeError(w, http.StatusBadRequest, "invalid_bookmark_target")
 		return
 	}
@@ -265,6 +320,10 @@ func (h apiHandler) saveCookbookBookmark(w http.ResponseWriter, r *http.Request,
 	default:
 		writeJSON(w, status, response)
 	}
+}
+
+func validCookbookBookmarkTargetID(cookbookID string) bool {
+	return cookbookID != "" && strings.TrimSpace(cookbookID) == cookbookID && len(cookbookID) <= 80 && !strings.ContainsRune(cookbookID, '\x00')
 }
 
 func availableCookbookBookmark(bookmarkID, cookbookID, createdAt string, item cookbook) CookbookBookmarkView {

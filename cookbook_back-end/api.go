@@ -238,6 +238,8 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.recipeBookmarks(w, r, parts[2])
 	case len(parts) == 2 && parts[0] == "library" && parts[1] == "cookbook-bookmarks":
 		h.cookbookBookmarks(w, r, "")
+	case len(parts) == 3 && parts[0] == "library" && parts[1] == "cookbook-bookmarks" && parts[2] == "status":
+		h.cookbookBookmarkStatus(w, r)
 	case len(parts) == 3 && parts[0] == "library" && parts[1] == "cookbook-bookmarks":
 		h.cookbookBookmarks(w, r, parts[2])
 	case len(parts) == 1 && parts[0] == "cookbooks":

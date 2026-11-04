@@ -106,6 +106,15 @@ test("Library and recipe detail preserve account, public, saved, unavailable, an
       "public",
     );
 
+    const libraryReads: string[] = [];
+    const legacyRecipeFeeds: string[] = [];
+    admin.page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname.startsWith("/api/library/"))
+        libraryReads.push(`${url.pathname}${url.search}`);
+      if (url.pathname === "/api/recipes" && request.method() === "GET")
+        legacyRecipeFeeds.push(url.pathname);
+    });
     const libraryResponse = await admin.page.goto("/library");
     expect(libraryResponse?.status()).toBe(200);
     expect(libraryResponse?.headers()["cache-control"]).toBe("no-store");
@@ -115,28 +124,50 @@ test("Library and recipe detail preserve account, public, saved, unavailable, an
     const libraryHTML = (await libraryResponse?.body())?.toString() ?? "";
     expect(libraryHTML).not.toContain(privateRecipe.title);
     await expect(
-      admin.page.getByRole("heading", { name: "Recipes you can access" }),
+      admin.page.getByRole("heading", { name: "Your recipes" }),
     ).toBeVisible();
-    await expect(
-      admin.page.getByRole("heading", { name: "Cookbooks you can access" }),
-    ).toHaveCount(0);
-    await expect(admin.page.getByRole("heading", { name: "Saved" })).toBeVisible();
+    const typeNavigation = admin.page.getByRole("navigation", {
+      name: "Library type",
+    });
+    await expect(typeNavigation.getByRole("button", { name: "Recipes" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(typeNavigation.getByRole("button", { name: "Cookbooks" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(libraryReads).toContain("/api/library/recipes?limit=24&offset=0");
+    expect(libraryReads.some((path) => path.startsWith("/api/library/cookbooks?"))).toBe(false);
+    expect(legacyRecipeFeeds).toEqual([]);
 
-    const accessible = admin.page.locator("#recipes");
-    const privateEntry = accessible
+    const library = admin.page.locator(
+      'section[aria-labelledby="library-collection-title"]',
+    );
+    const privateEntry = library
       .getByRole("link", { name: `Open ${privateRecipe.title}` })
       .locator("xpath=..");
     await expect(privateEntry).toBeVisible();
+    await expect(privateEntry.getByText(/Owned by you/)).toBeVisible();
     await privateEntry.getByRole("button", { name: "Save to Library" }).click();
-    const saved = admin.page.locator('section[aria-labelledby="saved-title"]');
-    await expect(saved.getByRole("button", { name: "Remove from Library" })).toBeVisible();
-    await saved.getByRole("button", { name: "Remove from Library" }).click();
-    await expect(saved.getByText(/Recipes you save will appear here/)).toBeVisible();
+    await expect(
+      privateEntry.getByRole("button", { name: "Remove from Library" }),
+    ).toBeVisible();
+    await expect(privateEntry.getByText(/Owned by you/)).toBeVisible();
+    await expect(privateEntry.getByText(/Saved to Library/)).toBeVisible();
+    await privateEntry.getByRole("button", { name: "Remove from Library" }).click();
+    await expect(
+      privateEntry.getByRole("button", { name: "Save to Library" }),
+    ).toBeVisible();
+    await expect(privateEntry.getByText(/Owned by you/)).toBeVisible();
+    await expect(privateEntry.getByText(/Saved to Library/)).toHaveCount(0);
     expect((await admin.page.request.get(`/api/recipes/${privateRecipe.id}`)).status()).toBe(200);
 
     await privateEntry.getByRole("button", { name: "Save to Library" }).click();
-    await expect(saved.getByRole("link", { name: `Open ${privateRecipe.title}` })).toBeVisible();
-    await saved.getByRole("link", { name: `Open ${privateRecipe.title}` }).click();
+    await expect(
+      privateEntry.getByRole("button", { name: "Remove from Library" }),
+    ).toBeVisible();
+    await privateEntry.getByRole("link", { name: `Open ${privateRecipe.title}` }).click();
     await expect(admin.page).toHaveURL(new RegExp(`/recipe\\?id=${privateRecipe.id}$`));
     await expect(
       admin.page.getByRole("heading", { name: privateRecipe.title, exact: true }),
@@ -144,22 +175,11 @@ test("Library and recipe detail preserve account, public, saved, unavailable, an
     await expect(admin.page.getByText("Owned by you")).toBeVisible();
     await expect(admin.page.getByRole("button", { name: "Edit recipe" })).toBeVisible();
 
-    const deletePrivate = await admin.page.request.delete(
-      `/api/recipes/${privateRecipe.id}`,
-      { headers: { Origin: baseURL } },
-    );
-    expect(deletePrivate.status()).toBe(200);
-    await admin.page.goto("/library");
-    const unavailable = admin.page.locator('section[aria-labelledby="saved-title"]');
-    await expect(unavailable.getByRole("heading", { name: "Unavailable" })).toBeVisible();
-    await expect(unavailable.getByText(privateRecipe.title)).toHaveCount(0);
-    await expect(unavailable.getByRole("button", { name: "Remove from Library" })).toBeVisible();
-
     anonymous = await openContext(browser);
     await anonymous.page.goto("/");
     const anonymousLibraryRequests: string[] = [];
     anonymous.page.on("request", (request) => {
-      if (new URL(request.url()).pathname.startsWith("/api/library/bookmarks"))
+      if (new URL(request.url()).pathname.startsWith("/api/library/"))
         anonymousLibraryRequests.push(request.url());
     });
     const anonymousLibraryResponse = await anonymous.page.goto("/library");
@@ -218,6 +238,29 @@ test("Library and recipe detail preserve account, public, saved, unavailable, an
     expect(copiedRecipe.owner_id).toBe((await reader.page.request.get("/api/auth/me").then((r) => r.json())).id);
     expect(copiedRecipe.source_recipe_id).toBe(publicRecipe.id);
     expect(copiedRecipe.visibility).toBe("private");
+
+    const deletePrivate = await admin.page.request.delete(
+      `/api/recipes/${privateRecipe.id}`,
+      { headers: { Origin: baseURL } },
+    );
+    expect(deletePrivate.status()).toBe(200);
+    await admin.page.goto("/library");
+    const unavailable = admin.page.locator(
+      'section[aria-labelledby="library-collection-title"]',
+    );
+    const unavailableCard = unavailable
+      .getByRole("heading", { name: "Unavailable recipe" })
+      .locator("xpath=..");
+    await expect(unavailableCard).toBeVisible();
+    await expect(unavailableCard.getByText(privateRecipe.title)).toHaveCount(0);
+    await expect(unavailableCard.getByText(privateRecipe.id, { exact: true })).toHaveCount(0);
+    await expect(unavailableCard.getByRole("link")).toHaveCount(0);
+    await expect(unavailableCard.getByRole("button")).toHaveCount(1);
+    await expect(
+      unavailableCard.getByRole("button", {
+        name: "Remove unavailable recipe reference",
+      }),
+    ).toBeVisible();
     expect(cspConsoleErrors).toEqual([]);
   } finally {
     try {

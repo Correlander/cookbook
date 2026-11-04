@@ -323,9 +323,10 @@ describe("RecipePublicationPanel", () => {
       publication_state: "published",
       federation_mode: "followers",
     });
-    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).includes("federation-retention"))
         return Promise.resolve(new Response(JSON.stringify({ status: "queued" }), { status: 202 }));
+      void init;
       return Promise.resolve(jsonResponse(eligibleView));
     });
     const confirmMock = vi.fn(() => true);

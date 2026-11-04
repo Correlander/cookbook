@@ -125,7 +125,7 @@ test('signed-in instance administrators can open settings directly and through t
     await expect(page).toHaveTitle(/Instance settings/)
     await expect(page.getByRole('heading', { name: 'Instance administration', level: 1 })).toBeVisible()
     await expect(page.getByText('Enable public browsing')).toBeVisible()
-    await expect(page.getByRole('link', { name: 'Instance' })).toBeVisible()
+    await expect(page.getByRole('link', { name: 'Instance', exact: true })).toBeVisible()
     await expect(page.getByRole('link', { name: 'Administration' })).toHaveCount(0)
   }
 

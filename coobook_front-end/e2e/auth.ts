@@ -1,5 +1,5 @@
 import { expect } from "@playwright/test";
-import type { APIRequestContext, Page } from "@playwright/test";
+import type { APIRequestContext, APIResponse, Page } from "@playwright/test";
 import { readFile, stat, unlink } from "node:fs/promises";
 
 export async function signInWithSyntheticEmail(
@@ -32,31 +32,94 @@ export async function signInWithSyntheticEmail(
   if (!payload?.sign_in_url)
     throw new Error("synthetic sign-in link was not captured");
   await unlink(capturePath);
-  await page.goto(payload.sign_in_url);
-  const passkeysResponsePromise = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname === "/api/auth/passkeys",
-  );
-  await page.getByRole("button", { name: /continue to cookbook/i }).click();
-  await expect
-    .poll(async () => (await page.request.get("/api/auth/me")).status())
-    .toBe(200);
-  const passkeysResponse = await passkeysResponsePromise;
-  const shouldOfferPasskeySetup = passkeysResponse.ok()
-    ? ((await passkeysResponse.json()) as unknown[]).length === 0
-    : false;
-  const confirmationDialog = page.getByRole("dialog", {
-    name: "Confirm your sign-in",
-  });
-  await expect(confirmationDialog).toBeHidden();
-  const passkeyPrompt = page.getByRole("dialog", { name: "Add a passkey?" });
-  if (shouldOfferPasskeySetup) {
-    await expect(passkeyPrompt).toBeVisible();
-    await passkeyPrompt.getByRole("button", { name: "Not now" }).click();
+
+  const configResponse = await request.get("/api/public/config");
+  let passkeySignInEnabled = false;
+  if (configResponse.ok()) {
+    const config: unknown = await configResponse.json();
+    if (config && typeof config === "object" && "auth_methods" in config) {
+      const authMethods = config.auth_methods;
+      passkeySignInEnabled =
+        authMethods !== null &&
+        typeof authMethods === "object" &&
+        "passkey" in authMethods &&
+        authMethods.passkey === true;
+    }
   }
-  await expect(passkeyPrompt).toBeHidden();
-  return (await page.request.get("/api/auth/me").then((result) =>
-    result.json(),
-  )) as { is_admin: boolean };
+
+  let releasePasskeyCheck!: () => void;
+  const passkeyCheckGate = new Promise<void>((resolve) => {
+    releasePasskeyCheck = resolve;
+  });
+  let resolvePasskeyResponse!: (response: APIResponse) => void;
+  let rejectPasskeyResponse!: (error: unknown) => void;
+  const passkeyResponsePromise = new Promise<APIResponse>((resolve, reject) => {
+    resolvePasskeyResponse = resolve;
+    rejectPasskeyResponse = reject;
+  });
+  await page.route("**/api/auth/passkeys", async (route) => {
+    try {
+      const passkeysResponse = await route.fetch();
+      resolvePasskeyResponse(passkeysResponse);
+      await passkeyCheckGate;
+      await route.fulfill({ response: passkeysResponse });
+    } catch (error: unknown) {
+      rejectPasskeyResponse(error);
+      throw error;
+    }
+  });
+
+  try {
+    await page.goto(payload.sign_in_url);
+    await expect(
+      page.getByRole("heading", { name: "Sign-in confirmation", level: 1 }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: /continue to cookbook/i }).click();
+    await expect
+      .poll(async () => (await page.request.get("/api/auth/me")).status())
+      .toBe(200);
+
+    const passkeysResponse = await passkeyResponsePromise;
+    let hasValidEmptyPasskeyList = false;
+    if (passkeysResponse.ok()) {
+      const registeredPasskeys: unknown = await passkeysResponse.json();
+      hasValidEmptyPasskeyList =
+        Array.isArray(registeredPasskeys) && registeredPasskeys.length === 0;
+    }
+    const shouldOfferPasskeySetup =
+      passkeySignInEnabled && hasValidEmptyPasskeyList;
+    const continueHome = page.getByRole("button", {
+      name: "Continue to Home",
+    });
+    await expect(continueHome).toBeVisible();
+
+    if (shouldOfferPasskeySetup) {
+      releasePasskeyCheck();
+      const passkeyPrompt = page.getByRole("region", {
+        name: "Add a passkey?",
+      });
+      await expect(
+        page.getByRole("heading", { name: "Add a passkey?" }),
+      ).toBeVisible();
+      await expect(passkeyPrompt).toBeVisible();
+      await passkeyPrompt.getByRole("button", { name: "Not now" }).click();
+    } else {
+      await continueHome.click();
+      releasePasskeyCheck();
+    }
+
+    await expect(page).toHaveURL(/\/$/);
+    await expect(
+      page.getByRole("heading", {
+        name: `Welcome back, ${displayName}.`,
+        level: 1,
+      }),
+    ).toBeVisible();
+    const userResponse = await page.request.get("/api/auth/me");
+    expect(userResponse.status()).toBe(200);
+    return (await userResponse.json()) as { is_admin: boolean };
+  } finally {
+    releasePasskeyCheck();
+    await page.unroute("**/api/auth/passkeys");
+  }
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in Podman cold restore proof using a generated active Person actor."""
+"""Opt-in container-engine cold restore proof using a generated active Person actor."""
 
 import base64
 import io
@@ -23,17 +23,17 @@ BACKEND = ROOT / "cookbook_back-end"
 RUN_GO = ROOT.parent / "engineering-local" / "tools" / "run-go"
 
 
-def cleanup_owned_images(image_tag, image_id, layer_label, run_command):
+def cleanup_owned_images(image_tag, image_id, layer_label, run_command, *, engine="podman"):
     errors = []
 
     if image_id:
         try:
-            inspect = run_command(["podman", "image", "inspect", "--format", "{{.Id}}", image_tag])
+            inspect = run_command([engine, "image", "inspect", "--format", "{{.Id}}", image_tag])
             if inspect.returncode:
                 raise RuntimeError(f"tag inspection failed: {inspect.stderr[-500:]}")
             if inspect.stdout.strip() != image_id:
                 raise RuntimeError("fixture image tag no longer resolves to the inspected image ID")
-            removal = run_command(["podman", "image", "rm", image_id])
+            removal = run_command([engine, "image", "rm", image_id])
             if removal.returncode:
                 raise RuntimeError(f"fixture image removal failed: {removal.stderr[-500:]}")
         except Exception as exc:
@@ -45,7 +45,7 @@ def cleanup_owned_images(image_tag, image_id, layer_label, run_command):
     else:
         def list_owned_layers():
             result = run_command([
-                "podman", "image", "ls", "--all", "--no-trunc", "--format", "{{.Id}}",
+                engine, "image", "ls", "--all", "--no-trunc", "--format", "{{.Id}}",
                 "--filter", f"label={layer_label}",
             ])
             if result.returncode:
@@ -65,7 +65,7 @@ def cleanup_owned_images(image_tag, image_id, layer_label, run_command):
                         removal_errors.pop(owned_id, None)
                         continue
                     template = '{{.Id}}|{{index .Config.Labels "' + label_key + '"}}'
-                    verification = run_command(["podman", "image", "inspect", "--format", template, owned_id])
+                    verification = run_command([engine, "image", "inspect", "--format", template, owned_id])
                     if verification.returncode:
                         if owned_id in list_owned_layers():
                             removal_errors[owned_id] = f"ownership verification failed: {verification.stderr[-500:]}"
@@ -76,7 +76,7 @@ def cleanup_owned_images(image_tag, image_id, layer_label, run_command):
                     if not separator or verified_id.removeprefix("sha256:") != owned_id.removeprefix("sha256:") or verified_label != label_value:
                         removal_errors[owned_id] = "ownership verification failed; image left untouched"
                         continue
-                    removal = run_command(["podman", "image", "rm", owned_id])
+                    removal = run_command([engine, "image", "rm", owned_id])
                     still_owned = owned_id in list_owned_layers()
                     if removal.returncode and still_owned:
                         removal_errors[owned_id] = f"image removal failed: {removal.stderr[-500:]}"
@@ -97,9 +97,20 @@ def cleanup_owned_images(image_tag, image_id, layer_label, run_command):
         raise RuntimeError("; ".join(errors))
 
 
+def build_image_args(engine, image_tag, layer_label):
+    if engine == "podman":
+        return [engine, "build", "--pull=never", "--network=none", "--layer-label", layer_label,
+                "--tag", image_tag, "-f", "Dockerfile", "."]
+    if engine == "docker":
+        return [engine, "build", "--label", layer_label, "--tag", image_tag,
+                "-f", "Dockerfile", "."]
+    raise ValueError("engine must be podman or docker")
+
+
 class _FakeImageEngine:
-    def __init__(self, labels, *, fail_query=False, fail_removals=()):
+    def __init__(self, labels, *, engine="podman", fail_query=False, fail_removals=()):
         self.labels = dict(labels)
+        self.engine = engine
         self.fail_query = fail_query
         self.fail_removals = set(fail_removals)
         self.commands = []
@@ -107,7 +118,7 @@ class _FakeImageEngine:
 
     def __call__(self, args):
         self.commands.append(args)
-        if args[:3] == ["podman", "image", "ls"]:
+        if args[:3] == [self.engine, "image", "ls"]:
             if "--all" not in args:
                 return subprocess.CompletedProcess(args, 2, "", "missing --all")
             if self.fail_query:
@@ -116,20 +127,20 @@ class _FakeImageEngine:
             wanted = label_filter.removeprefix("label=")
             ids = sorted(image_id for image_id, label in self.labels.items() if label == wanted)
             return subprocess.CompletedProcess(args, 0, "\n".join(ids), "")
-        if args[:3] == ["podman", "image", "inspect"]:
+        if args[:3] == [self.engine, "image", "inspect"]:
             image_id = args[-1]
             if image_id not in self.labels:
                 return subprocess.CompletedProcess(args, 1, "", "image not found")
             label = self.labels[image_id]
             return subprocess.CompletedProcess(args, 0, f'{image_id}|{label.split("=", 1)[1]}', "")
-        if args[:3] == ["podman", "image", "rm"]:
+        if args[:3] == [self.engine, "image", "rm"]:
             image_id = args[3]
             if image_id in self.fail_removals:
                 return subprocess.CompletedProcess(args, 125, "", "injected image removal failure")
             self.removed.append(image_id)
             self.labels.pop(image_id, None)
             return subprocess.CompletedProcess(args, 0, image_id, "")
-        return subprocess.CompletedProcess(args, 2, "", "unexpected fake Podman command")
+        return subprocess.CompletedProcess(args, 2, "", f"unexpected fake {self.engine} command")
 
 
 class OwnedImageCleanupTests(unittest.TestCase):
@@ -157,16 +168,43 @@ class OwnedImageCleanupTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "image removal failed"):
             cleanup_owned_images("unused", None, run_label, engine)
 
+    def test_docker_cleanup_uses_only_images_with_this_run_label(self):
+        run_label = "com.cookbook.test-run=run-456"
+        image_id = "sha256:" + "d" * 64
+        engine = _FakeImageEngine({image_id: run_label}, engine="docker")
+        cleanup_owned_images("unused", None, run_label, engine, engine="docker")
+        self.assertEqual(engine.removed, [image_id])
+        self.assertTrue(all(command[0] == "docker" for command in engine.commands))
+
+    def test_build_image_args_match_each_engine(self):
+        self.assertEqual(
+            build_image_args("podman", "local/image:proof", "proof=run-123"),
+            ["podman", "build", "--pull=never", "--network=none", "--layer-label", "proof=run-123",
+             "--tag", "local/image:proof", "-f", "Dockerfile", "."],
+        )
+        docker_args = build_image_args("docker", "local/image:proof", "proof=run-123")
+        self.assertEqual(
+            docker_args,
+            ["docker", "build", "--label", "proof=run-123", "--tag", "local/image:proof",
+             "-f", "Dockerfile", "."],
+        )
+        self.assertNotIn("--network=none", docker_args)
+
 
 @unittest.skipUnless(os.environ.get("COOKBOOK_RUN_BACKUP_ACTOR_RESTORE") == "1",
-                     "set COOKBOOK_RUN_BACKUP_ACTOR_RESTORE=1 to run the disposable Podman proof")
+                     "set COOKBOOK_RUN_BACKUP_ACTOR_RESTORE=1 to run the disposable container proof")
 class ActorColdRestoreProof(unittest.TestCase):
     def test_generated_actor_survives_cold_restore_and_restart(self):
-        if not shutil.which("podman"):
-            self.fail("Podman is required for this opt-in proof")
+        engine = os.environ.get("COOKBOOK_CONTAINER_ENGINE", "podman")
+        if engine not in ("podman", "docker"):
+            self.fail("COOKBOOK_CONTAINER_ENGINE must be podman or docker")
+        if not shutil.which(engine):
+            self.fail(f"{engine} is required for this opt-in proof")
         suffix = uuid.uuid4().hex[:16]
         project = f"cookbookactor{suffix}"
-        image_tag = f"localhost/cookbook-backup-actor-proof:{suffix}"
+        shared_image = os.environ.get("COOKBOOK_BACKUP_ACTOR_IMAGE")
+        image_tag = shared_image or f"localhost/cookbook-backup-actor-proof:{suffix}"
+        owns_image = shared_image is None
         layer_label = f"com.cookbook.test-run={suffix}"
         image_id = None
         temporary = tempfile.TemporaryDirectory(prefix="cookbook-actor-proof-")
@@ -188,7 +226,7 @@ class ActorColdRestoreProof(unittest.TestCase):
             (build_context / filename).write_bytes(source_file)
         env = os.environ.copy()
         env.update({"COMPOSE_FILE": str(compose_file), "COMPOSE_PROJECT_NAME": project,
-                    "COOKBOOK_COMPOSE_ENGINE": "podman", "COOKBOOK_COMPOSE_SERVICE": "cookbook"})
+                    "COOKBOOK_COMPOSE_ENGINE": engine, "COOKBOOK_COMPOSE_SERVICE": "cookbook"})
 
         def run(args, *, cwd=ROOT, timeout=180, input_text=None):
             result = subprocess.run(args, cwd=cwd, env=env, text=True, input=input_text,
@@ -198,11 +236,11 @@ class ActorColdRestoreProof(unittest.TestCase):
             return result.stdout.strip()
 
         try:
-            # Build this exact checkout as a private local fixture image. The build is offline.
-            run(["podman", "build", "--pull=never", "--network=none", "--layer-label", layer_label,
-                 "--tag", image_tag, "-f", "Dockerfile", "."],
-                cwd=build_context, timeout=600)
-            image_id = run(["podman", "image", "inspect", "--format", "{{.Id}}", image_tag])
+            if owns_image:
+                # Podman reuses its cached base image offline; Docker pulls missing base layers on fresh CI runners.
+                build_args = build_image_args(engine, image_tag, layer_label)
+                run(build_args, cwd=build_context, timeout=600)
+            image_id = run([engine, "image", "inspect", "--format", "{{.Id}}", image_tag])
             if not re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", image_id):
                 self.fail(f"fixture service image did not resolve to an immutable image ID: {image_id!r}")
 
@@ -225,7 +263,10 @@ func TestBackupActorFixture(t *testing.T) {
 ''', encoding="utf-8")
             fixture_env = env.copy()
             fixture_env["COOKBOOK_FIXTURE_DATABASE"] = str(database)
-            generated = subprocess.run([str(RUN_GO), "test", "-run", "^TestBackupActorFixture$", "-count=1"],
+            go_command = str(RUN_GO) if RUN_GO.is_file() else shutil.which("go")
+            if not go_command:
+                self.fail("Go is required to generate the actor fixture")
+            generated = subprocess.run([go_command, "test", "-run", "^TestBackupActorFixture$", "-count=1"],
                                        cwd=fixture_backend, env=fixture_env, text=True, capture_output=True, timeout=300)
             if generated.returncode:
                 raise AssertionError(f"actor fixture generation failed: {(generated.stdout + generated.stderr)[-2000:]}")
@@ -299,8 +340,8 @@ func TestBackupActorFixture(t *testing.T) {
             archive.chmod(0o600)
             connection.close()
 
-            finalize_backup(archive, engine="podman", image=image_id)
-            expected = validate_backup(archive, engine="podman", image=image_id)["person_actor_manifest"]
+            finalize_backup(archive, engine=engine, image=image_id)
+            expected = validate_backup(archive, engine=engine, image=image_id)["person_actor_manifest"]
             states = {actor["state"] for actor in expected["actors"]}
             if states != {"active", "retired"}:
                 self.fail("generated fixture did not contain active and WAL-retired actors")
@@ -315,7 +356,7 @@ func TestBackupActorFixture(t *testing.T) {
 volumes:
   data:
 ''', encoding="utf-8")
-            run(["podman", "compose", "up", "-d", "cookbook"])
+            run([engine, "compose", "up", "-d", "cookbook"])
             run(["sh", str(ROOT / "scripts" / "restore-compose.sh"), str(archive)], timeout=300)
             compose_file.write_text(f'''services:
   cookbook:
@@ -328,11 +369,11 @@ volumes:
 volumes:
   data:
 ''', encoding="utf-8")
-            run(["podman", "compose", "up", "-d", "--force-recreate", "cookbook"])
+            run([engine, "compose", "up", "-d", "--force-recreate", "cookbook"])
             ready = False
             last_probe_error = ""
             for _ in range(30):
-                probe = subprocess.run(["podman", "compose", "exec", "-T", "cookbook", "cookbook", "instance", "recovery", "describe",
+                probe = subprocess.run([engine, "compose", "exec", "-T", "cookbook", "cookbook", "instance", "recovery", "describe",
                                         "--database", "/data/cookbook.db"], cwd=ROOT, env=env,
                                        text=True, capture_output=True, timeout=10)
                 if probe.returncode == 0:
@@ -341,7 +382,7 @@ volumes:
                 last_probe_error = probe.stderr.lower()
                 time.sleep(1)
             if not ready:
-                logs = subprocess.run(["podman", "compose", "logs", "--tail", "20", "cookbook"],
+                logs = subprocess.run([engine, "compose", "logs", "--tail", "20", "cookbook"],
                                       cwd=ROOT, env=env, text=True, capture_output=True, timeout=20)
                 details = (logs.stdout + logs.stderr + last_probe_error).lower()
                 if "permission denied" in details:
@@ -355,18 +396,18 @@ volumes:
                 else:
                     category = "unclassified runtime readiness"
                 raise AssertionError(f"fixture service did not become ready ({category})")
-            recovered = json.loads(run(["podman", "compose", "exec", "-T", "cookbook", "cookbook", "instance", "recovery", "describe",
+            recovered = json.loads(run([engine, "compose", "exec", "-T", "cookbook", "cookbook", "instance", "recovery", "describe",
                                         "--database", "/data/cookbook.db"]))
             self.assertEqual(recovered, expected)
-            container_id = run(["podman", "compose", "ps", "-q", "cookbook"])
+            container_id = run([engine, "compose", "ps", "-q", "cookbook"])
             recovered_snapshot = root / "recovered-snapshot"
             recovered_snapshot.mkdir(mode=0o700)
-            run(["podman", "cp", f"{container_id}:/data/cookbook.db", str(recovered_snapshot / "cookbook.db")])
+            run([engine, "cp", f"{container_id}:/data/cookbook.db", str(recovered_snapshot / "cookbook.db")])
             for sidecar in ("cookbook.db-wal", "cookbook.db-shm", "cookbook.db-journal"):
-                exists = subprocess.run(["podman", "exec", container_id, "test", "-f", f"/data/{sidecar}"],
+                exists = subprocess.run([engine, "exec", container_id, "test", "-f", f"/data/{sidecar}"],
                                         cwd=ROOT, env=env, capture_output=True, timeout=10)
                 if exists.returncode == 0:
-                    run(["podman", "cp", f"{container_id}:/data/{sidecar}", str(recovered_snapshot / sidecar)])
+                    run([engine, "cp", f"{container_id}:/data/{sidecar}", str(recovered_snapshot / sidecar)])
             with sqlite3.connect(recovered_snapshot / "cookbook.db") as restored_db:
                 marker = restored_db.execute("SELECT value FROM proof_marker").fetchone()
             self.assertEqual(marker, ("cold-restore-proof",))
@@ -426,20 +467,22 @@ volumes:
                     restored_db.execute("SELECT COUNT(*) FROM creator_profiles WHERE creator_id=?", (profile_id,)).fetchone(),
                     (1,),
                 )
-            self.assertEqual(run(["podman", "compose", "ps", "--status", "running", "--services"]), "cookbook")
+            self.assertEqual(run([engine, "compose", "ps", "--status", "running", "--services"]), "cookbook")
         finally:
             try:
                 if compose_file.exists():
-                    stopped = subprocess.run(["podman", "compose", "down", "--volumes", "--remove-orphans"], cwd=ROOT,
+                    stopped = subprocess.run([engine, "compose", "down", "--volumes", "--remove-orphans"], cwd=ROOT,
                                              env=env, capture_output=True, text=True, timeout=60, check=False)
                     if stopped.returncode:
                         raise RuntimeError(f"fixture compose cleanup failed: {stopped.stderr[-1000:]}")
             finally:
                 try:
-                    cleanup_owned_images(
-                        image_tag, image_id, layer_label,
-                        lambda args: subprocess.run(args, capture_output=True, text=True, timeout=30),
-                    )
+                    if owns_image:
+                        cleanup_owned_images(
+                            image_tag, image_id, layer_label,
+                            lambda args: subprocess.run(args, capture_output=True, text=True, timeout=30),
+                            engine=engine,
+                        )
                 finally:
                     temporary.cleanup()
 

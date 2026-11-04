@@ -28,7 +28,7 @@ jobs:
       - run: go vet ./...
 
   frontend:
-    name: Frontend checks and browser integration
+    name: Frontend checks and static-host browser integration
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -47,17 +47,26 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run lint
+      - run: npx tsc --noEmit
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm run e2e
+        env:
+          E2E_SKIP_BUILD: "1"
+      - run: cd .. && docker compose config --quiet
+      - run: cd .. && docker compose build
+      - name: Caddy and Go API browser integration
+        run: node scripts/run-caddy-smoke.mjs --engine docker --frontend-image "${COMPOSE_PROJECT_NAME}-frontend" --backend-image "${COMPOSE_PROJECT_NAME}-cookbook" --browser
+      - name: Backup actor cold and WAL restore proof
+        run: cd .. && python3 -m unittest discover -s scripts -p 'test_backup_actor_restore.py' -v
+        env:
+          COOKBOOK_RUN_BACKUP_ACTOR_RESTORE: "1"
+          COOKBOOK_CONTAINER_ENGINE: docker
+          COOKBOOK_BACKUP_ACTOR_IMAGE: cookbook-ci-${{ github.run_id }}-${{ github.run_attempt }}-cookbook
 
-  container:
-    name: Container build and Compose validation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: docker compose config --quiet
-      - run: docker compose build
+    env:
+      COMPOSE_PROJECT_NAME: cookbook-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/playwright-browsers
 
   operations:
     name: Backup tooling checks

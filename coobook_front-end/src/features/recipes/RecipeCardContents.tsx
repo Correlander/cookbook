@@ -1,8 +1,11 @@
 import Icon from "./RecipeIcon.tsx";
+import type { CreatorAttribution } from "../../apiModels";
+import CreatorCredits from "../creator/CreatorCredits.tsx";
 
 export interface RecipeCardContentsProps {
   title: string;
   creatorName: string;
+  creatorAttributions?: CreatorAttribution[];
   image?: string;
   stepCount: number;
   relationshipLabel: string;
@@ -11,6 +14,7 @@ export interface RecipeCardContentsProps {
 export default function RecipeCardContents({
   title,
   creatorName,
+  creatorAttributions,
   image,
   stepCount,
   relationshipLabel,
@@ -28,6 +32,11 @@ export default function RecipeCardContents({
         <span className="recipe-card__category">
           {creatorName ? `By ${creatorName}` : "Recipe"}
         </span>
+        <CreatorCredits
+          attributions={creatorAttributions}
+          resourceKind="recipe"
+          variant="compact"
+        />
         <strong>{title}</strong>
         <span className="recipe-card__category">{relationshipLabel}</span>
         <span className="recipe-card__meta">

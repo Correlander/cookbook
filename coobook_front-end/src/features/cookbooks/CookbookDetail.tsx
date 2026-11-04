@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Cookbook, PublicCookbook, PublicCookbookRecipe, Recipe } from "../../apiModels";
 import { errorMessage } from "../../apiModels";
+import CreatorCredits from "../creator/CreatorCredits.tsx";
 import RecipeCardContents from "../recipes/RecipeCardContents.tsx";
 import CookbookForm from "./CookbookForm.tsx";
 import CookbookMembers from "./CookbookMembers.tsx";
@@ -164,6 +165,13 @@ export default function CookbookDetail({
         )}
       </div>
       {book.description && <p>{book.description}</p>}
+      {!isPublic && currentUserID && "owner_id" in book && (
+        <CreatorCredits
+          attributions={book.creator_attributions}
+          resourceKind="cookbook"
+          currentUserID={currentUserID}
+        />
+      )}
       <p className="cookbook-detail__navigation">
         <a className="text-link" href={backHref(returnQuery)}>
           Back to cookbooks
@@ -217,6 +225,11 @@ export default function CookbookDetail({
               <RecipeCardContents
                 title={recipe.title}
                 creatorName={recipe.creator_name}
+                creatorAttributions={
+                  !isPublic && "can_edit" in recipe
+                    ? recipe.creator_attributions
+                    : undefined
+                }
                 image={recipe.image}
                 stepCount={recipe.steps.length}
                 relationshipLabel={`In ${book.title}`}

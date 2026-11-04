@@ -258,10 +258,35 @@ export interface PublicCookbook {
   updated_at: string;
 }
 
+export type CreatorAttributionRole = "creator" | "contributor" | "adapter";
+
+export interface LocalCreatorAttribution {
+  subject_kind: "local";
+  profile: {
+    id: string;
+    public_name: string;
+    visibility: "private" | "instance";
+  };
+  role: CreatorAttributionRole;
+  provenance: string;
+}
+
+export interface ExternalCreatorAttribution {
+  subject_kind: "external_claim";
+  name_claim?: string;
+  role: CreatorAttributionRole;
+  provenance: string;
+}
+
+export type CreatorAttribution =
+  | LocalCreatorAttribution
+  | ExternalCreatorAttribution;
+
 export interface Recipe {
   id: string;
   owner_id?: string;
   creator_name: string;
+  creator_attributions?: CreatorAttribution[];
   source_recipe_id?: string;
   source_origin?: string;
   sequence?: number;
@@ -395,6 +420,7 @@ export interface Cookbook {
   visibility: "private" | "unlisted" | "public";
   owner_id: string;
   owner_name?: string;
+  creator_attributions?: CreatorAttribution[];
   recipe_count?: number;
   created_at?: string;
   updated_at?: string;

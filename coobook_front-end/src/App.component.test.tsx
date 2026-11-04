@@ -4,6 +4,7 @@ import {
   fireEvent,
   render,
   screen,
+  within,
   waitFor,
 } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
@@ -44,6 +45,127 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+
+it("shows authenticated typed credits in Home cards as plain text and links them only in details", async () => {
+  const reader = {
+    id: "reader-1",
+    email: "reader@example.test",
+    display_name: "Reader",
+    is_admin: false,
+  };
+  const recipe = {
+    id: "recipe-1",
+    owner_id: "owner-1",
+    creator_name: "Legacy Cook",
+    creator_attributions: [
+      {
+        subject_kind: "local",
+        profile: { id: "profile-1", public_name: "Avery Cook", visibility: "instance" },
+        role: "creator",
+        provenance: "self_asserted_at_creation",
+      },
+      {
+        subject_kind: "external_claim",
+        name_claim: "Avery Cook",
+        role: "contributor",
+        provenance: "portable_claim",
+      },
+    ],
+    title: "Tomato soup",
+    description: "A warm soup.",
+    ingredients: [{ name: "Tomato" }],
+    steps: [{ text: "Cook." }],
+    servings: 2,
+    prep_time_minutes: 5,
+    cook_time_minutes: 10,
+    tags: [],
+    visibility: "private",
+    can_edit: false,
+    can_delete: false,
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/public/config") return Promise.resolve(jsonResponse(publicConfig(true, true)));
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse(reader));
+    if (url === "/api/recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([recipe]));
+    if (url === "/api/instance/authority")
+      return Promise.resolve(jsonResponse({
+        is_instance_owner: false,
+        is_admin: false,
+        owner_claimed: true,
+        can_manage_instance_roles: false,
+      }));
+    if (url === "/api/instance/owner-transfers")
+      return Promise.resolve(jsonResponse({ transfers: [] }));
+    if (url === "/api/cookbooks?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+
+  const card = await screen.findByRole("button", { name: "Open Tomato soup" });
+  expect(card.textContent).toContain("By Legacy Cook");
+  expect(card.textContent).toContain("Creator · Self-asserted at creation");
+  expect(card.textContent).toContain("Unverified creator claim: Avery Cook");
+  expect(card.querySelector("a")).toBeNull();
+
+  fireEvent.click(card);
+  const dialog = await screen.findByRole("dialog", { name: "Tomato soup" });
+  const profileLink = within(dialog).getByRole("link", { name: "Avery Cook" });
+  expect(profileLink.getAttribute("href")).toBe("/creator?id=profile-1");
+  expect(within(dialog).getByText("Unverified creator claim: Avery Cook")).toBeTruthy();
+});
+
+it("keeps public Home cards on the legacy byline even if a response has a typed field", async () => {
+  const recipe = {
+    id: "public-recipe",
+    creator_name: "Legacy Cook",
+    creator_attributions: [{
+      subject_kind: "local",
+      profile: { id: "private-profile", public_name: "Private Name", visibility: "private" },
+      role: "creator",
+      provenance: "self_asserted_at_creation",
+    }],
+    title: "Tomato soup",
+    description: "A warm soup.",
+    ingredients: [],
+    steps: [{ text: "Cook." }],
+    servings: 2,
+    prep_time_minutes: 5,
+    cook_time_minutes: 10,
+    tags: [],
+    visibility: "public",
+    can_edit: false,
+    can_delete: false,
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/public/config") return Promise.resolve(jsonResponse(publicConfig(true, true)));
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse({}, 401));
+    if (url === "/api/public/recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([recipe]));
+    if (url === "/api/public/remote-recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+
+  const card = await screen.findByRole("button", { name: "Open Tomato soup" });
+  expect(card.textContent).toContain("By Legacy Cook");
+  expect(card.textContent).not.toContain("Private Name");
+  expect(card.querySelector("a")).toBeNull();
+});
 
 it("preserves hidden cookbook references when an editor cannot manage sharing", async () => {
   const recipe = {

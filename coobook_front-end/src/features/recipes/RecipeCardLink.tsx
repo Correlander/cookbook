@@ -23,6 +23,7 @@ export default function RecipeCardLink({
       <RecipeCardContents
         title={recipe.title}
         creatorName={recipe.creator_name}
+        creatorAttributions={recipe.creator_attributions}
         image={recipe.image}
         stepCount={recipe.steps?.length ?? 0}
         relationshipLabel={relationshipLabel}

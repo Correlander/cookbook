@@ -29,6 +29,7 @@ type RecipeCardItem = {
   id: string;
   title: string;
   creator_name: string;
+  creator_attributions?: Recipe["creator_attributions"];
   owner_id?: string;
   source_recipe_id?: string;
   source_origin?: string;
@@ -67,6 +68,7 @@ function RecipeCard<T extends RecipeCardItem>({
       <RecipeCardContents
         title={recipe.title}
         creatorName={recipe.creator_name}
+        creatorAttributions={currentUserID ? recipe.creator_attributions : undefined}
         image={recipe.image}
         stepCount={recipe.steps?.length ?? 0}
         relationshipLabel={relationship}

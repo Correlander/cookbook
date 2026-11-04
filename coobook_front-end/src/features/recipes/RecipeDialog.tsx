@@ -11,6 +11,7 @@ import { errorMessage } from "../../apiModels";
 import { scaleQuantity } from "../../quantity.ts";
 import useModalFocus from "../../useModalFocus.ts";
 import BookmarkAction from "../library/BookmarkAction.tsx";
+import CreatorCredits from "../creator/CreatorCredits.tsx";
 import Icon from "./RecipeIcon.tsx";
 import type { RemoteRecipe } from "./recipeUiTypes.ts";
 
@@ -296,6 +297,13 @@ function RecipeDialog({
           </span>
           <h2 id="dialog-title">{recipe.title}</h2>
           <p>{recipe.description}</p>
+          {currentUserID && isLocalRecipe(currentRecipe) && (
+            <CreatorCredits
+              attributions={currentRecipe.creator_attributions}
+              resourceKind="recipe"
+              currentUserID={currentUserID}
+            />
+          )}
           {currentUserID && localRecipe && currentRecipe.owner_id === currentUserID ? (
             <p className="dialog-note">
               {currentRecipe.source_recipe_id

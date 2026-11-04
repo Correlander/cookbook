@@ -18,6 +18,8 @@ const pageAliases = new Map([
   ['auth/enroll.html', { file: 'auth/enroll.html', route: '/auth/enroll' }],
   ['account/security', { file: 'account/security.html', route: '/account/security' }],
   ['account/security.html', { file: 'account/security.html', route: '/account/security' }],
+  ['account/creator-profile', { file: 'account/creator-profile.html', route: '/account/creator-profile' }],
+  ['account/creator-profile.html', { file: 'account/creator-profile.html', route: '/account/creator-profile' }],
   ['admin', { file: 'admin.html', route: '/admin' }],
   ['admin.html', { file: 'admin.html', route: '/admin' }],
   ['admin/settings', { file: 'admin/settings.html', route: '/admin/settings' }],
@@ -34,6 +36,8 @@ const pageAliases = new Map([
   ['discover.html', { file: 'discover.html', route: '/discover' }],
   ['create', { file: 'create.html', route: '/create' }],
   ['create.html', { file: 'create.html', route: '/create' }],
+  ['creator', { file: 'creator.html', route: '/creator' }],
+  ['creator.html', { file: 'creator.html', route: '/creator' }],
 ])
 
 const server = createServer(async (request, response) => {

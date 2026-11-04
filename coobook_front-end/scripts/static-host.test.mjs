@@ -48,6 +48,8 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
     await mkdir(join(dist, 'auth'), { recursive: true })
     await mkdir(join(dist, 'account'), { recursive: true })
     await mkdir(join(dist, 'admin'), { recursive: true })
+    await writeFile(join(dist, 'creator.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Creator profile</title><meta name="description" content="View a local creator profile"></head></html>')
+    await writeFile(join(dist, 'account/creator-profile.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Creator profile</title><meta name="description" content="Manage a local creator profile"></head></html>')
     await writeFile(join(dist, 'index.html'), '<!doctype html><html><head><title>Root</title></head></html>')
     await writeFile(join(dist, 'auth/confirm.html'), '<!doctype html><html><head><meta name="robots" content="noindex,follow"><title>Confirm</title></head></html>')
     await writeFile(join(dist, 'auth/enroll.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Passkey enrollment</title></head></html>')
@@ -65,7 +67,9 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
       { route: '/auth/confirm', policy: "default-src 'self'; style-src 'self'" },
       { route: '/auth/enroll', policy: "default-src 'self'; script-src 'self'" },
       { route: '/account/security', policy: "default-src 'self'; img-src 'self'" },
+      { route: '/account/creator-profile', policy: "default-src 'self'; connect-src 'self'" },
       { route: '/admin', policy: "default-src 'self'; script-src 'self'" },
+      { route: '/creator', policy: "default-src 'self'; img-src 'self'" },
       { route: '/admin/settings', policy: "default-src 'self'; connect-src 'self'" },
       { route: '/library', policy: "default-src 'self'; script-src 'self'" },
       { route: '/recipe', policy: "default-src 'self'; img-src 'self'" },
@@ -108,20 +112,34 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
     assert.equal(rootPage.headers.get('content-security-policy'), "default-src 'self'; script-src 'self'")
     for (const page of [
       { path: '/account/security', title: /Account security/, policy: "default-src 'self'; img-src 'self'" },
+      { path: '/account/creator-profile', title: /Creator profile/, policy: "default-src 'self'; connect-src 'self'", description: 'Manage a local creator profile' },
       { path: '/admin', title: /Instance workbench/, policy: "default-src 'self'; script-src 'self'" },
       { path: '/admin/settings', title: /Admin settings/, policy: "default-src 'self'; connect-src 'self'" },
     ]) {
       for (const alias of [page.path, `${page.path}.html`]) {
         const response = await fetch(`${base}${alias}?view=security`)
         assert.equal(response.status, 200, alias)
-        assert.match(await response.text(), page.title)
+        assert.equal(new URL(response.url).search, '?view=security')
+        const html = await response.text()
+        assert.match(html, page.title)
         assert.equal(response.headers.get('cache-control'), 'no-store')
         assert.equal(response.headers.get('content-security-policy'), page.policy)
+        assert.equal(response.headers.get('referrer-policy'), 'no-referrer')
+        if (page.path === '/account/creator-profile') assert.match(html, /<meta name="robots" content="noindex,nofollow">/)
+        if (page.description) assert.match(html, new RegExp(`<meta name="description" content="${page.description}">`))
+        if (page.description) {
+          const reload = await fetch(`${base}${alias}?view=security`)
+          assert.equal(reload.status, 200, `${alias} reload`)
+          assert.equal(new URL(reload.url).search, '?view=security')
+          assert.equal(reload.headers.get('cache-control'), 'no-store')
+          assert.equal(reload.headers.get('content-security-policy'), page.policy)
+        }
       }
     }
     for (const page of [
       { path: '/discover', title: /Discover/, policy: "default-src 'self'; script-src 'self'; style-src 'self'" },
       { path: '/create', title: /Create/, policy: "default-src 'self'; script-src 'self'; style-src 'self'" },
+      { path: '/creator', title: /Creator profile/, policy: "default-src 'self'; img-src 'self'", description: 'View a local creator profile' },
     ]) {
       for (const alias of [page.path, `${page.path}.html`]) {
         const response = await fetch(`${base}${alias}?type=courses&keep=query`)
@@ -133,6 +151,14 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
         assert.equal(response.headers.get('cache-control'), 'no-store')
         assert.equal(response.headers.get('referrer-policy'), 'no-referrer')
         assert.equal(response.headers.get('content-security-policy'), page.policy)
+        if (page.description) assert.match(html, new RegExp(`<meta name="description" content="${page.description}">`))
+        if (page.description) {
+          const reload = await fetch(`${base}${alias}?type=courses&keep=query`)
+          assert.equal(reload.status, 200, `${alias} reload`)
+          assert.equal(new URL(reload.url).search, '?type=courses&keep=query')
+          assert.equal(reload.headers.get('cache-control'), 'no-store')
+          assert.equal(reload.headers.get('content-security-policy'), page.policy)
+        }
       }
     }
     for (const page of [

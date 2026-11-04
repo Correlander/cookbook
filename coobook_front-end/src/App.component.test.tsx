@@ -11,7 +11,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import App from "./App.tsx";
 import { AppSessionProvider } from "./app/AppSession.tsx";
 
-function renderApp(pathname = "/") {
+function renderApp(pathname = window.location.pathname) {
   return render(
     <AppSessionProvider>
       <App pathname={pathname} />
@@ -60,7 +60,11 @@ it("shows authenticated typed credits in Home cards as plain text and links them
     creator_attributions: [
       {
         subject_kind: "local",
-        profile: { id: "profile-1", public_name: "Avery Cook", visibility: "instance" },
+        profile: {
+          id: "profile-1",
+          public_name: "Avery Cook",
+          visibility: "instance",
+        },
         role: "creator",
         provenance: "self_asserted_at_creation",
       },
@@ -88,17 +92,20 @@ it("shows authenticated typed credits in Home cards as plain text and links them
   };
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
-    if (url === "/api/public/config") return Promise.resolve(jsonResponse(publicConfig(true, true)));
+    if (url === "/api/public/config")
+      return Promise.resolve(jsonResponse(publicConfig(true, true)));
     if (url === "/api/auth/me") return Promise.resolve(jsonResponse(reader));
     if (url === "/api/recipes?limit=24&offset=0")
       return Promise.resolve(jsonResponse([recipe]));
     if (url === "/api/instance/authority")
-      return Promise.resolve(jsonResponse({
-        is_instance_owner: false,
-        is_admin: false,
-        owner_claimed: true,
-        can_manage_instance_roles: false,
-      }));
+      return Promise.resolve(
+        jsonResponse({
+          is_instance_owner: false,
+          is_admin: false,
+          owner_claimed: true,
+          can_manage_instance_roles: false,
+        }),
+      );
     if (url === "/api/instance/owner-transfers")
       return Promise.resolve(jsonResponse({ transfers: [] }));
     if (url === "/api/cookbooks?limit=24&offset=0")
@@ -119,19 +126,27 @@ it("shows authenticated typed credits in Home cards as plain text and links them
   const dialog = await screen.findByRole("dialog", { name: "Tomato soup" });
   const profileLink = within(dialog).getByRole("link", { name: "Avery Cook" });
   expect(profileLink.getAttribute("href")).toBe("/creator?id=profile-1");
-  expect(within(dialog).getByText("Unverified creator claim: Avery Cook")).toBeTruthy();
+  expect(
+    within(dialog).getByText("Unverified creator claim: Avery Cook"),
+  ).toBeTruthy();
 });
 
 it("keeps public Home cards on the legacy byline even if a response has a typed field", async () => {
   const recipe = {
     id: "public-recipe",
     creator_name: "Legacy Cook",
-    creator_attributions: [{
-      subject_kind: "local",
-      profile: { id: "private-profile", public_name: "Private Name", visibility: "private" },
-      role: "creator",
-      provenance: "self_asserted_at_creation",
-    }],
+    creator_attributions: [
+      {
+        subject_kind: "local",
+        profile: {
+          id: "private-profile",
+          public_name: "Private Name",
+          visibility: "private",
+        },
+        role: "creator",
+        provenance: "self_asserted_at_creation",
+      },
+    ],
     title: "Tomato soup",
     description: "A warm soup.",
     ingredients: [],
@@ -149,7 +164,8 @@ it("keeps public Home cards on the legacy byline even if a response has a typed 
   };
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
-    if (url === "/api/public/config") return Promise.resolve(jsonResponse(publicConfig(true, true)));
+    if (url === "/api/public/config")
+      return Promise.resolve(jsonResponse(publicConfig(true, true)));
     if (url === "/api/auth/me") return Promise.resolve(jsonResponse({}, 401));
     if (url === "/api/public/recipes?limit=24&offset=0")
       return Promise.resolve(jsonResponse([recipe]));
@@ -215,7 +231,9 @@ it("preserves hidden cookbook references when an editor cannot manage sharing", 
   vi.stubGlobal("fetch", fetchMock);
 
   renderApp();
-  fireEvent.click(await screen.findByRole("button", { name: "Open Apple pie" }));
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Open Apple pie" }),
+  );
   fireEvent.click(screen.getByRole("button", { name: "Edit recipe" }));
   await screen.findByRole("dialog", { name: "Edit recipe" });
   expect(screen.queryByLabelText("Add to cookbooks")).toBeNull();
@@ -286,7 +304,9 @@ it("shows cookbook sharing only when the API grants sharing management", async (
   );
 
   renderApp();
-  fireEvent.click(await screen.findByRole("button", { name: "Open Apple pie" }));
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Open Apple pie" }),
+  );
   fireEvent.click(screen.getByRole("button", { name: "Edit recipe" }));
   expect(await screen.findByLabelText("Add to cookbooks")).toBeTruthy();
   expect(
@@ -338,8 +358,12 @@ it("loads publication settings only after the canonical owner opens the panel", 
   vi.stubGlobal("fetch", fetchMock);
 
   renderApp();
-  fireEvent.click(await screen.findByRole("button", { name: "Open Apple pie" }));
-  expect(screen.getByRole("button", { name: "Manage publication" })).toBeTruthy();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Open Apple pie" }),
+  );
+  expect(
+    screen.getByRole("button", { name: "Manage publication" }),
+  ).toBeTruthy();
   expect(
     fetchMock.mock.calls.filter(
       ([input]) => String(input) === "/api/recipes/recipe-1/publication",
@@ -397,8 +421,12 @@ it("hides publication controls from an editor who is not the recipe owner", asyn
   vi.stubGlobal("fetch", fetchMock);
 
   renderApp();
-  fireEvent.click(await screen.findByRole("button", { name: "Open Apple pie" }));
-  expect(screen.queryByRole("button", { name: "Manage publication" })).toBeNull();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Open Apple pie" }),
+  );
+  expect(
+    screen.queryByRole("button", { name: "Manage publication" }),
+  ).toBeNull();
   expect(
     fetchMock.mock.calls.some(([input]) =>
       String(input).endsWith("/publication"),
@@ -439,8 +467,12 @@ it("hides publication controls from guests even when a projection has an owner i
   vi.stubGlobal("fetch", fetchMock);
 
   renderApp();
-  fireEvent.click(await screen.findByRole("button", { name: "Open Apple pie" }));
-  expect(screen.queryByRole("button", { name: "Manage publication" })).toBeNull();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Open Apple pie" }),
+  );
+  expect(
+    screen.queryByRole("button", { name: "Manage publication" }),
+  ).toBeNull();
   expect(
     fetchMock.mock.calls.some(([input]) =>
       String(input).endsWith("/publication"),
@@ -486,8 +518,12 @@ it("does not show or fetch publication settings for a remote recipe", async () =
   vi.stubGlobal("fetch", fetchMock);
 
   renderApp();
-  fireEvent.click(await screen.findByRole("button", { name: "Open Remote soup" }));
-  expect(screen.queryByRole("button", { name: "Manage publication" })).toBeNull();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Open Remote soup" }),
+  );
+  expect(
+    screen.queryByRole("button", { name: "Manage publication" }),
+  ).toBeNull();
   expect(
     fetchMock.mock.calls.some(([input]) =>
       String(input).endsWith("/publication"),
@@ -525,13 +561,18 @@ it("sends explicit safe initial publication fields and public access confirmatio
   vi.stubGlobal("fetch", fetchMock);
 
   renderApp();
-  fireEvent.click((await screen.findAllByRole("button", { name: /Add a recipe/i }))[0]);
+  fireEvent.click(
+    (await screen.findAllByRole("button", { name: /Add a recipe/i }))[0],
+  );
   fireEvent.change(screen.getByLabelText("Title"), {
     target: { value: "Summer salad" },
   });
-  fireEvent.change(screen.getByLabelText("Ingredients (name | quantity | notes per line)"), {
-    target: { value: "Tomatoes" },
-  });
+  fireEvent.change(
+    screen.getByLabelText("Ingredients (name | quantity | notes per line)"),
+    {
+      target: { value: "Tomatoes" },
+    },
+  );
   fireEvent.change(await screen.findByLabelText("Creator credit"), {
     target: { value: "unknown" },
   });
@@ -580,13 +621,18 @@ it("requires public-access confirmation and retains form values after a denied c
   vi.stubGlobal("fetch", fetchMock);
 
   renderApp();
-  fireEvent.click((await screen.findAllByRole("button", { name: /Add a recipe/i }))[0]);
+  fireEvent.click(
+    (await screen.findAllByRole("button", { name: /Add a recipe/i }))[0],
+  );
   fireEvent.change(screen.getByLabelText("Title"), {
     target: { value: "Summer salad" },
   });
-  fireEvent.change(screen.getByLabelText("Ingredients (name | quantity | notes per line)"), {
-    target: { value: "Tomatoes" },
-  });
+  fireEvent.change(
+    screen.getByLabelText("Ingredients (name | quantity | notes per line)"),
+    {
+      target: { value: "Tomatoes" },
+    },
+  );
   fireEvent.change(await screen.findByLabelText("Creator credit"), {
     target: { value: "unknown" },
   });
@@ -603,13 +649,19 @@ it("requires public-access confirmation and retains form values after a denied c
   expect(fetchMock).not.toHaveBeenCalledWith("/api/recipes", expect.anything());
 
   fireEvent.click(screen.getByRole("checkbox", { name: /anyone can read/i }));
-  fireEvent.click(screen.getByRole("checkbox", { name: /not appear in anonymous/i }));
+  fireEvent.click(
+    screen.getByRole("checkbox", { name: /not appear in anonymous/i }),
+  );
   fireEvent.click(screen.getByRole("button", { name: "Save recipe" }));
   expect(
     await screen.findByText(/publishing requires public visibility/i),
   ).toBeTruthy();
-  expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("Summer salad");
-  expect((screen.getByLabelText("Visibility") as HTMLSelectElement).value).toBe("public");
+  expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe(
+    "Summer salad",
+  );
+  expect((screen.getByLabelText("Visibility") as HTMLSelectElement).value).toBe(
+    "public",
+  );
 });
 
 it("ignores an actor A create completion after session refresh switches the form to actor B", async () => {
@@ -635,7 +687,9 @@ it("ignores an actor A create completion after session refresh switches the form
     const url = String(input);
     if (url === "/api/auth/me") {
       sessionChecks += 1;
-      return Promise.resolve(jsonResponse(sessionChecks === 1 ? actorA : actorB));
+      return Promise.resolve(
+        jsonResponse(sessionChecks === 1 ? actorA : actorB),
+      );
     }
     if (url === "/api/public/config")
       return Promise.resolve(jsonResponse(publicConfig(true, false)));
@@ -650,12 +704,9 @@ it("ignores an actor A create completion after session refresh switches the form
       return Promise.resolve(jsonResponse({ profile: null }));
     }
     if (url === "/api/cookbooks") return Promise.resolve(jsonResponse([]));
-    if (url === "/api/recipes" && init?.method === "POST")
-      return pendingCreate;
-    if (url === "/api/auth/consume")
-      return Promise.resolve(jsonResponse({}));
-    if (url === "/api/auth/passkeys")
-      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/recipes" && init?.method === "POST") return pendingCreate;
+    if (url === "/api/auth/consume") return Promise.resolve(jsonResponse({}));
+    if (url === "/api/auth/passkeys") return Promise.resolve(jsonResponse([]));
     return Promise.resolve(jsonResponse({}, 404));
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -663,7 +714,9 @@ it("ignores an actor A create completion after session refresh switches the form
 
   renderApp();
   await screen.findByRole("heading", { name: "Welcome back, Cook A." });
-  fireEvent.click((await screen.findAllByRole("button", { name: "Add a recipe" }))[0]);
+  fireEvent.click(
+    (await screen.findAllByRole("button", { name: "Add a recipe" }))[0],
+  );
   await screen.findByRole("combobox", { name: "Creator credit" });
   fireEvent.change(screen.getByLabelText("Title"), {
     target: { value: "Actor A draft" },
@@ -691,9 +744,7 @@ it("ignores an actor A create completion after session refresh switches the form
     ).toBe(true),
   );
 
-  fireEvent.click(
-    screen.getByRole("button", { name: "Continue to Cookbook" }),
-  );
+  fireEvent.click(screen.getByRole("button", { name: "Continue to Cookbook" }));
   expect(
     await screen.findByRole("heading", { name: "Welcome back, Cook B." }),
   ).toBeTruthy();
@@ -718,9 +769,7 @@ it("ignores an actor A create completion after session refresh switches the form
     );
     await pendingCreate;
   });
-  expect(
-    screen.getByRole("combobox", { name: "Creator credit" }),
-  ).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "Creator credit" })).toBeTruthy();
   expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("");
   expect(
     screen.queryByRole("button", { name: "Open Actor A draft" }),
@@ -769,7 +818,9 @@ it("discards a same-recipe actor A image upload completion after Home switches t
     const url = String(input);
     if (url === "/api/auth/me") {
       sessionChecks += 1;
-      return Promise.resolve(jsonResponse(sessionChecks === 1 ? actorA : actorB));
+      return Promise.resolve(
+        jsonResponse(sessionChecks === 1 ? actorA : actorB),
+      );
     }
     if (url === "/api/public/config")
       return Promise.resolve(jsonResponse(publicConfig(true, false)));
@@ -779,13 +830,13 @@ it("discards a same-recipe actor A image upload completion after Home switches t
       return Promise.resolve(jsonResponse([]));
     if (url === "/api/cookbooks") return Promise.resolve(jsonResponse([]));
     if (url === "/api/recipes/recipe-1" && init?.method === "PUT")
-      return Promise.resolve(jsonResponse({ ...recipe, title: "Actor A edited pie" }));
+      return Promise.resolve(
+        jsonResponse({ ...recipe, title: "Actor A edited pie" }),
+      );
     if (url === "/api/recipes/recipe-1/image" && init?.method === "PUT")
       return pendingImageUpload;
-    if (url === "/api/auth/consume")
-      return Promise.resolve(jsonResponse({}));
-    if (url === "/api/auth/passkeys")
-      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/auth/consume") return Promise.resolve(jsonResponse({}));
+    if (url === "/api/auth/passkeys") return Promise.resolve(jsonResponse([]));
     return Promise.resolve(jsonResponse({}, 404));
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -793,9 +844,13 @@ it("discards a same-recipe actor A image upload completion after Home switches t
 
   renderApp();
   await screen.findByRole("heading", { name: "Welcome back, Cook A." });
-  fireEvent.click(await screen.findByRole("button", { name: "Open Apple pie" }));
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Open Apple pie" }),
+  );
   fireEvent.click(screen.getByRole("button", { name: "Edit recipe" }));
-  expect(await screen.findByRole("dialog", { name: "Edit recipe" })).toBeTruthy();
+  expect(
+    await screen.findByRole("dialog", { name: "Edit recipe" }),
+  ).toBeTruthy();
   fireEvent.change(screen.getByLabelText("Title"), {
     target: { value: "Actor A edited pie" },
   });
@@ -813,9 +868,7 @@ it("discards a same-recipe actor A image upload completion after Home switches t
     ).toBe(true),
   );
 
-  fireEvent.click(
-    screen.getByRole("button", { name: "Continue to Cookbook" }),
-  );
+  fireEvent.click(screen.getByRole("button", { name: "Continue to Cookbook" }));
   expect(
     await screen.findByRole("heading", { name: "Welcome back, Cook B." }),
   ).toBeTruthy();
@@ -826,7 +879,12 @@ it("discards a same-recipe actor A image upload completion after Home switches t
   expect(screen.getByRole("button", { name: "Open Apple pie" })).toBeTruthy();
 
   await act(async () => {
-    resolveImageUpload(jsonResponse({ image: "/api/recipes/recipe-1/image", version: recipe.version + 1 }));
+    resolveImageUpload(
+      jsonResponse({
+        image: "/api/recipes/recipe-1/image",
+        version: recipe.version + 1,
+      }),
+    );
     await pendingImageUpload;
   });
   expect(screen.getByRole("button", { name: "Open Apple pie" })).toBeTruthy();
@@ -884,7 +942,9 @@ it("sends only local-access confirmation on a visibility-expanding update", asyn
   vi.stubGlobal("fetch", fetchMock);
 
   renderApp();
-  fireEvent.click(await screen.findByRole("button", { name: "Open Apple pie" }));
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Open Apple pie" }),
+  );
   fireEvent.click(screen.getByRole("button", { name: "Edit recipe" }));
   fireEvent.change(screen.getByLabelText("Visibility"), {
     target: { value: "public" },
@@ -933,7 +993,9 @@ it("keeps instance account management off Home", async () => {
   expect(calls.some((url) => url.startsWith("/api/admin/users?"))).toBe(false);
   expect(calls.includes("/api/admin/invitations")).toBe(false);
   expect(calls.includes("/api/admin/audit?limit=24&offset=0")).toBe(false);
-  expect(calls.some((url) => url.startsWith("/api/admin/federation/"))).toBe(false);
+  expect(calls.some((url) => url.startsWith("/api/admin/federation/"))).toBe(
+    false,
+  );
   expect(screen.queryByRole("heading", { name: "Accounts" })).toBeNull();
   expect(screen.queryByRole("link", { name: "Instance" })).toBeNull();
 });
@@ -973,7 +1035,9 @@ it.each([
 
   expect((await screen.findByText(copy)).textContent).toBe(copy);
   expect(screen.getByLabelText("Email address")).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "Sign in with a passkey" })).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "Sign in with a passkey" }),
+  ).toBeNull();
 });
 
 it("shows only the enabled passkey action when email sign-in is disabled", async () => {
@@ -982,7 +1046,9 @@ it("shows only the enabled passkey action when email sign-in is disabled", async
     vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "/api/public/config")
-        return Promise.resolve(jsonResponse(publicConfig(false, true, "disabled")));
+        return Promise.resolve(
+          jsonResponse(publicConfig(false, true, "disabled")),
+        );
       if (url === "/api/auth/me") return Promise.resolve(jsonResponse({}, 401));
       if (url === "/api/public/remote-recipes?limit=24&offset=0")
         return Promise.resolve(jsonResponse([]));
@@ -995,9 +1061,13 @@ it("shows only the enabled passkey action when email sign-in is disabled", async
   renderApp();
   fireEvent.click(await screen.findByRole("button", { name: "Sign in" }));
 
-  expect(await screen.findByRole("button", { name: "Sign in with a passkey" })).toBeTruthy();
+  expect(
+    await screen.findByRole("button", { name: "Sign in with a passkey" }),
+  ).toBeTruthy();
   expect(screen.queryByLabelText("Email address")).toBeNull();
-  expect(screen.getByText("Email link sign-in is unavailable on this instance.")).toBeTruthy();
+  expect(
+    screen.getByText("Email link sign-in is unavailable on this instance."),
+  ).toBeTruthy();
 });
 
 it("reports when neither sign-in method is available", async () => {
@@ -1020,10 +1090,14 @@ it("reports when neither sign-in method is available", async () => {
   fireEvent.click(await screen.findByRole("button", { name: "Sign in" }));
 
   expect(
-    await screen.findByText("Sign-in is currently unavailable on this instance."),
+    await screen.findByText(
+      "Sign-in is currently unavailable on this instance.",
+    ),
   ).toBeTruthy();
   expect(screen.queryByLabelText("Email address")).toBeNull();
-  expect(screen.queryByRole("button", { name: "Sign in with a passkey" })).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "Sign in with a passkey" }),
+  ).toBeNull();
 });
 
 it("shows a retryable configuration error instead of guessing available methods", async () => {
@@ -1031,7 +1105,8 @@ it("shows a retryable configuration error instead of guessing available methods"
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     if (url === "/api/public/config")
-      return fetchMock.mock.calls.filter(([call]) => String(call) === url).length === 1
+      return fetchMock.mock.calls.filter(([call]) => String(call) === url)
+        .length === 1
         ? Promise.resolve(jsonResponse({}, 503))
         : configRetry.promise;
     if (url === "/api/auth/me") return Promise.resolve(jsonResponse({}, 401));
@@ -1049,7 +1124,9 @@ it("shows a retryable configuration error instead of guessing available methods"
     await screen.findByText("Could not load sign-in options. Try again."),
   ).toBeTruthy();
   expect(screen.queryByLabelText("Email address")).toBeNull();
-  expect(screen.queryByRole("button", { name: "Sign in with a passkey" })).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "Sign in with a passkey" }),
+  ).toBeNull();
 
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
   await act(async () => {
@@ -1072,7 +1149,9 @@ it("preserves the explicit email-unavailable message", async () => {
       if (url === "/api/public/recipes?limit=24&offset=0")
         return Promise.resolve(jsonResponse([]));
       if (url === "/api/auth/email")
-        return Promise.resolve(jsonResponse({ error: "email_unavailable" }, 503));
+        return Promise.resolve(
+          jsonResponse({ error: "email_unavailable" }, 503),
+        );
       return Promise.resolve(jsonResponse({}, 404));
     }),
   );
@@ -1084,7 +1163,11 @@ it("preserves the explicit email-unavailable message", async () => {
   });
   fireEvent.click(screen.getByRole("button", { name: /Send sign-in link/ }));
 
-  expect(await screen.findByText("Email sign-in is not configured on this instance.")).toBeTruthy();
+  expect(
+    await screen.findByText(
+      "Email sign-in is not configured on this instance.",
+    ),
+  ).toBeTruthy();
 });
 
 it("defers optional passkey setup until config loads without blocking confirmed sign-in", async () => {
@@ -1123,16 +1206,24 @@ it("defers optional passkey setup until config loads without blocking confirmed 
   );
 
   await waitFor(() =>
-    expect(screen.queryByRole("dialog", { name: "Confirm your sign-in" })).toBeNull(),
+    expect(
+      screen.queryByRole("dialog", { name: "Confirm your sign-in" }),
+    ).toBeNull(),
   );
-  expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/auth/consume")).toHaveLength(1);
+  expect(
+    fetchMock.mock.calls.filter(
+      ([input]) => String(input) === "/api/auth/consume",
+    ),
+  ).toHaveLength(1);
   expect(screen.queryByRole("dialog", { name: "Add a passkey?" })).toBeNull();
 
   await act(async () => {
     config.resolve(jsonResponse(publicConfig(true, true)));
     await config.promise;
   });
-  expect(await screen.findByRole("dialog", { name: "Add a passkey?" })).toBeTruthy();
+  expect(
+    await screen.findByRole("dialog", { name: "Add a passkey?" }),
+  ).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Not now" }));
   await waitFor(() =>
     expect(screen.queryByRole("dialog", { name: "Add a passkey?" })).toBeNull(),
@@ -1150,7 +1241,12 @@ it("does not offer first-passkey setup when passkeys are disabled", async () => 
       return Promise.resolve(
         sessionChecks === 1
           ? jsonResponse({}, 401)
-          : jsonResponse({ id: "user-1", email: "cook@example.test", display_name: "Cook", is_admin: false }),
+          : jsonResponse({
+              id: "user-1",
+              email: "cook@example.test",
+              display_name: "Cook",
+              is_admin: false,
+            }),
       );
     }
     if (url === "/api/public/remote-recipes?limit=24&offset=0")
@@ -1165,12 +1261,20 @@ it("does not offer first-passkey setup when passkeys are disabled", async () => 
   window.history.replaceState({}, "", "/auth/confirm?token=one-time-token");
 
   renderApp();
-  fireEvent.click(await screen.findByRole("button", { name: "Continue to Cookbook" }));
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Continue to Cookbook" }),
+  );
   await waitFor(() =>
-    expect(screen.queryByRole("dialog", { name: "Confirm your sign-in" })).toBeNull(),
+    expect(
+      screen.queryByRole("dialog", { name: "Confirm your sign-in" }),
+    ).toBeNull(),
   );
   expect(screen.queryByRole("dialog", { name: "Add a passkey?" })).toBeNull();
-  expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/auth/consume")).toHaveLength(1);
+  expect(
+    fetchMock.mock.calls.filter(
+      ([input]) => String(input) === "/api/auth/consume",
+    ),
+  ).toHaveLength(1);
 });
 
 it("closes auth-bound dialogs on sign-out so public sign-in can open", async () => {
@@ -1218,9 +1322,13 @@ it("closes auth-bound dialogs on sign-out so public sign-in can open", async () 
   );
 
   renderApp();
-  fireEvent.click(await screen.findByRole("button", { name: "Open Apple pie" }));
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Open Apple pie" }),
+  );
   fireEvent.click(screen.getByRole("button", { name: "Edit recipe" }));
-  expect(await screen.findByRole("dialog", { name: "Edit recipe" })).toBeTruthy();
+  expect(
+    await screen.findByRole("dialog", { name: "Edit recipe" }),
+  ).toBeTruthy();
   expect(screen.queryByLabelText("Add to cookbooks")).toBeNull();
   expect(
     (screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement)
@@ -1236,9 +1344,7 @@ it("closes auth-bound dialogs on sign-out so public sign-in can open", async () 
   );
 
   fireEvent.click(screen.getByRole("button", { name: /^Sign in$/ }));
-  expect(
-    await screen.findByRole("dialog", { name: "Sign in" }),
-  ).toBeTruthy();
+  expect(await screen.findByRole("dialog", { name: "Sign in" })).toBeTruthy();
 });
 
 it("shows cookbook edit and member controls only to the owner", async () => {
@@ -1325,15 +1431,21 @@ it("shows cookbook edit and member controls only to the owner", async () => {
   expect(memberCard.textContent).not.toContain("Edit cookbook");
   expect(memberCard.textContent).not.toContain("Share and manage members");
 
-  fireEvent.click(screen.getByRole("button", { name: "Share and manage members" }));
-  expect(await screen.findByRole("dialog", { name: "Cookbook members" })).toBeTruthy();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Share and manage members" }),
+  );
+  expect(
+    await screen.findByRole("dialog", { name: "Cookbook members" }),
+  ).toBeTruthy();
   expect(fetchMock).toHaveBeenCalledWith("/api/cookbooks/owned-book/members");
   expect(fetchMock).toHaveBeenCalledWith(
     "/api/cookbooks/owned-book/members/invitations",
   );
 
   fireEvent.click(screen.getByRole("button", { name: "Close members" }));
-  const cookbookLink = screen.getAllByRole("link", { name: "Open cookbook" })[0];
+  const cookbookLink = screen.getAllByRole("link", {
+    name: "Open cookbook",
+  })[0];
   expect(cookbookLink?.getAttribute("href")).toBe("/cookbook?id=owned-book");
 });
 
@@ -1344,25 +1456,31 @@ it("keeps both legacy cookbook anchors on the same useful section through sessio
     const url = String(input);
     calls.push(url);
     if (url === "/api/auth/me") return session.promise;
-    if (url === "/api/auth/config") return Promise.resolve(jsonResponse(publicConfig(true, true)));
+    if (url === "/api/auth/config")
+      return Promise.resolve(jsonResponse(publicConfig(true, true)));
     if (url === "/api/cookbooks?limit=24&offset=0")
-      return Promise.resolve(jsonResponse([
-        {
-          id: "home-book",
-          owner_id: "owner-1",
-          title: "My kitchen book",
-          description: "",
-          visibility: "private",
-        },
-      ]));
-    if (url.startsWith("/api/recipes?")) return Promise.resolve(jsonResponse([]));
+      return Promise.resolve(
+        jsonResponse([
+          {
+            id: "home-book",
+            owner_id: "owner-1",
+            title: "My kitchen book",
+            description: "",
+            visibility: "private",
+          },
+        ]),
+      );
+    if (url.startsWith("/api/recipes?"))
+      return Promise.resolve(jsonResponse([]));
     if (url === "/api/instance/authority")
-      return Promise.resolve(jsonResponse({
-        is_instance_owner: false,
-        is_admin: false,
-        owner_claimed: false,
-        can_manage_instance_roles: false,
-      }));
+      return Promise.resolve(
+        jsonResponse({
+          is_instance_owner: false,
+          is_admin: false,
+          owner_claimed: false,
+          can_manage_instance_roles: false,
+        }),
+      );
     return Promise.resolve(jsonResponse({}, 404));
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -1374,26 +1492,35 @@ it("keeps both legacy cookbook anchors on the same useful section through sessio
   expect(myCookbooksAnchor).toBeTruthy();
   expect(cookbookSection?.textContent).toContain("Browse public cookbooks");
   expect(myCookbooksAnchor?.textContent).toContain("Browse public cookbooks");
-  expect(cookbookSection?.querySelector('a[href="/cookbooks"]')?.textContent)
-    .toContain("Open cookbooks");
-  expect(calls.some((url) => url.startsWith("/api/public/cookbooks"))).toBe(false);
+  expect(
+    cookbookSection?.querySelector('a[href="/cookbooks"]')?.textContent,
+  ).toContain("Open cookbooks");
+  expect(calls.some((url) => url.startsWith("/api/public/cookbooks"))).toBe(
+    false,
+  );
 
   await act(async () => {
-    session.resolve(jsonResponse({
-      id: "owner-1",
-      email: "owner@example.test",
-      display_name: "Owner",
-      is_admin: false,
-    }));
+    session.resolve(
+      jsonResponse({
+        id: "owner-1",
+        email: "owner@example.test",
+        display_name: "Owner",
+        is_admin: false,
+      }),
+    );
     await session.promise;
   });
 
-  expect(await screen.findByRole("link", { name: "Open cookbook" })).toBeTruthy();
+  expect(
+    await screen.findByRole("link", { name: "Open cookbook" }),
+  ).toBeTruthy();
   expect(screen.getByText("My kitchen book")).toBeTruthy();
   expect(document.getElementById("cookbooks")).toBe(cookbookSection);
   expect(document.getElementById("my-cookbooks")).toBe(myCookbooksAnchor);
   expect(cookbookSection?.textContent).toContain("Cookbooks you can access");
   expect(myCookbooksAnchor?.textContent).toContain("Cookbooks you can access");
   expect(calls).toContain("/api/cookbooks?limit=24&offset=0");
-  expect(calls.some((url) => url.startsWith("/api/public/cookbooks"))).toBe(false);
+  expect(calls.some((url) => url.startsWith("/api/public/cookbooks"))).toBe(
+    false,
+  );
 });

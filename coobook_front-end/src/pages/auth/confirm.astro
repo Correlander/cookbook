@@ -1,11 +1,11 @@
 ---
 import BaseLayout from '../../layouts/BaseLayout.astro'
-import AppIsland from '../../components/AppIsland.astro'
+import AuthConfirmRoot from '../../app/AuthConfirmRoot.tsx'
 
 const title = 'Confirm your sign-in — Cookbook'
 const description = 'Continue to Cookbook only after you choose the confirmation button.'
 ---
 
 <BaseLayout title={title} description={description} robots="noindex,follow">
-  <AppIsland pathname="/auth/confirm" />
+  <AuthConfirmRoot client:load />
 </BaseLayout>

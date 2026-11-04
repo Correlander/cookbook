@@ -1,11 +1,9 @@
 import { lazy, useEffect, useRef, useState } from "react";
 import RecipeCollection from "./features/recipes/RecipeCollection.tsx";
 import useRecipeFeed from "./features/recipes/useRecipeFeed.ts";
-import { signInWithPasskey } from "./passkeys.ts";
 import FeatureIsland from "./components/FeatureIsland.tsx";
 import CookbookCollection from "./features/cookbooks/CookbookCollection.tsx";
 import PublicCourses from "./PublicCourses.tsx";
-import useModalFocus from "./useModalFocus.ts";
 import { useAppSession } from "./app/AppSession.tsx";
 import AppNavigation from "./app/AppNavigation.tsx";
 import RecipeDialog from "./features/recipes/RecipeDialog.tsx";
@@ -21,9 +19,8 @@ import type {
 } from "./apiModels";
 import { errorMessage } from "./apiModels";
 import { SessionCheckError } from "./app/AppSession.tsx";
-import usePublicAuthConfig from "./features/auth/usePublicAuthConfig.ts";
+import AuthEntry from "./features/auth/AuthEntry.tsx";
 
-const PasskeySetupPrompt = lazy(() => import("./PasskeySetupPrompt.tsx"));
 const Courses = lazy(() => import("./Courses.tsx"));
 type RecipeCardItem = {
   id: string;
@@ -68,7 +65,9 @@ function RecipeCard<T extends RecipeCardItem>({
       <RecipeCardContents
         title={recipe.title}
         creatorName={recipe.creator_name}
-        creatorAttributions={currentUserID ? recipe.creator_attributions : undefined}
+        creatorAttributions={
+          currentUserID ? recipe.creator_attributions : undefined
+        }
         image={recipe.image}
         stepCount={recipe.steps?.length ?? 0}
         relationshipLabel={relationship}
@@ -78,33 +77,27 @@ function RecipeCard<T extends RecipeCardItem>({
 }
 function HomeApp({ pathname }: { pathname: string }) {
   const [query, setQuery] = useState(""),
-    [selected, setSelected] = useState<Recipe | PublicRecipeDetail | null>(null),
+    [selected, setSelected] = useState<Recipe | PublicRecipeDetail | null>(
+      null,
+    ),
     [selectedRemote, setSelectedRemote] = useState<RemoteRecipe | null>(null),
     [remoteRecipes, setRemoteRecipes] = useState<RemoteRecipe[]>([]),
     [remoteVisible, setRemoteVisible] = useState(false),
-    [emailOpen, setEmailOpen] = useState(false),
-    [email, setEmail] = useState(""),
-    [message, setMessage] = useState(""),
-    [confirming, setConfirming] = useState(false),
-    [confirmationToken, setConfirmationToken] = useState(""),
+    [authOpen, setAuthOpen] = useState(false),
     [editRecipe, setEditRecipe] = useState<Recipe | null>(null),
     [editActorID, setEditActorID] = useState<string | null>(null),
-    [createOpen, setCreateOpen] = useState(false),
-    [inviteToken, setInviteToken] = useState(""),
-    [passkeyPrompt, setPasskeyPrompt] = useState(false),
-    [pendingPasskeyOffer, setPendingPasskeyOffer] = useState(false);
-  const { state: sessionState, currentUser, refreshSession, clearSession } =
-    useAppSession();
+    [createOpen, setCreateOpen] = useState(false);
+  const {
+    state: sessionState,
+    currentUser,
+    refreshSession,
+    clearSession,
+  } = useAppSession();
   const currentUserIDRef = useRef<string | null>(currentUser?.id ?? null);
   currentUserIDRef.current = currentUser?.id ?? null;
-  const {
-    state: publicAuthConfigState,
-    retry: retryPublicAuthConfig,
-  } = usePublicAuthConfig();
   const signedIn = Boolean(currentUser);
   const formActorID = currentUser?.id ?? null;
-  const activeEditRecipe =
-    editActorID === formActorID ? editRecipe : null;
+  const activeEditRecipe = editActorID === formActorID ? editRecipe : null;
   const feed = useRecipeFeed({ signedIn, query });
   useEffect(() => {
     if (editRecipe && editActorID !== formActorID) {
@@ -112,7 +105,6 @@ function HomeApp({ pathname }: { pathname: string }) {
       setEditActorID(null);
     }
   }, [editActorID, editRecipe, formActorID]);
-  const emailDialogRef = useRef<HTMLElement>(null);
   function handleSignedOut() {
     clearSession();
     setCreateOpen(false);
@@ -120,32 +112,19 @@ function HomeApp({ pathname }: { pathname: string }) {
     setEditActorID(null);
     setSelected(null);
     setSelectedRemote(null);
-    setEmailOpen(false);
-    setPasskeyPrompt(false);
-    setPendingPasskeyOffer(false);
+    setAuthOpen(false);
   }
-  useModalFocus(emailDialogRef, () => setEmailOpen(false), emailOpen);
-  useEffect(() => {
-    if (
-      !pendingPasskeyOffer ||
-      publicAuthConfigState.status !== "ready"
-    )
-      return;
-    setPendingPasskeyOffer(false);
-    if (publicAuthConfigState.config.auth_methods.passkey)
-      setPasskeyPrompt(true);
-  }, [pendingPasskeyOffer, publicAuthConfigState]);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const confirmation =
-      window.location.pathname === "/auth/confirm"
-        ? params.get("token") || ""
-        : "";
-    const invitation = params.get("invite") || "";
-    setConfirmationToken(confirmation);
-    setInviteToken(invitation);
-    setEmailOpen(Boolean(confirmation || invitation || params.get("signin")));
-  }, []);
+    if (pathname === "/" || pathname === "/auth/confirm")
+      setAuthOpen(
+        Boolean(
+          params.get("invite") ||
+          params.get("signin") ||
+          (pathname === "/auth/confirm" && params.get("token")),
+        ),
+      );
+  }, [pathname]);
   useEffect(() => {
     let active = true;
     fetch("/api/public/remote-recipes?limit=24&offset=0")
@@ -172,77 +151,6 @@ function HomeApp({ pathname }: { pathname: string }) {
       active = false;
     };
   }, []);
-  async function passkeySignIn(): Promise<void> {
-    setMessage("");
-    try {
-      await signInWithPasskey();
-      await refreshSession();
-      setEmailOpen(false);
-    } catch (error: unknown) {
-      setMessage(errorMessage(error, "Passkey sign-in failed."));
-    }
-  }
-  async function signIn(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setMessage("");
-    try {
-      const response = await fetch("/api/auth/email", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, invitation: inviteToken }),
-      });
-      const result = (await response.json()) as { status?: string };
-      if (!response.ok)
-        throw new Error(
-          response.status === 503
-            ? "Email sign-in is not configured on this instance."
-            : "Unable to request a sign-in link right now.",
-        );
-      if (result.status === "if_account_can_sign_in_link_sent")
-        setMessage(
-          "If this email can sign in, a one-time link will arrive shortly. Check your inbox.",
-        );
-      else setMessage("Unable to request a sign-in link right now.");
-    } catch (error: unknown) {
-      setMessage(
-        errorMessage(
-          error,
-          "Unable to contact this Cookbook instance. Try again later.",
-        ) || "Unable to contact this Cookbook instance. Try again later.",
-      );
-    }
-  }
-  async function confirmEmailSignIn(): Promise<void> {
-    if (!confirmationToken || confirming) return;
-    setConfirming(true);
-    setMessage("");
-    try {
-      const response = await fetch("/api/auth/consume", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: confirmationToken }),
-      });
-      if (!response.ok)
-        throw new Error(
-          "This sign-in link is invalid, expired, or already used. Request a new link.",
-        );
-      window.history.replaceState({}, "", "/");
-      setConfirmationToken("");
-      const user = await refreshSession();
-      if (user) {
-        const passkeysResponse = await fetch("/api/auth/passkeys");
-        if (passkeysResponse.ok && !(await passkeysResponse.json()).length)
-          setPendingPasskeyOffer(true);
-      }
-      setEmailOpen(false);
-    } catch (error: unknown) {
-      setMessage(
-        errorMessage(error, "This sign-in link could not be confirmed."),
-      );
-    } finally {
-      setConfirming(false);
-    }
-  }
   return (
     <div className="app-content">
       <AppNavigation
@@ -253,7 +161,7 @@ function HomeApp({ pathname }: { pathname: string }) {
         query={query}
         onQueryChange={setQuery}
         actionLabel={signedIn ? "Add a recipe" : "Sign in"}
-        onAction={() => (signedIn ? setCreateOpen(true) : setEmailOpen(true))}
+        onAction={() => (signedIn ? setCreateOpen(true) : setAuthOpen(true))}
       />
       <main id="home" tabIndex={-1}>
         {sessionState.status === "error" && (
@@ -337,10 +245,15 @@ function HomeApp({ pathname }: { pathname: string }) {
           </FeatureIsland>
         )}
         <CookbookCollection
-          mode={sessionState.status === "authenticated" ? "accessible" : "public"}
+          mode={
+            sessionState.status === "authenticated" ? "accessible" : "public"
+          }
           surface="home"
           user={currentUser}
-          enabled={sessionState.status === "authenticated" || sessionState.status === "anonymous"}
+          enabled={
+            sessionState.status === "authenticated" ||
+            sessionState.status === "anonymous"
+          }
           pending={sessionState.status === "loading"}
         >
           {sessionState.status === "authenticated" && (
@@ -413,18 +326,13 @@ function HomeApp({ pathname }: { pathname: string }) {
             </p>
             <button
               className="button button--green"
-              onClick={() => setEmailOpen(true)}
+              onClick={() => setAuthOpen(true)}
             >
               Get started <Icon name="arrow" size={16} />
             </button>
           </section>
         )}
       </main>
-      {passkeyPrompt && (
-        <FeatureIsland name="Passkey setup" loading="passkey setup">
-          <PasskeySetupPrompt onClose={() => setPasskeyPrompt(false)} />
-        </FeatureIsland>
-      )}
       <RecipeDialog
         recipe={selectedRemote || selected}
         currentUserID={currentUser?.id ?? null}
@@ -435,17 +343,17 @@ function HomeApp({ pathname }: { pathname: string }) {
         canFork={Boolean(signedIn && !selectedRemote)}
         canEdit={Boolean(
           signedIn &&
-            !selectedRemote &&
-            selected &&
-            "can_edit" in selected &&
-            selected.can_edit,
+          !selectedRemote &&
+          selected &&
+          "can_edit" in selected &&
+          selected.can_edit,
         )}
         canDelete={Boolean(
           signedIn &&
-            !selectedRemote &&
-            selected &&
-            "can_delete" in selected &&
-            selected.can_delete,
+          !selectedRemote &&
+          selected &&
+          "can_delete" in selected &&
+          selected.can_delete,
         )}
         onDelete={async (recipe) => {
           const response = await fetch(`/api/recipes/${recipe.id}`, {
@@ -472,9 +380,11 @@ function HomeApp({ pathname }: { pathname: string }) {
       />
       {(createOpen || activeEditRecipe) && (
         <RecipeForm
-          key={activeEditRecipe
-            ? `edit:${formActorID ?? "anonymous"}:${activeEditRecipe.id}`
-            : `create:${formActorID ?? "anonymous"}`}
+          key={
+            activeEditRecipe
+              ? `edit:${formActorID ?? "anonymous"}:${activeEditRecipe.id}`
+              : `create:${formActorID ?? "anonymous"}`
+          }
           user={currentUser}
           recipe={activeEditRecipe}
           onClose={() => {
@@ -496,136 +406,12 @@ function HomeApp({ pathname }: { pathname: string }) {
           }}
         />
       )}
-      {emailOpen && (
-        <div
-          className="dialog-backdrop"
-          role="presentation"
-          onMouseDown={(e) =>
-            e.target === e.currentTarget && setEmailOpen(false)
-          }
-        >
-          <section
-            className="signin-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="signin-title"
-            ref={emailDialogRef}
-            tabIndex={-1}
-          >
-            <button
-              className="icon-button dialog-close"
-              aria-label="Close sign in"
-              onClick={() => setEmailOpen(false)}
-            >
-              <Icon name="close" />
-            </button>
-            <span className="brand-mark">
-              <Icon name="chef" size={26} />
-            </span>
-            <span className="eyebrow">Welcome to your kitchen</span>
-            {confirmationToken ? (
-              <>
-                <h2 id="signin-title">Confirm your sign-in</h2>
-                <p>
-                  Use this one-time link to sign in. Cookbook will only continue
-                  after you choose the button below.
-                </p>
-                <button
-                  className="button button--green"
-                  type="button"
-                  onClick={confirmEmailSignIn}
-                  disabled={confirming}
-                >
-                  {confirming ? "Signing in…" : "Continue to Cookbook"}{" "}
-                  <Icon name="arrow" size={16} />
-                </button>
-              </>
-            ) : (
-              <>
-                <h2 id="signin-title">
-                  {inviteToken
-                    ? "Accept your invitation"
-                    : publicAuthConfigState.status === "ready" &&
-                        publicAuthConfigState.config.auth_methods.email_link
-                      ? "Sign in with email"
-                      : "Sign in"}
-                </h2>
-                <p>
-                  {publicAuthConfigState.status === "ready" &&
-                  publicAuthConfigState.config.auth_methods.email_link
-                    ? "We’ll send you a one-time link to get back to your cookbooks."
-                    : "Sign in to your cookbooks."}
-                </p>
-                {publicAuthConfigState.status === "loading" && (
-                  <p role="status">Loading sign-in options…</p>
-                )}
-                {publicAuthConfigState.status === "error" && (
-                  <div>
-                    <p role="alert">{publicAuthConfigState.message}</p>
-                    <button type="button" onClick={retryPublicAuthConfig}>
-                      Retry
-                    </button>
-                  </div>
-                )}
-                {publicAuthConfigState.status === "ready" && (
-                  <>
-                    {publicAuthConfigState.config.auth_methods.email_link ? (
-                      <>
-                        <p>
-                          {publicAuthConfigState.config.registration_policy ===
-                          "open"
-                            ? "Anyone can create an account with email sign-in."
-                            : publicAuthConfigState.config
-                                  .registration_policy === "invite_only"
-                              ? "New accounts need an invitation; existing accounts can still sign in."
-                              : "New email registrations are disabled; existing accounts can still sign in."}
-                        </p>
-                        <form onSubmit={signIn}>
-                          <label htmlFor="signin-email">Email address</label>
-                          <input
-                            id="signin-email"
-                            type="email"
-                            autoComplete="email"
-                            value={email}
-                            onChange={(e) => setEmail(e.target.value)}
-                            placeholder="you@example.com"
-                            required
-                          />
-                          <button className="button button--green" type="submit">
-                            Send sign-in link <Icon name="arrow" size={16} />
-                          </button>
-                        </form>
-                      </>
-                    ) : (
-                      <p>Email link sign-in is unavailable on this instance.</p>
-                    )}
-                    {publicAuthConfigState.config.auth_methods.passkey && (
-                      <button
-                        className="text-link passkey-action"
-                        type="button"
-                        onClick={passkeySignIn}
-                      >
-                        Sign in with a passkey
-                      </button>
-                    )}
-                    {!publicAuthConfigState.config.auth_methods.email_link &&
-                      !publicAuthConfigState.config.auth_methods.passkey && (
-                        <p role="status">
-                          Sign-in is currently unavailable on this instance.
-                        </p>
-                      )}
-                  </>
-                )}
-              </>
-            )}
-            {message && (
-              <p className="form-message" role="status">
-                {message}
-              </p>
-            )}
-          </section>
-        </div>
-      )}
+      <AuthEntry
+        mode="home"
+        open={authOpen}
+        pathname={pathname}
+        onClose={() => setAuthOpen(false)}
+      />
     </div>
   );
 }

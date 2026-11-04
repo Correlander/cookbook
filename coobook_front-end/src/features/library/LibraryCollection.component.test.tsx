@@ -18,6 +18,22 @@ it("labels owner, creator, membership and saved facts separately", () => {
   expect(screen.getByText("By Original author")).toBeTruthy();
 });
 
+it("renders owned-cookbook context without claiming a save, membership, or creator credit", () => {
+  render(<LibraryCollection type="recipes" userID="reader" busyBookmarkID="" onBookmarkChange={vi.fn()} onMutationUncertain={vi.fn()} onRemoveUnavailable={vi.fn()} page={{
+    total: 1, limit: 24, offset: 0, items: [{
+      availability: "available", target_kind: "local", relationships: ["in_owned_cookbook"],
+      in_owned_cookbook: true, cookbook_contexts: [{ id: "owner-book" }],
+      recipe: { id: "linked-1", owner_id: "cookbook-owner", title: "Cookbook soup", description: "", creator_name: "", ingredients: [], steps: [{ text: "Cook." }], servings: 1, prep_time_minutes: 0, cook_time_minutes: 1, tags: [], visibility: "private", can_edit: false, can_delete: false, version: 1, created_at: "2026-01-01", updated_at: "2026-01-01" },
+    }],
+  }} />);
+  expect(screen.getByText("In a cookbook you own")).toBeTruthy();
+  expect(screen.getByText("Cookbook context")).toBeTruthy();
+  expect(screen.queryByText("Saved to Library")).toBeNull();
+  expect(screen.queryByText("Shared with you")).toBeNull();
+  expect(screen.queryByText("By cookbook-owner")).toBeNull();
+  expect(screen.getByRole("button", { name: "Save to Library" })).toBeTruthy();
+});
+
 it("links remote recipes to their exact attributed cached detail snapshot", () => {
   render(<LibraryCollection type="recipes" userID="reader" busyBookmarkID="" onBookmarkChange={vi.fn()} onMutationUncertain={vi.fn()} onRemoveUnavailable={vi.fn()} page={{
     total: 1, limit: 24, offset: 0, items: [{ availability: "available", target_kind: "remote", relationships: ["saved"], bookmark_id: "remote-save", remote_recipe: {

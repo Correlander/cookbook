@@ -412,3 +412,17 @@ describe("RecipeCollection", () => {
     expect(screen.queryByRole("button", { name: "Old recipe" })).toBeNull();
   });
 });
+
+it("describes the signed-in recipe list as local Cookbook content, not Library membership", () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse([])));
+  render(<Harness initialSignedIn />);
+  expect(screen.getByText("On this Cookbook")).toBeTruthy();
+  expect(screen.queryByText("From your kitchen")).toBeNull();
+  expect(screen.getByRole("heading", { name: "Recipes you can access" })).toBeTruthy();
+});
+
+it("labels the anonymous recipe list as public local content", () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse([])));
+  render(<Harness />);
+  expect(screen.getByText("Public on this Cookbook")).toBeTruthy();
+});

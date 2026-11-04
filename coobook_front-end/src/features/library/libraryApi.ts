@@ -3,9 +3,11 @@ import type {
   CookbookBookmarkStatus,
   CookbookBookmarkView,
   Cookbook,
+  LibraryRelationship,
   CreatorAttribution,
   LibraryCookbookItem,
   LibraryPage,
+  LibraryRecipeRelationship,
   LibraryRecipeItem,
   LibraryType,
   PublicRecipeContent,
@@ -271,14 +273,10 @@ function parseLibraryPage(
     !isPositiveInteger(value.limit) ||
     !isNonnegativeInteger(value.offset)
   ) throw new Error(`Could not load your ${type} Library.`);
-  return {
-    items: value.items.map((item) =>
-      type === "recipes" ? parseLibraryRecipe(item) : parseLibraryCookbook(item),
-    ),
-    total: value.total,
-    limit: value.limit,
-    offset: value.offset,
-  };
+  const page = { total: value.total, limit: value.limit, offset: value.offset };
+  return type === "recipes"
+    ? { ...page, items: value.items.map(parseLibraryRecipe) }
+    : { ...page, items: value.items.map(parseLibraryCookbook) };
 }
 
 function parseLibraryRecipe(value: unknown): LibraryRecipeItem {
@@ -293,6 +291,8 @@ function parseLibraryRecipe(value: unknown): LibraryRecipeItem {
   if (!Array.isArray(value.relationships) || !value.relationships.every(isLibraryRelationship))
     throw new Error("Could not load your recipes Library.");
   if (value.target_kind === "local") {
+    if (value.relationships.includes("in_owned_cookbook") !== (value.in_owned_cookbook === true))
+      throw new Error("Could not load your recipes Library.");
     if (value.relationships.includes("saved") !== (typeof value.bookmark_id === "string" && Boolean(value.bookmark_id)))
       throw new Error("Could not load your recipes Library.");
     const recipe = parseRecipe(value.recipe);
@@ -305,6 +305,8 @@ function parseLibraryRecipe(value: unknown): LibraryRecipeItem {
       recipe,
     };
   }
+  if (value.relationships.includes("in_owned_cookbook"))
+    throw new Error("Could not load your recipes Library.");
   if (value.relationships.length !== 1 || value.relationships[0] !== "saved")
     throw new Error("Could not load your recipes Library.");
   const remote = parseRemoteRecipe(value.remote_recipe);
@@ -319,7 +321,7 @@ function parseLibraryCookbook(value: unknown): LibraryCookbookItem {
       throw new Error("Could not load your cookbooks Library.");
     return { availability: "unavailable", bookmark_id: value.bookmark_id, created_at: value.created_at };
   }
-  if (!Array.isArray(value.relationships) || !value.relationships.every(isLibraryRelationship))
+  if (!Array.isArray(value.relationships) || !value.relationships.every(isCookbookRelationship))
     throw new Error("Could not load your cookbooks Library.");
   if (value.relationships.includes("saved") !== (typeof value.bookmark_id === "string" && Boolean(value.bookmark_id)))
     throw new Error("Could not load your cookbooks Library.");
@@ -476,7 +478,8 @@ function requiredString(value: unknown): string {
   return value;
 }
 function isAvailability(value: unknown): value is "available" | "unavailable" { return value === "available" || value === "unavailable"; }
-function isLibraryRelationship(value: unknown): value is "owned" | "shared" | "saved" { return value === "owned" || value === "shared" || value === "saved"; }
+function isLibraryRelationship(value: unknown): value is LibraryRecipeRelationship { return value === "owned" || value === "shared" || value === "in_owned_cookbook" || value === "saved"; }
+function isCookbookRelationship(value: unknown): value is LibraryRelationship { return value === "owned" || value === "shared" || value === "saved"; }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

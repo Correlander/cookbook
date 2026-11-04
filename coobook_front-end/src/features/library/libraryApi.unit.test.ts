@@ -42,6 +42,27 @@ it("rejects malformed union rows and strips extra metadata from unavailable entr
   await expect(fetchLibraryPage("recipes")).rejects.toThrow("Could not load your recipes Library.");
 });
 
+it("accepts an owned-cookbook-only recipe relationship without inventing a save or membership", async () => {
+  const recipe = {
+    id: "owned-cookbook-recipe", title: "Soup", description: "", creator_name: "",
+    can_edit: false, can_delete: false, version: 1, servings: 1,
+    prep_time_minutes: 0, cook_time_minutes: 1, ingredients: [], steps: [{ text: "Cook" }],
+    tags: [], visibility: "private", created_at: "2026-01-01", updated_at: "2026-01-01",
+  };
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ items: [{
+    availability: "available", target_kind: "local", relationships: ["in_owned_cookbook"],
+    in_owned_cookbook: true, cookbook_contexts: [{ id: "owner-book" }], recipe,
+  }], total: 1, limit: 24, offset: 0 })));
+
+  const page = await fetchLibraryPage("recipes");
+  expect(page.items[0]).toMatchObject({
+    availability: "available", target_kind: "local", relationships: ["in_owned_cookbook"],
+    in_owned_cookbook: true, cookbook_contexts: [{ id: "owner-book" }],
+  });
+  expect(page.items[0]?.target_kind === "local" && page.items[0].bookmark_id).toBeUndefined();
+  expect(page.items[0]?.target_kind === "local" && page.items[0].membership_role).toBeUndefined();
+});
+
 it("checks exact recipe status by one target and never treats an error as unsaved", async () => {
   const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ saved: true, bookmark_id: "bookmark-1" }));
   vi.stubGlobal("fetch", fetchMock);

@@ -181,6 +181,14 @@ export default function InstanceWorkbench() {
   const outgoing = transferItems?.find((item) => item.direction === "outgoing");
   const canViewAccounts = Boolean(authorityValue?.is_admin || authorityValue?.is_instance_owner);
   const canChooseTransferTarget = Boolean(authorityValue?.is_instance_owner && !outgoing && transferItems);
+  const hasManagementSections = Boolean(
+    authorityValue && (
+      canViewAccounts || incoming || authorityValue.is_instance_owner ||
+      (!authorityValue.owner_claimed && authorityValue.is_admin) ||
+      authorityValue.is_admin || authorityValue.can_manage_instance_roles ||
+      authorityValue.can_manage_instance_settings === true
+    ),
+  );
 
   return (
     <div className="app-content">
@@ -193,11 +201,21 @@ export default function InstanceWorkbench() {
       <main id="home" tabIndex={-1}>
         <section className="dashboard-welcome">
           <div>
-            <span className="eyebrow">Instance</span>
-            <h1>Instance access</h1>
-            <p>Review administrator access and ownership requests.</p>
+            <span className="eyebrow">Manage this Cookbook</span>
+            <h1>People and permissions</h1>
+            <p>Manage accounts, invitations, and ownership.</p>
           </div>
         </section>
+        {authorityValue && hasManagementSections && (
+          <nav className="instance-section-nav" aria-label="Management sections">
+            {canViewAccounts && <a href="#accounts">Accounts and roles</a>}
+            {(authorityValue.is_instance_owner || incoming || (!authorityValue.owner_claimed && authorityValue.is_admin)) && <a href="#ownership">Ownership</a>}
+            {authorityValue.is_admin && <a href="#invitations">Invitations</a>}
+            {authorityValue.is_admin && <a href="#activity">Activity</a>}
+            {(authorityValue.is_admin || authorityValue.can_manage_instance_roles) && <a href="#federation">Federation</a>}
+            {authorityValue.can_manage_instance_settings === true && <a href="/admin/settings#visibility">Settings</a>}
+          </nav>
+        )}
         {notice && <p className="form-message" role="status">{notice}</p>}
 
         {sessionState.status === "loading" ? (
@@ -223,6 +241,7 @@ export default function InstanceWorkbench() {
             )}
             {error.includes("Sign out and sign in again") && <SignInAgainNotice />}
 
+            {(authorityValue.is_instance_owner || incoming || (!authorityValue.owner_claimed && authorityValue.is_admin)) && <section id="ownership" className="instance-section-target" aria-label="Ownership">
             {!authorityValue.owner_claimed && authorityValue.is_admin && (
               <section className="cookbook-dashboard" aria-labelledby="owner-claim-heading">
                 <h2 id="owner-claim-heading">Instance owner not assigned</h2>
@@ -314,8 +333,10 @@ export default function InstanceWorkbench() {
                 </button>
               </section>
             )}
+            </section>}
 
             {canViewAccounts && (
+              <div id="accounts" className="instance-section-target">
               <AdminUsers
                 currentUser={sessionState.currentUser}
                 authorityState={authority.state}
@@ -329,12 +350,7 @@ export default function InstanceWorkbench() {
                   ? (account) => void handleMutation({ action: "create", target: account })
                   : undefined}
               />
-            )}
-
-            {authorityValue.can_manage_instance_settings === true && (
-              <p className="admin-settings-note">
-                <a className="text-link" href="/admin/settings">Open Instance Settings</a>
-              </p>
+              </div>
             )}
             {authorityValue.can_manage_instance_settings === undefined && (
               <section className="cookbook-dashboard" aria-labelledby="settings-capability-unavailable">
@@ -351,12 +367,16 @@ export default function InstanceWorkbench() {
 
             {authorityValue.is_admin && (
               <>
+                <div id="invitations" className="instance-section-target">
                 <FeatureIsland name="Invitations" loading="invitations">
                   <AdminInvitations />
                 </FeatureIsland>
+                </div>
+                <div id="activity" className="instance-section-target">
                 <FeatureIsland name="Audit log" loading="audit log">
                   <AdminAuditLog />
                 </FeatureIsland>
+                </div>
               </>
             )}
 
@@ -383,6 +403,7 @@ export default function InstanceWorkbench() {
         {sessionState.status === "authenticated" && (
           (authorityValue?.is_admin || authorityValue?.can_manage_instance_roles ||
             (federationActorID === actorID && authority.state.status !== "ready")) && (
+          <div id="federation" className="instance-section-target">
           <FeatureIsland name="Federation administration" loading="federation administration">
             <FederationAdmin
               actorID={sessionState.currentUser.id}
@@ -390,6 +411,7 @@ export default function InstanceWorkbench() {
               onRefreshAuthority={authority.retry}
             />
           </FeatureIsland>
+          </div>
           )
         )}
       </main>

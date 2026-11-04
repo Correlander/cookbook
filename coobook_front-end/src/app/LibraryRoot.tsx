@@ -5,6 +5,7 @@ import { AppSessionProvider, useAppSession } from "./AppSession.tsx";
 import { SessionCheckError } from "./AppSession.tsx";
 import LibraryCollection from "../features/library/LibraryCollection.tsx";
 import { fetchLibraryPage, removeCookbookBookmark, removeRecipeBookmark } from "../features/library/libraryApi.ts";
+import ViewSwitcher from "../components/ViewSwitcher.tsx";
 
 type LibraryItem = LibraryRecipeItem | LibraryCookbookItem;
 type LibraryPageState = LibraryPage<LibraryItem> & { type: LibraryType; actorID: string };
@@ -12,6 +13,11 @@ type LibraryPageState = LibraryPage<LibraryItem> & { type: LibraryType; actorID:
 function readType(): LibraryType {
   return new URLSearchParams(window.location.search).get("type") === "cookbooks" ? "cookbooks" : "recipes";
 }
+
+const libraryTypeOptions = [
+  { value: "recipes", label: "Recipes" },
+  { value: "cookbooks", label: "Cookbooks" },
+] as const;
 
 function SignInRequired() {
   return (
@@ -170,11 +176,10 @@ function LibraryPageView() {
           state.status === "error" ? <SessionCheckError message={state.message} onRetry={() => void refreshSession()} /> :
             state.status === "anonymous" ? <SignInRequired /> :
               <>
-                <nav className="section-heading" aria-label="Library type">
-                  <button type="button" className="button button--green" aria-pressed={type === "recipes"} onClick={() => selectType("recipes")}>Recipes</button>
-                  <button type="button" className="button button--green" aria-pressed={type === "cookbooks"} onClick={() => selectType("cookbooks")}>Cookbooks</button>
+                <div className="library-type-controls">
+                  <ViewSwitcher label="Library type" value={type} options={libraryTypeOptions} onChange={selectType} />
                   <a className="text-link" href={`/create?type=${type}`}>Create {type === "recipes" ? "recipe" : "cookbook"}</a>
-                </nav>
+                </div>
                 {notice && <p role="status">{notice}</p>}
                 {loading && !activePage && <p role="status">Loading your {type} Library…</p>}
                 {error && <div><p role="alert" className="form-message">{error}</p><button type="button" className="text-link" onClick={() => { if (currentUser) void loadFirstPage(type, currentUser.id); }}>Retry loading {type}</button></div>}

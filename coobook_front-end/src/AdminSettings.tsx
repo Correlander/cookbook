@@ -232,6 +232,13 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
           <h2 id="instance-settings-title">Settings</h2>
         </div>
       </div>
+      <nav className="instance-section-nav" aria-label="Instance settings sections">
+        <a href="#visibility">Public browsing</a>
+        <a href="#courses">Courses</a>
+        <a href="#accounts">Accounts</a>
+        <a href="#retention">Data retention</a>
+        <a href="#federation">Federation</a>
+      </nav>
       {error && (
         <p className="form-message" role="alert">
           {error}
@@ -239,6 +246,8 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
       )}
       {settings && (
         <form className="admin-settings-form" onSubmit={save}>
+          <section className="instance-settings-section" id="visibility" aria-labelledby="visibility-heading">
+          <h3 id="visibility-heading">Public browsing</h3>
           <label className="admin-settings-option" htmlFor="public-instance">
             <input
               id="public-instance"
@@ -282,6 +291,9 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
               </span>
             </label>
           )}
+          </section>
+          <section className="instance-settings-section" id="accounts" aria-labelledby="accounts-heading">
+          <h3 id="accounts-heading">Accounts</h3>
           <label htmlFor="registration-policy">Account registration</label>
           <select
             id="registration-policy"
@@ -294,6 +306,9 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
             <option value="open">Open registration</option>
             <option value="disabled">Disabled</option>
           </select>
+          </section>
+          <section className="instance-settings-section" id="retention" aria-labelledby="retention-heading">
+          <h3 id="retention-heading">Data retention</h3>
           <label htmlFor="revision-retention">
             Recipe revision history retention
           </label>
@@ -326,6 +341,9 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
             <option value="90">90 days</option>
             <option value="365">365 days</option>
           </select>
+          </section>
+          <section className="instance-settings-section" id="courses" aria-labelledby="courses-heading">
+          <h3 id="courses-heading">Courses</h3>
           <label className="admin-settings-option" htmlFor="courses-enabled">
             <input
               id="courses-enabled"
@@ -342,6 +360,9 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
               </small>
             </span>
           </label>
+          </section>
+          <section className="instance-settings-section" id="federation" aria-labelledby="federation-heading">
+          <h3 id="federation-heading">Federation</h3>
           <label className="admin-settings-option" htmlFor="federation-enabled">
             <input
               id="federation-enabled"
@@ -363,6 +384,7 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
             Federation is {settings.federation_enabled ? "enabled" : "disabled"}
             .
           </p>
+          </section>
           <button
             className="button button--green"
             type="submit"

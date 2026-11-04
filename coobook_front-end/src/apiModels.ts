@@ -196,6 +196,7 @@ export interface CookbookBookmarkPage {
 
 export type LibraryType = "recipes" | "cookbooks";
 export type LibraryRelationship = "owned" | "shared" | "saved";
+export type LibraryRecipeRelationship = LibraryRelationship | "in_owned_cookbook";
 
 export interface LibraryRecipeCookbookContext {
   id: string;
@@ -206,7 +207,7 @@ export interface LibraryRecipeItem {
   availability: "available" | "unavailable";
   target_kind: "local" | "remote";
   bookmark_id?: string;
-  relationships?: LibraryRelationship[];
+  relationships?: LibraryRecipeRelationship[];
   membership_role?: string;
   in_owned_cookbook?: boolean;
   cookbook_contexts?: LibraryRecipeCookbookContext[];

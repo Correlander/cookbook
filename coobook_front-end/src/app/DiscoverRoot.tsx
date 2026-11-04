@@ -6,9 +6,11 @@ import useRecipeFeed from "../features/recipes/useRecipeFeed.ts";
 import RecipeCardContents from "../features/recipes/RecipeCardContents.tsx";
 import CookbookCollection from "../features/cookbooks/CookbookCollection.tsx";
 import PublicCourses from "../PublicCourses.tsx";
+import ViewSwitcher from "../components/ViewSwitcher.tsx";
 
 type DiscoverType = "recipes" | "cookbooks" | "courses";
 const discoverTypes: DiscoverType[] = ["recipes", "cookbooks", "courses"];
+const discoverOptions = discoverTypes.map((type) => ({ value: type, label: type[0]!.toUpperCase() + type.slice(1) }));
 type PublicConfig = { courses_enabled: boolean; public_instance: boolean };
 
 function routeFromSearch(search: string) {
@@ -67,25 +69,15 @@ function DiscoverPage() {
       />
       <main id="home" tabIndex={-1}>
         <section className="dashboard-welcome">
-          <div><span className="eyebrow">Explore this Cookbook</span><h1>Discover</h1><p>Browse recipes, cookbooks, and enabled public courses.</p></div>
+          <div><span className="eyebrow">On this Cookbook</span><h1>Discover</h1><p>Browse recipes and cookbooks available from this instance, with public courses when offered.</p></div>
         </section>
-        <div className="section-heading" aria-label="Discover content type">
-          {discoverTypes.filter((type) => type !== "courses" || coursesEnabled === true).map((type) => (
-            <button
-              className={route.type === type ? "button button--green" : "text-link"}
-              type="button"
-              key={type}
-              aria-pressed={route.type === type}
-              onClick={() => updateRoute({ type, query: type === "recipes" ? route.query : "" })}
-            >{type[0].toUpperCase() + type.slice(1)}</button>
-          ))}
-        </div>
+        <ViewSwitcher label="Discover type" value={route.type} options={discoverOptions.filter((option) => option.value !== "courses" || coursesEnabled === true)} onChange={(type) => updateRoute({ type, query: type === "recipes" ? route.query : "" })} />
         {state.status === "loading" ? <p className="cookbook-dashboard" role="status">Checking your session…</p> :
           state.status === "error" ? <SessionCheckError message={state.message} onRetry={() => void refreshSession()} /> :
             route.type === "recipes" ? <DiscoverRecipes signedIn={state.status === "authenticated"} currentUserID={currentUser?.id ?? null} query={route.query} /> :
               route.type === "cookbooks" ? <CookbookCollection mode={state.status === "authenticated" ? "accessible" : "public"} user={currentUser} surface="page" readOnly /> :
                 coursesEnabled === null ? <p role="status">Checking enabled features…</p> :
-                  coursesEnabled ? <PublicCourses /> : <p className="cookbook-empty">Public courses are not enabled for this instance.</p>}
+                  coursesEnabled ? <PublicCourses /> : <p className="cookbook-empty">Public courses are unavailable on this Cookbook.</p>}
       </main>
     </div>
   );
@@ -98,7 +90,7 @@ function DiscoverRecipes({ signedIn, currentUserID, query }: { signedIn: boolean
     query={query}
     feed={feed}
     heading="Recipes"
-    emptyMessage="No recipes are available in this catalog."
+    emptyMessage="No recipes are available on this Cookbook."
     onOpenRecipe={() => {}}
     renderRecipe={(recipe) => {
       const provenance = recipe.source_origin ? `From ${recipe.source_origin}` : currentUserID && recipe.owner_id === currentUserID ? "Owned by you" : currentUserID ? "Available to you" : "Public on this instance";

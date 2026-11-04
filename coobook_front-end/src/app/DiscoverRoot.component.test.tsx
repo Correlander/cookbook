@@ -42,6 +42,7 @@ it("reads, writes and restores the selected type through the route query", async
   vi.stubGlobal("fetch", fetchMock);
   render(<DiscoverRoot />);
   expect(await screen.findByRole("heading", { name: "Cookbooks you can access" })).toBeTruthy();
+  expect(screen.getByText(/recipes and cookbooks available from this instance/i)).toBeTruthy();
   expect(screen.queryByRole("button", { name: /create cookbook/i })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Recipes" }));
   await waitFor(() => expect(new URLSearchParams(window.location.search).get("type")).toBe("recipes"));

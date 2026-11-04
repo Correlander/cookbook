@@ -88,7 +88,7 @@ it("shows the Workbench settings link only after server capability is confirmed"
   render(<InstanceWorkbenchRoot />);
 
   expect(await screen.findByText("Checking instance permissions…")).toBeTruthy();
-  expect(screen.queryByRole("link", { name: "Open Instance Settings" })).toBeNull();
+  expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
   await act(async () => {
     authorityResponse.resolve(response({
       is_instance_owner: false,
@@ -100,7 +100,7 @@ it("shows the Workbench settings link only after server capability is confirmed"
     await authorityResponse.promise;
   });
 
-  expect(await screen.findByRole("link", { name: "Open Instance Settings" })).toBeTruthy();
+  expect((await screen.findByRole("link", { name: "Settings" })).getAttribute("href")).toBe("/admin/settings#visibility");
 });
 
 it("shows a retryable unsupported state when the server omits settings capability", async () => {
@@ -133,7 +133,7 @@ it("shows a retryable unsupported state when the server omits settings capabilit
   expect(await screen.findByRole("heading", { name: "Instance settings access unavailable" })).toBeTruthy();
   expect(screen.getByRole("alert").textContent).toContain("This server did not report");
   expect(screen.getByRole("button", { name: "Retry permissions" })).toBeTruthy();
-  expect(screen.queryByRole("link", { name: "Open Instance Settings" })).toBeNull();
+  expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
 });
 
 it("loads administrator panels only after current authority confirms an administrator", async () => {
@@ -189,7 +189,7 @@ it("loads administrator panels only after current authority confirms an administ
   expect(calls.indexOf("/api/admin/audit?limit=24&offset=0")).toBeGreaterThan(authorityIndex);
   expect(screen.getByRole("heading", { name: "Invitations" })).toBeTruthy();
   expect(screen.getByRole("heading", { name: "Audit log" })).toBeTruthy();
-  expect(screen.getByRole("link", { name: "Open Instance Settings" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
 });
 
 it("creates a named transfer from the existing paginated account row and refreshes current state", async () => {
@@ -246,7 +246,7 @@ it("creates a named transfer from the existing paginated account row and refresh
 
   render(<InstanceWorkbenchRoot />);
 
-  expect(await screen.findByRole("link", { name: "Open Instance Settings" })).toBeTruthy();
+  expect(await screen.findByRole("link", { name: "Settings" })).toBeTruthy();
   fireEvent.click(await screen.findByRole("button", { name: "Transfer ownership to Member" }));
   await waitFor(() => expect(screen.getByText(/Ownership request created/)).toBeTruthy());
   expect(confirmMock).toHaveBeenCalledWith(expect.stringContaining("Member (member@example.test)"));
@@ -416,7 +416,7 @@ it("explains recent authentication and never automatically replays a failed tran
 
   fireEvent.click(await screen.findByRole("button", { name: "Transfer ownership to Member" }));
   expect(await screen.findByText(/Sign out and sign back in/)).toBeTruthy();
-  expect(await screen.findAllByRole("link", { name: "Instance" })).toHaveLength(2);
+  expect(await screen.findAllByRole("link", { name: "Instance" })).toHaveLength(1);
   expect(postCount).toBe(1);
 });
 
@@ -611,7 +611,7 @@ it("keeps admin federation sections visible when a non-owner admin cannot read i
   expect(await screen.findByText("No peers have been configured.")).toBeTruthy();
   expect(await screen.findByText("No queued deliveries.")).toBeTruthy();
   expect(screen.getByRole("heading", { name: "Accounts" })).toBeTruthy();
-  expect(screen.queryByRole("link", { name: "Open Instance Settings" })).toBeNull();
+  expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
   expect(calls).not.toContain("/api/admin/federation/identity");
   expect(calls).toContain("/api/admin/federation/peers");
   expect(calls).toContain("/api/admin/federation/outbox");
@@ -643,13 +643,13 @@ it("clears the owner identity after authoritative permission revocation", async 
   render(<InstanceWorkbenchRoot />);
 
   expect(await screen.findByText("revoked-key")).toBeTruthy();
-  expect(screen.getByRole("link", { name: "Open Instance Settings" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
   revoked = true;
   window.dispatchEvent(new Event("focus"));
   expect(await screen.findByRole("heading", { name: "No instance actions are available" })).toBeTruthy();
   expect(screen.queryByText("revoked-key")).toBeNull();
   expect(screen.queryByText("secret-public-data")).toBeNull();
-  expect(screen.queryByRole("link", { name: "Open Instance Settings" })).toBeNull();
+  expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
   expect(calls.filter((url) => url === "/api/admin/federation/identity")).toHaveLength(1);
 });
 

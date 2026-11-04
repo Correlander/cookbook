@@ -31,6 +31,7 @@ it("reads only the selected canonical recipes page and renders current relations
   render(<LibraryRoot />);
   expect(await screen.findByRole("link", { name: "Open Shared soup" })).toBeTruthy();
   expect(screen.getByText("Shared with you · editor · Saved to Library")).toBeTruthy();
+  expect(screen.getByRole("group", { name: "Library type" })).toBeTruthy();
   expect(calls).toContain("/api/library/recipes?limit=24&offset=0");
   expect(calls.some((url) => url === "/api/recipes?limit=24&offset=0" || url.startsWith("/api/library/bookmarks?"))).toBe(false);
 });
@@ -49,6 +50,7 @@ it("switches types through browser history and requests only the matching endpoi
   await screen.findByText("Items you own, can access through a cookbook, or save appear here.");
   fireEvent.click(screen.getByRole("button", { name: "Cookbooks" }));
   await waitFor(() => expect(window.location.search).toBe("?type=cookbooks"));
+  expect(screen.getByRole("group", { name: "Library type" })).toBeTruthy();
   await waitFor(() => expect(calls).toContain("/api/library/cookbooks?limit=24&offset=0"));
   window.history.back();
   act(() => window.dispatchEvent(new PopStateEvent("popstate")));

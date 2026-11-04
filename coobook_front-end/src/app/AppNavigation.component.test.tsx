@@ -59,6 +59,7 @@ it("shows Instance only after authority confirms the owner capability", async ()
 
   renderNavigation();
 
+  fireEvent.click(screen.getByRole("button", { name: "Reader account menu" }));
   expect((await screen.findByRole("link", { name: "Instance" })).getAttribute("href")).toBe("/admin");
   expect(screen.getByRole("link", { name: "Account" }).getAttribute("href")).toBe("/account/security");
 });
@@ -69,9 +70,10 @@ it("keeps Account routed to security while marking creator-profile routes active
     return Promise.resolve(response({ transfers: [] }));
   }));
   renderNavigation({ pathname: "/account/creator-profile" });
+  fireEvent.click(screen.getByRole("button", { name: "Reader account menu" }));
   const account = screen.getByRole("link", { name: "Account" });
   expect(account.getAttribute("href")).toBe("/account/security");
-  expect(account.className).toContain("main-nav__active");
+  expect(screen.getByRole("link", { name: "Creator profile" }).getAttribute("aria-current")).toBe("page");
 });
 
 it("shows Instance to an exact incoming recipient and marks settings as part of that section", async () => {
@@ -92,9 +94,10 @@ it("shows Instance to an exact incoming recipient and marks settings as part of 
 
   renderNavigation({ pathname: "/admin/settings" });
 
+  fireEvent.click(screen.getByRole("button", { name: "Reader account menu" }));
   const instanceLink = await screen.findByRole("link", { name: "Instance" });
   expect(instanceLink.getAttribute("href")).toBe("/admin");
-  expect(instanceLink.className).toContain("main-nav__active");
+  expect(instanceLink.getAttribute("aria-current")).toBe("page");
 });
 
 it("keeps ordinary users without incoming requests out of Instance navigation", async () => {
@@ -108,6 +111,7 @@ it("keeps ordinary users without incoming requests out of Instance navigation", 
   renderNavigation();
 
   await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/instance/owner-transfers", { cache: "no-store" }));
+  fireEvent.click(screen.getByRole("button", { name: "Reader account menu" }));
   await waitFor(() => expect(screen.queryByRole("link", { name: "Instance" })).toBeNull());
 });
 
@@ -120,6 +124,7 @@ it("does not trust the account admin flag without current server authority", asy
 
   renderNavigation({ user: { ...ordinaryUser, is_admin: true } });
 
+  fireEvent.click(screen.getByRole("button", { name: "Reader account menu" }));
   await waitFor(() => expect(screen.queryByRole("link", { name: "Instance" })).toBeNull());
   expect(screen.queryByRole("link", { name: "Administration" })).toBeNull();
 });
@@ -136,6 +141,7 @@ it("shows the single Instance entry when current server authority confirms an ad
 
   renderNavigation({ user: { ...ordinaryUser, is_admin: true } });
 
+  fireEvent.click(screen.getByRole("button", { name: "Reader account menu" }));
   const instanceLink = await screen.findByRole("link", { name: "Instance" });
   expect(instanceLink.getAttribute("href")).toBe("/admin");
   expect(screen.queryByRole("link", { name: "Administration" })).toBeNull();

@@ -50,7 +50,12 @@ it("clears a denied settings draft and reloads fresh state only after explicit r
 
   render(<AdminSettings />);
 
+  expect(await screen.findByRole("navigation", { name: "Instance settings sections" })).toBeTruthy();
   const registration = await screen.findByRole("combobox", { name: "Account registration" });
+  expect(screen.getByRole("link", { name: "Public browsing" }).getAttribute("href")).toBe("#visibility");
+  expect(screen.getByRole("link", { name: "Courses" }).getAttribute("href")).toBe("#courses");
+  expect(screen.getByRole("link", { name: "Data retention" }).getAttribute("href")).toBe("#retention");
+  expect(screen.getByRole("heading", { name: "Accounts" })).toBeTruthy();
   fireEvent.change(registration, { target: { value: "disabled" } });
   fireEvent.click(screen.getByRole("button", { name: "Save instance settings" }));
 

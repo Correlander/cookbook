@@ -58,7 +58,7 @@ export default function RecipeCollection({
       <div className="section-heading">
         <div>
           <span className="eyebrow">
-            {signedIn ? "From your kitchen" : "A few good things"}
+            {signedIn ? "On this Cookbook" : "Public on this Cookbook"}
           </span>
           <h2>{heading ?? (signedIn ? "Recipes you can access" : "Find your next favorite")}</h2>
         </div>

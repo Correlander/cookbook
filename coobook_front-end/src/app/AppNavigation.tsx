@@ -3,6 +3,7 @@ import type { AuthenticatedUser } from "../apiModels";
 import type { AppSessionStatus } from "./AppSession.tsx";
 import useInstanceAuthority from "../features/auth/useInstanceAuthority.ts";
 import useOwnerTransfers from "../features/instance/useOwnerTransfers.ts";
+import SessionMenu from "../components/SessionMenu.tsx";
 
 interface AppNavigationProps {
   currentUser: AuthenticatedUser | null;
@@ -116,22 +117,6 @@ export default function AppNavigation({
           Library
         </a>
         {authenticated && <a className={active === "create" ? "main-nav__active" : undefined} aria-current={active === "create" ? "page" : undefined} href="/create">Create</a>}
-        {currentUser && (
-          <a
-            className={pathname === "/account/security" || pathname === "/account/creator-profile" ? "main-nav__active" : undefined}
-            href="/account/security"
-          >
-            Account
-          </a>
-        )}
-        {canVisitInstance && (
-          <a
-            className={pathname === "/admin" || pathname === "/admin/settings" ? "main-nav__active" : undefined}
-            href="/admin"
-          >
-            Instance
-          </a>
-        )}
       </nav>
       {instanceCheckFailed && (
         <button className="text-link" type="button" onClick={retryInstanceChecks}>
@@ -161,7 +146,14 @@ export default function AppNavigation({
           />
         </label>
       ) : null}
-      {sessionStatus === "loading" ? (
+      {sessionStatus === "authenticated" && currentUser ? (
+        <SessionMenu
+          user={currentUser}
+          instanceHref={canVisitInstance ? "/admin" : undefined}
+          pathname={pathname}
+          onSessionChange={onRetrySession}
+        />
+      ) : sessionStatus === "loading" ? (
         <button className="signin-button" type="button" disabled>
           Checking session…
         </button>

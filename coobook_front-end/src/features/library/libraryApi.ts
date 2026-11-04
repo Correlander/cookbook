@@ -13,8 +13,10 @@ import type {
   LibraryRecipeRelationship,
   LibraryRecipeItem,
   LibraryType,
+  PrivateSnapshotRecipeReadView,
   PublicRecipeContent,
   Recipe,
+  RecipeBookmarkSaveState,
   RecipeBookmarkStatus,
   RemoteRecipeReadView,
   RecipeBookmarkPage,
@@ -515,18 +517,44 @@ function parsePrivateSnapshotRecipe(value: unknown): PrivateSnapshotRecipeReadVi
   };
 }
 
-function parseSnapshotStateFields(value: Record<string, unknown>) {
-  const saveStates = ["reference", "snapshot", "restricted", "removed"] as const;
+type SnapshotStateFields = Pick<RecipeBookmarkView,
+  | "save_state"
+  | "version_id"
+  | "source_state"
+  | "provenance_state"
+  | "publisher_retention_claim"
+  | "moderation_reason"
+  | "moderated_at"
+  | "moderation_outcome"
+>;
+
+function isSnapshotSaveState(value: unknown): value is RecipeBookmarkSaveState {
+  return value === "reference" || value === "snapshot" || value === "restricted" || value === "removed";
+}
+
+function isSnapshotProvenance(value: unknown): value is NonNullable<RecipeBookmarkView["provenance_state"]> {
+  return value === "publisher_verified" || value === "user_imported_unverified";
+}
+
+function isSnapshotModerationReason(value: unknown): value is NonNullable<RecipeBookmarkView["moderation_reason"]> {
+  return value === "legal" || value === "security" || value === "privacy" || value === "policy";
+}
+
+function isSnapshotModerationOutcome(value: unknown): value is NonNullable<RecipeBookmarkView["moderation_outcome"]> {
+  return value === "restricted" || value === "removed";
+}
+
+function parseSnapshotStateFields(value: Record<string, unknown>): SnapshotStateFields {
   const state = value.save_state;
   const provenance = value.provenance_state;
   const reason = value.moderation_reason;
   const outcome = value.moderation_outcome;
-  if (state !== undefined && !saveStates.includes(state as typeof saveStates[number])) throw new Error("Could not load your recipes Library.");
-  if (provenance !== undefined && provenance !== "publisher_verified" && provenance !== "user_imported_unverified") throw new Error("Could not load your recipes Library.");
-  if (reason !== undefined && reason !== "legal" && reason !== "security" && reason !== "privacy" && reason !== "policy") throw new Error("Could not load your recipes Library.");
-  if (outcome !== undefined && outcome !== "restricted" && outcome !== "removed") throw new Error("Could not load your recipes Library.");
+  if (state !== undefined && !isSnapshotSaveState(state)) throw new Error("Could not load your recipes Library.");
+  if (provenance !== undefined && !isSnapshotProvenance(provenance)) throw new Error("Could not load your recipes Library.");
+  if (reason !== undefined && !isSnapshotModerationReason(reason)) throw new Error("Could not load your recipes Library.");
+  if (outcome !== undefined && !isSnapshotModerationOutcome(outcome)) throw new Error("Could not load your recipes Library.");
   return {
-    ...(state === undefined ? {} : { save_state: state as typeof saveStates[number] }),
+    ...(state === undefined ? {} : { save_state: state }),
     ...(typeof value.version_id === "string" ? { version_id: value.version_id } : {}),
     ...(typeof value.source_state === "string" ? { source_state: value.source_state } : {}),
     ...(provenance === undefined ? {} : { provenance_state: provenance }),

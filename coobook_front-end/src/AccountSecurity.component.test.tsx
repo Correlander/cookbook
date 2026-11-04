@@ -5,7 +5,7 @@ import AccountSecurity from "./AccountSecurity.tsx";
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 function setupImportResult(result: Record<string, number>) {
-  const fetchMock = vi.fn((input: RequestInfo | URL) => String(input) === "/api/import"
+  const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>((input) => String(input) === "/api/import"
     ? Promise.resolve(new Response(JSON.stringify(result), { status: 200 }))
     : Promise.resolve(new Response("[]", { status: 200 })));
   vi.stubGlobal("fetch", fetchMock);
@@ -30,9 +30,14 @@ it("keeps legacy import summaries valid without v7 counters", async () => {
 });
 
 it("defaults to reference-only and reports v8 snapshot counts without claiming trust", async () => {
-  const fetchMock = vi.fn((input: RequestInfo | URL) => String(input) === "/api/import"
-    ? Promise.resolve(new Response(JSON.stringify({ recipes: 0, cookbooks: 0, snapshot_copies: 1, snapshot_references: 2 }), { status: 201 }))
-    : Promise.resolve(new Response("[]", { status: 200 })));
+  let importHeaders: HeadersInit | undefined;
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === "/api/import") {
+      importHeaders = init?.headers;
+      return Promise.resolve(new Response(JSON.stringify({ recipes: 0, cookbooks: 0, snapshot_copies: 1, snapshot_references: 2 }), { status: 201 }));
+    }
+    return Promise.resolve(new Response("[]", { status: 200 }));
+  });
   vi.stubGlobal("fetch", fetchMock);
   const alert = vi.fn();
   vi.stubGlobal("alert", alert);
@@ -42,8 +47,7 @@ it("defaults to reference-only and reports v8 snapshot counts without claiming t
   fireEvent.change(screen.getByLabelText("Import a Cookbook export (ZIP or legacy JSON)"), { target: { files: [new File(["archive"], "export.zip")] } });
 
   await waitFor(() => expect(alert).toHaveBeenCalledWith("Imported 0 recipes and 0 cookbooks as private copies; 1 private saved copy preserved as unverified and 2 saved references imported as references."));
-  const request = fetchMock.mock.calls.find(([input]) => String(input) === "/api/import");
-  expect(request?.[1]?.headers).toEqual({ "Content-Type": "application/json" });
+  expect(importHeaders).toEqual({ "Content-Type": "application/json" });
   expect((screen.getByLabelText(/I am restoring my own personal account/) as HTMLInputElement).checked).toBe(false);
 });
 

@@ -8,6 +8,22 @@ type CourseResponse = {
   creator_attributions?: Array<{ subject_kind: string; role: string; name_claim?: string }>;
 };
 
+function metric(phaseName: string): void {
+  test.info().annotations.push({ type: "metric", description: `phase=${phaseName}` });
+}
+
+async function phase<T>(name: string, action: () => Promise<T>): Promise<T> {
+  metric(`${name}:start`);
+  try {
+    const result = await action();
+    metric(`${name}:done`);
+    return result;
+  } catch (error) {
+    metric(`${name}:failed`);
+    throw error;
+  }
+}
+
 test("course attribution capability controls create claims and keeps edits immutable", async ({ page, browser }) => {
   const origin = process.env.PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:4178";
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -16,6 +32,9 @@ test("course attribution capability controls create claims and keeps edits immut
   let actorContext: Awaited<ReturnType<typeof browser.newContext>> | null = null;
   let originalCoursesEnabled: boolean | null = null;
   let restoreCoursePolicy = false;
+  let primaryFailure: unknown;
+  let bodyFailed = false;
+  let cleanupFailure: unknown;
 
   try {
     await signInWithSyntheticEmail(page, page.request, "admin@example.test", "E2E Admin");
@@ -85,14 +104,46 @@ test("course attribution capability controls create claims and keeps edits immut
     await dialog.getByLabel("Creator credit").selectOption("unknown");
     const browserCreate = actorPage.waitForResponse((response) => response.url().endsWith("/api/courses") && response.request().method() === "POST");
     await dialog.getByRole("button", { name: "Save course" }).click();
-    const browserResponse = await browserCreate;
+    const browserResponse = await phase("ui/course-create-response", () => browserCreate);
     expect(browserResponse.status()).toBe(201);
-    const uiCourse = await browserResponse.json() as CourseResponse;
+    const courseTitle = `Course UI ${suffix}`;
+    const createdCourseLink = actorPage.getByRole("link", { name: courseTitle, exact: true });
+    await phase("ui/created-course-link-visible", () => expect(createdCourseLink).toBeVisible());
+    const courseHref = await phase("ui/created-course-detail-link", () => createdCourseLink.getAttribute("href"));
+    expect(courseHref).not.toBeNull();
+    const detailURL = new URL(courseHref!, origin);
+    expect(detailURL.pathname).toBe("/course");
+    const uiCourseID = detailURL.searchParams.get("id");
+    expect(uiCourseID).toBeTruthy();
+    const detailRead = actorPage.waitForResponse((response) =>
+      new URL(response.url()).pathname === `/api/courses/${encodeURIComponent(uiCourseID!)}` &&
+      response.request().method() === "GET",
+    );
+    await phase("ui/open-created-course-detail", () => createdCourseLink.click());
+    const detailResponse = await phase("ui/created-course-detail-response", () => detailRead);
+    expect(detailResponse.status()).toBe(200);
+    await phase("ui/created-course-detail-visible", () =>
+      expect(actorPage.getByRole("heading", { name: courseTitle, level: 1 })).toBeVisible(),
+    );
+
+    const persistedResponse = await phase("api/created-course-canonical-get", () =>
+      actorContext!.request.get(`/api/courses/${encodeURIComponent(uiCourseID!)}`),
+    );
+    expect(persistedResponse.status()).toBe(200);
+    const uiCourse = await phase("api/created-course-canonical-json", () =>
+      persistedResponse.json() as Promise<CourseResponse>,
+    );
+    expect(uiCourse.id).toBe(uiCourseID);
     courseIDs.push(uiCourse.id);
     expect(uiCourse.creator_name).toBe("");
     expect(uiCourse.creator_attributions ?? []).toEqual([]);
     expect(browserMutationHeaders.length).toBeGreaterThan(0);
-    for (const headers of await Promise.all(browserMutationHeaders)) expect(headers.origin).toBe(origin);
+    for (const headers of await phase("api/browser-origin-headers", () => Promise.all(browserMutationHeaders)))
+      expect(headers.origin).toBe(origin);
+  } catch (error) {
+    primaryFailure = error;
+    bodyFailed = true;
+    metric("result=body-failed");
   } finally {
     try {
       const listing = actorContext ? await actorContext.request.get("/api/courses?limit=100") : null;
@@ -110,19 +161,43 @@ test("course attribution capability controls create claims and keeps edits immut
         const response = await actorContext.request.delete(`/api/courses/${encodeURIComponent(id)}`, { headers: { Origin: origin } });
         expect([204, 404]).toContain(response.status());
       }
-    } finally {
-      try {
-        if (restoreCoursePolicy && originalCoursesEnabled !== null) {
+    } catch (error) {
+      cleanupFailure ??= error;
+      metric("result=course-resource-cleanup-failed");
+    }
+    try {
+      if (restoreCoursePolicy && originalCoursesEnabled !== null) {
         const response = await page.request.patch("/api/admin/settings", {
           headers: { Origin: origin },
           data: { courses_enabled: originalCoursesEnabled },
         });
-          expect(response.status()).toBe(200);
-        }
-      } finally {
-        await actorContext?.close();
-        await page.context().close();
+        expect(response.status()).toBe(200);
       }
+    } catch (error) {
+      cleanupFailure ??= error;
+      metric("result=course-policy-restore-failed");
+    }
+    try {
+      await actorContext?.close();
+    } catch (error) {
+      cleanupFailure ??= error;
+      metric("result=actor-context-close-failed");
+    }
+    try {
+      await page.context().close();
+    } catch (error) {
+      cleanupFailure ??= error;
+      metric("result=fixture-context-close-failed");
     }
   }
+
+  if (bodyFailed) {
+    metric(cleanupFailure === undefined ? "result=body-failed-cleanup-complete" : "result=body-failed-cleanup-failed");
+    throw primaryFailure;
+  }
+  if (cleanupFailure !== undefined) {
+    metric("result=body-passed-cleanup-failed");
+    throw cleanupFailure;
+  }
+  metric("result=body-and-cleanup-complete");
 });

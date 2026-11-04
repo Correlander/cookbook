@@ -101,7 +101,7 @@ test('signed-in account users can open Account Security and cannot open instance
     await page.goto(path)
     await expect(page.getByRole('heading', { name: 'Account security', level: 2 })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Browser sessions' })).toBeVisible()
-    await expect(page.getByRole('link', { name: 'Account' })).toBeVisible()
+    await expect(page.getByRole('link', { name: 'Account', exact: true })).toBeVisible()
   }
 
   const adminSettingsRequests: string[] = []
@@ -260,6 +260,13 @@ test('email sign-in remains explicit, establishes a session, and rejects replay'
     await form.getByLabel('Description').fill('Created by the browser journey')
     await form.getByLabel(/Ingredients/).fill('Flour | 1 cup | sifted')
     await form.locator('textarea[id^="recipe-step-"]').first().fill('Mix')
+    const creatorCredit = form.getByLabel('Creator credit')
+    await expect(creatorCredit).toBeVisible()
+    await expect(creatorCredit).toBeEnabled()
+    await creatorCredit.selectOption('local_profile')
+    await expect(
+      form.getByText(/private profile with an empty name is created if needed/i),
+    ).toBeVisible()
     await form.getByRole('button', { name: 'Save recipe' }).click()
     await expect(form).toBeHidden()
     const recipeCard = page.getByRole('button', { name: 'Open Browser private recipe' })

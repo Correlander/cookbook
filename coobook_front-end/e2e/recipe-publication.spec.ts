@@ -68,12 +68,20 @@ test("owners can publish and withdraw a public recipe without losing owner acces
         "Synthetic Recipe Owner",
       );
       await page.getByRole("button", { name: "Add a recipe" }).last().click();
+      const recipeForm = page.getByRole("dialog", { name: "Add a recipe" });
       await page.getByLabel("Title").fill(`Publication proof ${Date.now()}`);
       title = await page.getByLabel("Title").inputValue();
       await page.getByLabel("Ingredients (name | quantity | notes per line)").fill(
         "Synthetic tomatoes",
       );
       await page.getByLabel("Step 1", { exact: true }).fill("Slice the tomatoes.");
+      const creatorCredit = recipeForm.getByLabel("Creator credit");
+      await expect(creatorCredit).toBeVisible();
+      await expect(creatorCredit).toBeEnabled();
+      await creatorCredit.selectOption("local_profile");
+      await expect(
+        recipeForm.getByText(/private profile with an empty name is created if needed/i),
+      ).toBeVisible();
       await page.getByLabel("Visibility").selectOption("public");
       await page.getByRole("checkbox", { name: /anyone can read/i }).check();
       await page

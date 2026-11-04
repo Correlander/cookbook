@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -96,6 +98,146 @@ func TestInstanceSettingsRejectInvalidRegistrationPolicyAndAnonymousAccess(t *te
 	invalidRetention := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]int{"revision_retention_days": 45}, &http.Cookie{Name: sessionCookie, Value: token})
 	if invalidRetention.Code != http.StatusBadRequest {
 		t.Fatalf("invalid revision retention status = %d, want 400", invalidRetention.Code)
+	}
+}
+
+func TestInstanceSettingsUseCurrentOwnerAndAdminCapabilities(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,is_admin,created_at) VALUES
+		('owner','owner@example.test','Owner',0,'now'),('successor','successor@example.test','Successor',0,'now'),
+		('admin','admin@example.test','Admin',1,'now'),('backup-admin','backup@example.test','Backup Admin',1,'now'),
+		('ordinary','ordinary@example.test','Ordinary',0,'now')`); err != nil {
+		t.Fatal(err)
+	}
+	handler := handlerWithAuth(db, testAuth(db))
+	cookies := make(map[string]*http.Cookie)
+	for _, accountID := range []string{"owner", "successor", "admin", "ordinary"} {
+		token, _, err := issueSession(db, accountID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cookies[accountID] = &http.Cookie{Name: sessionCookie, Value: token}
+	}
+
+	if got := callAPI(handler, http.MethodGet, "/api/admin/settings", nil, nil); got.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous settings GET status=%d body=%s", got.Code, got.Body)
+	}
+	if got := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]string{"registration_policy": "open"}, nil); got.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous settings PATCH status=%d body=%s", got.Code, got.Body)
+	}
+	preclaimAdmin := callAPI(handler, http.MethodGet, "/api/admin/settings", nil, cookies["admin"])
+	if preclaimAdmin.Code != http.StatusOK {
+		t.Fatalf("preclaim admin lost settings access: status=%d body=%s", preclaimAdmin.Code, preclaimAdmin.Body)
+	}
+	preclaimUpdate := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]string{"registration_policy": "open"}, cookies["admin"])
+	if preclaimUpdate.Code != http.StatusOK {
+		t.Fatalf("preclaim admin settings update status=%d body=%s", preclaimUpdate.Code, preclaimUpdate.Body)
+	}
+	preclaimOwner := callAPI(handler, http.MethodGet, "/api/admin/settings", nil, cookies["owner"])
+	if preclaimOwner.Code != http.StatusForbidden {
+		t.Fatalf("unclaimed owner account gained settings access: status=%d body=%s", preclaimOwner.Code, preclaimOwner.Body)
+	}
+	preclaimWrite := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]string{"registration_policy": "disabled"}, cookies["owner"])
+	if preclaimWrite.Code != http.StatusForbidden {
+		t.Fatalf("unclaimed owner account changed settings: status=%d body=%s", preclaimWrite.Code, preclaimWrite.Body)
+	}
+
+	if _, err := ClaimInstanceOwner(context.Background(), db, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	if got := callAPI(handler, http.MethodGet, "/api/admin/settings", nil, cookies["owner"]); got.Code != http.StatusOK {
+		t.Fatalf("claimed non-admin owner settings GET status=%d body=%s", got.Code, got.Body)
+	}
+	ownerUpdate := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]string{"registration_policy": "invite_only"}, cookies["owner"])
+	if ownerUpdate.Code != http.StatusOK {
+		t.Fatalf("claimed non-admin owner settings PATCH status=%d body=%s", ownerUpdate.Code, ownerUpdate.Body)
+	}
+	if got := callAPI(handler, http.MethodGet, "/api/admin/settings", nil, cookies["admin"]); got.Code != http.StatusOK {
+		t.Fatalf("claimed instance admin lost general settings access: status=%d body=%s", got.Code, got.Body)
+	}
+	adminUpdate := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]string{"registration_policy": "open"}, cookies["admin"])
+	if adminUpdate.Code != http.StatusOK {
+		t.Fatalf("claimed instance admin settings PATCH status=%d body=%s", adminUpdate.Code, adminUpdate.Body)
+	}
+	ownerRestore := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]string{"registration_policy": "invite_only"}, cookies["owner"])
+	if ownerRestore.Code != http.StatusOK {
+		t.Fatalf("owner settings PATCH after admin update status=%d body=%s", ownerRestore.Code, ownerRestore.Body)
+	}
+	if got := callAPI(handler, http.MethodGet, "/api/admin/settings", nil, cookies["ordinary"]); got.Code != http.StatusForbidden {
+		t.Fatalf("ordinary account settings GET status=%d body=%s", got.Code, got.Body)
+	}
+	deniedWrite := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]string{"registration_policy": "disabled"}, cookies["ordinary"])
+	if deniedWrite.Code != http.StatusForbidden {
+		t.Fatalf("ordinary account settings PATCH status=%d body=%s", deniedWrite.Code, deniedWrite.Body)
+	}
+	var policy string
+	if err := db.QueryRow(`SELECT registration_policy FROM instance_settings WHERE id=1`).Scan(&policy); err != nil || policy != "invite_only" {
+		t.Fatalf("denied settings update changed policy to %q: err=%v", policy, err)
+	}
+	csrfRequest := httptest.NewRequest(http.MethodPatch, "/api/admin/settings", strings.NewReader(`{"registration_policy":"disabled"}`))
+	csrfRequest.AddCookie(cookies["admin"])
+	csrfResponse := httptest.NewRecorder()
+	handler.ServeHTTP(csrfResponse, csrfRequest)
+	if csrfResponse.Code != http.StatusForbidden || !strings.Contains(csrfResponse.Body.String(), "csrf_origin_required") {
+		t.Fatalf("settings PATCH lost CSRF protection: status=%d body=%s", csrfResponse.Code, csrfResponse.Body)
+	}
+	staleAt := time.Now().UTC().Add(-recentAuthenticationWindow - time.Minute).Format(time.RFC3339Nano)
+	if _, err := db.Exec(`UPDATE sessions SET created_at=? WHERE token_hash=?`, staleAt, sessionTokenHash(cookies["admin"].Value)); err != nil {
+		t.Fatal(err)
+	}
+	staleRecentAuth := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]string{"registration_policy": "disabled"}, cookies["admin"])
+	if staleRecentAuth.Code != http.StatusForbidden || !strings.Contains(staleRecentAuth.Body.String(), "reauthentication_required") {
+		t.Fatalf("settings PATCH lost recent-auth protection: status=%d body=%s", staleRecentAuth.Code, staleRecentAuth.Body)
+	}
+	adminToken, _, err := issueSession(db, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookies["admin"] = &http.Cookie{Name: sessionCookie, Value: adminToken}
+
+	created := callAPI(handler, http.MethodPost, "/api/instance/owner-transfers", map[string]string{"target_user_id": "successor"}, cookies["owner"])
+	var transfer instanceOwnerTransferResponse
+	if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &transfer) != nil {
+		t.Fatalf("owner transfer create status=%d body=%s", created.Code, created.Body)
+	}
+	accepted := callAPI(handler, http.MethodPost, "/api/instance/owner-transfers/"+transfer.ID+"/accept", nil, cookies["successor"])
+	if accepted.Code != http.StatusOK {
+		t.Fatalf("owner transfer accept status=%d body=%s", accepted.Code, accepted.Body)
+	}
+	for _, accountID := range []string{"owner"} {
+		if got := callAPI(handler, http.MethodGet, "/api/admin/settings", nil, cookies[accountID]); got.Code != http.StatusForbidden {
+			t.Fatalf("former owner retained settings read access: status=%d body=%s", got.Code, got.Body)
+		}
+		if got := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]string{"registration_policy": "disabled"}, cookies[accountID]); got.Code != http.StatusForbidden {
+			t.Fatalf("former owner retained settings write access: status=%d body=%s", got.Code, got.Body)
+		}
+	}
+	if got := callAPI(handler, http.MethodGet, "/api/admin/settings", nil, cookies["successor"]); got.Code != http.StatusOK {
+		t.Fatalf("new owner settings access status=%d body=%s", got.Code, got.Body)
+	}
+	if got := callAPI(handler, http.MethodGet, "/api/admin/settings", nil, cookies["admin"]); got.Code != http.StatusOK {
+		t.Fatalf("admin access disappeared after owner transfer: status=%d body=%s", got.Code, got.Body)
+	}
+	if err := db.QueryRow(`SELECT registration_policy FROM instance_settings WHERE id=1`).Scan(&policy); err != nil || policy != "invite_only" {
+		t.Fatalf("denied former-owner update changed policy to %q: err=%v", policy, err)
+	}
+
+	revoked := callAPI(handler, http.MethodPatch, "/api/admin/users/admin", map[string]bool{"is_admin": false}, cookies["successor"])
+	if revoked.Code != http.StatusOK {
+		t.Fatalf("new owner could not revoke admin role: status=%d body=%s", revoked.Code, revoked.Body)
+	}
+	if got := callAPI(handler, http.MethodGet, "/api/admin/settings", nil, cookies["admin"]); got.Code != http.StatusForbidden {
+		t.Fatalf("revoked admin retained settings read access: status=%d body=%s", got.Code, got.Body)
+	}
+	revokedWrite := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]string{"registration_policy": "disabled"}, cookies["admin"])
+	if revokedWrite.Code != http.StatusForbidden {
+		t.Fatalf("revoked admin retained settings write access: status=%d body=%s", revokedWrite.Code, revokedWrite.Body)
+	}
+	if got := callAPI(handler, http.MethodGet, "/api/admin/settings", nil, cookies["successor"]); got.Code != http.StatusOK {
+		t.Fatalf("new owner lost settings access after admin revocation: status=%d body=%s", got.Code, got.Body)
+	}
+	if err := db.QueryRow(`SELECT registration_policy FROM instance_settings WHERE id=1`).Scan(&policy); err != nil || policy != "invite_only" {
+		t.Fatalf("denied revoked-admin update changed policy to %q: err=%v", policy, err)
 	}
 }
 

@@ -75,6 +75,12 @@ type InstanceOwnerCapabilities struct {
 	Generation      int64
 }
 
+// CanManageInstanceSettings is the explicit policy for general settings.
+// It does not imply administrator status or any content/role capability.
+func (c InstanceOwnerCapabilities) CanManageInstanceSettings() bool {
+	return c.IsInstanceOwner || c.IsAdmin
+}
+
 type InstanceOwnerTransfer struct {
 	ID          string
 	FromUserID  string

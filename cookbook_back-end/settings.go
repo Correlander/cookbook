@@ -21,8 +21,13 @@ type instanceSettings struct {
 }
 
 func (h apiHandler) instanceSettings(w http.ResponseWriter, r *http.Request) {
-	if !isAdministrator(h.db, authenticatedUser(r)) {
+	canManage, err := canManageInstanceSettings(r.Context(), h.db, authenticatedUser(r))
+	if errors.Is(err, ErrOwnerAccountNotFound) || (err == nil && !canManage) {
 		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
 	switch r.Method {

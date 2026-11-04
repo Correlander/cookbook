@@ -9,10 +9,11 @@ import (
 )
 
 type instanceAuthorityResponse struct {
-	IsInstanceOwner        bool `json:"is_instance_owner"`
-	IsAdmin                bool `json:"is_admin"`
-	OwnerClaimed           bool `json:"owner_claimed"`
-	CanManageInstanceRoles bool `json:"can_manage_instance_roles"`
+	IsInstanceOwner           bool `json:"is_instance_owner"`
+	IsAdmin                   bool `json:"is_admin"`
+	OwnerClaimed              bool `json:"owner_claimed"`
+	CanManageInstanceRoles    bool `json:"can_manage_instance_roles"`
+	CanManageInstanceSettings bool `json:"can_manage_instance_settings"`
 }
 
 type instanceOwnerTransferResponse struct {
@@ -32,6 +33,14 @@ func canManageInstanceRoles(ctx context.Context, db *sql.DB, actorID string) (bo
 		return capabilities.IsInstanceOwner, nil
 	}
 	return capabilities.IsAdmin, nil
+}
+
+func canManageInstanceSettings(ctx context.Context, db *sql.DB, actorID string) (bool, error) {
+	capabilities, err := InstanceOwnerCapabilitiesFor(ctx, db, actorID)
+	if err != nil {
+		return false, err
+	}
+	return capabilities.CanManageInstanceSettings(), nil
 }
 
 func canManageInstanceRolesExec(ctx context.Context, exec sqliteExecutor, actorID string) (bool, error) {
@@ -104,10 +113,11 @@ func (h apiHandler) instanceOwnerAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, instanceAuthorityResponse{
-			IsInstanceOwner:        capabilities.IsInstanceOwner,
-			IsAdmin:                capabilities.IsAdmin,
-			OwnerClaimed:           capabilities.OwnerClaimed,
-			CanManageInstanceRoles: canManageRoles,
+			IsInstanceOwner:           capabilities.IsInstanceOwner,
+			IsAdmin:                   capabilities.IsAdmin,
+			OwnerClaimed:              capabilities.OwnerClaimed,
+			CanManageInstanceRoles:    canManageRoles,
+			CanManageInstanceSettings: capabilities.CanManageInstanceSettings(),
 		})
 	case r.Method == http.MethodPost && r.URL.Path == "/api/instance/owner-transfers":
 		var input struct {

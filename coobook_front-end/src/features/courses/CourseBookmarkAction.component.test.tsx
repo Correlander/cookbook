@@ -12,10 +12,12 @@ it("saves and removes with the exact course reference endpoints", async () => {
     .mockResolvedValueOnce(new Response(null, { status: 204 }));
   vi.stubGlobal("fetch", fetchMock);
   render(<CourseBookmarkAction courseID="course-1" title="Basics" currentUserID="actor-1" />);
-  const save = await screen.findByRole("button", { name: "Save Basics to Library" });
+  const save = await screen.findByRole("button", { name: "Bookmark Basics" });
+  expect(save.textContent).toBe("Bookmark");
   fireEvent.click(save);
-  await screen.findByRole("button", { name: "Remove Basics from Library" });
-  fireEvent.click(screen.getByRole("button", { name: "Remove Basics from Library" }));
+  const remove = await screen.findByRole("button", { name: "Remove Basics bookmark" });
+  expect(remove.textContent).toBe("Remove bookmark");
+  fireEvent.click(remove);
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
   expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
     "/api/library/course-bookmarks/status?local_course_id=course-1", "/api/library/course-bookmarks", "/api/library/course-bookmarks/bookmark-1",
@@ -27,7 +29,7 @@ it("does not infer unsaved state after a failed exact-target check", async () =>
   render(<CourseBookmarkAction courseID="private-course" title="Private" currentUserID="actor-1" />);
   expect(await screen.findByRole("alert")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Retry saved status" })).toBeTruthy();
-  expect((screen.getByRole("button", { name: "Saved status unavailable" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "Private saved status unavailable" }) as HTMLButtonElement).disabled).toBe(true);
 });
 
 it("ignores status responses from a prior actor", async () => {
@@ -36,7 +38,7 @@ it("ignores status responses from a prior actor", async () => {
   vi.stubGlobal("fetch", fetchMock);
   const view = render(<CourseBookmarkAction courseID="course-1" title="Basics" currentUserID="actor-1" />);
   view.rerender(<CourseBookmarkAction courseID="course-1" title="Basics" currentUserID="actor-2" />);
-  await screen.findByRole("button", { name: "Save Basics to Library" });
+  await screen.findByRole("button", { name: "Bookmark Basics" });
   await act(async () => resolveOld(json({ saved: true, bookmark_id: "stale" })));
-  expect(screen.getByRole("button", { name: "Save Basics to Library" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Bookmark Basics" })).toBeTruthy();
 });

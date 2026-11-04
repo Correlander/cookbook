@@ -70,7 +70,7 @@ export function AdminRequired() {
       <h2 id="admin-required-title">Administrator access required</h2>
       <p>This page is available to instance administrators.</p>
       <a className="text-link" href="/#home">
-        Return to Discover
+        Return to Browse
       </a>
     </section>
   );

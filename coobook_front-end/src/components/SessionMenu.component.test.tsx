@@ -27,7 +27,7 @@ it("provides personal account links and conditionally exposes Instance", async (
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 200 })));
   render(<SessionMenu user={{ id: "u1", email: "cook@example.test", display_name: "Avery Cook", is_admin: false }} instanceHref="/admin" pathname="/" onSessionChange={onSessionChange} />);
   fireEvent.click(screen.getByRole("button", { name: "Avery Cook account menu" }));
-  expect(screen.getByRole("link", { name: "Account" }).getAttribute("href")).toBe("/account/security");
+  expect(screen.getByRole("link", { name: "Account" }).getAttribute("href")).toBe("/account");
   expect(screen.getByRole("link", { name: "Creator profile" }).getAttribute("href")).toBe("/account/creator-profile");
   expect(screen.getByRole("link", { name: "Instance" }).getAttribute("href")).toBe("/admin");
   fireEvent.keyDown(window, { key: "Escape" });

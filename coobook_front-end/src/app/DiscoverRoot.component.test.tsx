@@ -11,14 +11,14 @@ afterEach(() => {
   cleanup(); vi.unstubAllGlobals(); window.history.replaceState({}, "", "/");
 });
 
-it("server-renders the static Discover shell without browser globals", () => {
+it("server-renders the static Browse shell without browser globals", () => {
   const browserWindow = globalThis.window;
   const fetchMock = vi.fn();
   vi.stubGlobal("window", undefined);
   vi.stubGlobal("fetch", fetchMock);
   try {
     const html = renderToString(<DiscoverRoot />);
-    expect(html).toContain("Discover");
+  expect(html).toContain("Browse");
     expect(html).toContain('aria-pressed="true"');
     expect(html).toContain("Checking your session");
     expect(fetchMock).not.toHaveBeenCalled();

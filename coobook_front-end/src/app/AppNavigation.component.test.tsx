@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { AuthenticatedUser } from "../apiModels";
 import AppNavigation from "./AppNavigation.tsx";
@@ -31,15 +31,17 @@ function response(value: unknown, status = 200): Response {
 function renderNavigation({
   user = ordinaryUser,
   pathname = "/library",
+  sessionStatus,
 }: {
   user?: AuthenticatedUser | null;
   pathname?: string;
+  sessionStatus?: "loading" | "authenticated" | "anonymous" | "error";
 } = {}) {
   return render(
     <AppNavigation
       currentUser={user}
       pathname={pathname}
-      sessionStatus={user ? "authenticated" : "anonymous"}
+      sessionStatus={sessionStatus ?? (user ? "authenticated" : "anonymous")}
       onRetrySession={vi.fn()}
     />,
   );
@@ -61,7 +63,7 @@ it("shows Instance only after authority confirms the owner capability", async ()
 
   fireEvent.click(screen.getByRole("button", { name: "Reader account menu" }));
   expect((await screen.findByRole("link", { name: "Instance" })).getAttribute("href")).toBe("/admin");
-  expect(screen.getByRole("link", { name: "Account" }).getAttribute("href")).toBe("/account/security");
+  expect(screen.getByRole("link", { name: "Account" }).getAttribute("href")).toBe("/account");
 });
 
 it("keeps Account routed to security while marking creator-profile routes active", async () => {
@@ -72,7 +74,7 @@ it("keeps Account routed to security while marking creator-profile routes active
   renderNavigation({ pathname: "/account/creator-profile" });
   fireEvent.click(screen.getByRole("button", { name: "Reader account menu" }));
   const account = screen.getByRole("link", { name: "Account" });
-  expect(account.getAttribute("href")).toBe("/account/security");
+  expect(account.getAttribute("href")).toBe("/account");
   expect(screen.getByRole("link", { name: "Creator profile" }).getAttribute("aria-current")).toBe("page");
 });
 
@@ -155,8 +157,8 @@ it("keeps a signed-out navigation free of authority and transfer requests", () =
 
   expect(screen.getByRole("link", { name: "Sign in" })).toBeTruthy();
   expect(screen.getByRole("link", { name: "Home" }).getAttribute("href")).toBe("/");
-  expect(screen.getByRole("link", { name: "Discover" }).getAttribute("href")).toBe("/discover");
-  expect(screen.getByRole("link", { name: "Library" }).getAttribute("href")).toBe("/library");
+  expect(screen.getByRole("link", { name: "Browse" }).getAttribute("href")).toBe("/discover");
+  expect(screen.getByRole("link", { name: "My Library" }).getAttribute("href")).toBe("/library");
   expect(screen.queryByRole("link", { name: "Recipes" })).toBeNull();
   expect(screen.queryByRole("link", { name: "Cookbooks" })).toBeNull();
   expect(screen.queryByRole("link", { name: "Create" })).toBeNull();
@@ -167,8 +169,18 @@ it("keeps a signed-out navigation free of authority and transfer requests", () =
 it("marks the independent Discover route active", () => {
   vi.stubGlobal("fetch", vi.fn());
   renderNavigation({ pathname: "/discover" });
-  expect(screen.getByRole("link", { name: "Discover" }).className).toContain("main-nav__active");
-  expect(screen.getByRole("link", { name: "Discover" }).getAttribute("href")).toBe("/discover");
+  expect(screen.getByRole("link", { name: "Browse" }).className).toContain("main-nav__active");
+  expect(screen.getByRole("link", { name: "Browse" }).getAttribute("href")).toBe("/discover");
+});
+
+it("keeps a fast pending header quiet and announces delayed session checks", () => {
+  vi.useFakeTimers();
+  renderNavigation({ user: null, sessionStatus: "loading" });
+  expect(screen.getByRole("status").textContent).toBe("");
+  act(() => { vi.advanceTimersByTime(450); });
+  expect(screen.getByRole("status").textContent).toBe("Checking session…");
+  cleanup();
+  vi.useRealTimers();
 });
 
 it("offers a retry when authority or incoming-transfer discovery fails", async () => {

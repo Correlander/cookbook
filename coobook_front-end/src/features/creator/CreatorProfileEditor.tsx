@@ -116,7 +116,7 @@ export default function CreatorProfileEditor({
       className="cookbook-dashboard"
       aria-labelledby="creator-profile-editor-title"
     >
-      <h2 id="creator-profile-editor-title">Your creator profile</h2>
+      <h2 id="creator-profile-editor-title">Creator profile details</h2>
       {loading ? (
         <p role="status">Loading creator profile…</p>
       ) : sessionExpired ? (
@@ -142,21 +142,21 @@ export default function CreatorProfileEditor({
             Creator credit is self-asserted. Profile visibility is separate from
             recipe visibility and does not grant access to recipes or cookbooks.
           </p>
-          <form onSubmit={submit}>
-            <label htmlFor="creator-public-name">Public name</label>
+          <form className="creator-profile-form" onSubmit={submit}>
+            <label htmlFor="creator-public-name">Public name
             <input
               id="creator-public-name"
               value={name}
               maxLength={320}
               onChange={(event) => setName(event.target.value)}
-            />
-            <label htmlFor="creator-bio">Bio</label>
+            /></label>
+            <label htmlFor="creator-bio">Bio
             <textarea
               id="creator-bio"
               value={bio}
               onChange={(event) => setBio(event.target.value)}
-            />
-            <label htmlFor="creator-visibility">Profile visibility</label>
+            /></label>
+            <label htmlFor="creator-visibility">Profile visibility
             <select
               id="creator-visibility"
               value={visibility}
@@ -168,7 +168,7 @@ export default function CreatorProfileEditor({
             >
               <option value="private">Private</option>
               <option value="instance">This instance</option>
-            </select>
+            </select></label>
             <p className="dialog-note">
               {visibility === "private"
                 ? "Only this account can view the profile and its readable attributed items."
@@ -180,26 +180,10 @@ export default function CreatorProfileEditor({
               </p>
             )}
             {saved && <p role="status">Creator profile saved.</p>}
-            <button
-              className="button button--green"
-              type="submit"
-              disabled={saving}
-            >
-              {saving ? "Saving…" : "Save profile"}
-            </button>
+            <div className="creator-profile-actions"><button className="button button--green" type="submit" disabled={saving}>{saving ? "Saving…" : "Save profile"}</button>
+              {profile && <a className="button button--outline" href={`/creator?id=${encodeURIComponent(profile.id)}`}>{profile.visibility === "instance" ? "Open profile preview" : "Preview private profile"}</a>}
+            </div>
           </form>
-          {profile && (
-            <p>
-              <a
-                className="text-link"
-                href={`/creator?id=${encodeURIComponent(profile.id)}`}
-              >
-                {profile.visibility === "instance"
-                  ? "Open the same-instance profile link for signed-in viewers"
-                  : "Preview your private profile"}
-              </a>
-            </p>
-          )}
         </>
       )}
     </section>

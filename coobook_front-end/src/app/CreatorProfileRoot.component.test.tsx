@@ -32,7 +32,7 @@ it("provides an independent authenticated editor root with shared navigation", a
   render(<CreatorProfileRoot mode="editor" />);
 
   expect(
-    await screen.findByRole("heading", { name: "Your creator profile" }),
+    await screen.findByRole("heading", { name: "Creator profile details" }),
   ).toBeTruthy();
   expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
   expect(
@@ -43,7 +43,7 @@ it("provides an independent authenticated editor root with shared navigation", a
   fireEvent.click(screen.getByRole("button", { name: "Cook account menu" }));
   expect(
     screen.getByRole("link", { name: "Account" }).getAttribute("href"),
-  ).toBe("/account/security");
+  ).toBe("/account");
   expect(fetchMock).toHaveBeenCalledWith("/api/auth/me", { cache: "no-store" });
 });
 

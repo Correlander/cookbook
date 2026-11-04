@@ -23,10 +23,11 @@ interface BookmarkActionProps {
   initialStatus?: "saved" | "unsaved";
   onMutation?: (bookmark: RecipeBookmarkView | null) => void;
   onMutationUncertain?: () => void;
+  libraryContext?: boolean;
 }
 
-export function BookmarkActionPresentation({ label, disabled, retryDisabled = disabled, error, onActivate, onRetry }: { label: string; disabled: boolean; retryDisabled?: boolean; error?: string; onActivate: () => void; onRetry?: () => void }) {
-  return <div className="library-action"><button className="text-link" type="button" disabled={disabled} onClick={onActivate}>{label}</button>{error && <span className="form-message" role="alert">{error}</span>}{error && onRetry && <button className="text-link" type="button" disabled={retryDisabled} onClick={onRetry}>Retry saved status</button>}</div>;
+export function BookmarkActionPresentation({ label, accessibleLabel, disabled, retryDisabled = disabled, error, onActivate, onRetry }: { label: string; accessibleLabel?: string; disabled: boolean; retryDisabled?: boolean; error?: string; onActivate: () => void; onRetry?: () => void }) {
+  return <div className="library-action"><button className="text-link" type="button" aria-label={accessibleLabel} disabled={disabled} onClick={onActivate}>{label}</button>{error && <span className="form-message" role="alert">{error}</span>}{error && onRetry && <button className="text-link" type="button" disabled={retryDisabled} onClick={onRetry}>Retry saved status</button>}</div>;
 }
 
 export default function BookmarkAction({
@@ -38,6 +39,7 @@ export default function BookmarkAction({
   initialStatus,
   onMutation,
   onMutationUncertain,
+  libraryContext = false,
 }: BookmarkActionProps) {
   const [saved, setSaved] = useState(bookmark ?? null);
   const [saving, setSaving] = useState(false);
@@ -131,6 +133,6 @@ export default function BookmarkAction({
     }
   }
 
-  const label = !keyMatches || status === "checking" ? "Checking saved status…" : status === "unknown" ? "Saved status unavailable" : saving ? (saved ? "Removing…" : "Saving…") : saved ? "Remove from Library" : "Save to Library";
+  const label = !keyMatches || status === "checking" ? "Checking saved status…" : status === "unknown" ? "Saved status unavailable" : saving ? (saved ? "Removing…" : "Saving…") : libraryContext ? saved ? "Remove bookmark" : "Bookmark" : saved ? "Remove from Library" : "Save to Library";
   return <BookmarkActionPresentation label={label} disabled={saving || busy || !keyMatches || status !== "known" || (!saved && !target)} retryDisabled={busy || saving} error={keyMatches ? error : undefined} onActivate={() => void toggle()} onRetry={keyMatches && status === "unknown" ? () => setRetry((value) => value + 1) : undefined} />;
 }

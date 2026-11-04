@@ -118,7 +118,7 @@ it("shows authenticated typed credits in Home cards as plain text and links them
 
   const card = await screen.findByRole("button", { name: "Open Tomato soup" });
   expect(card.textContent).toContain("By Legacy Cook");
-  expect(card.textContent).toContain("Creator · Self-asserted at creation");
+  expect(card.textContent).toContain("Creator · Self-reported when added");
   expect(card.textContent).toContain("Unverified creator claim: Avery Cook");
   expect(card.querySelector("a")).toBeNull();
 
@@ -129,6 +129,19 @@ it("shows authenticated typed credits in Home cards as plain text and links them
   expect(
     within(dialog).getByText("Unverified creator claim: Avery Cook"),
   ).toBeTruthy();
+});
+
+it("keeps the anonymous Home hero out of view until the session check resolves", async () => {
+  const pending = deferred<Response>();
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+    if (String(input) === "/api/auth/me") return pending.promise;
+    return Promise.resolve(jsonResponse({}, 404));
+  }));
+  renderApp();
+  expect(screen.getByText("Checking your session…")).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: /A little more/ })).toBeNull();
+  await act(async () => pending.resolve(jsonResponse({}, 401)));
+  expect(await screen.findByRole("heading", { name: /A little more/ })).toBeTruthy();
 });
 
 it("keeps public Home cards on the legacy byline even if a response has a typed field", async () => {
@@ -1486,15 +1499,8 @@ it("keeps both legacy cookbook anchors on the same useful section through sessio
   vi.stubGlobal("fetch", fetchMock);
 
   renderApp();
-  const cookbookSection = document.getElementById("cookbooks");
-  const myCookbooksAnchor = document.getElementById("my-cookbooks");
-  expect(cookbookSection).toBeTruthy();
-  expect(myCookbooksAnchor).toBeTruthy();
-  expect(cookbookSection?.textContent).toContain("Browse public cookbooks");
-  expect(myCookbooksAnchor?.textContent).toContain("Browse public cookbooks");
-  expect(
-    cookbookSection?.querySelector('a[href="/cookbooks"]')?.textContent,
-  ).toContain("Open cookbooks");
+  expect(document.getElementById("cookbooks")).toBeNull();
+  expect(document.getElementById("my-cookbooks")).toBeNull();
   expect(calls.some((url) => url.startsWith("/api/public/cookbooks"))).toBe(
     false,
   );
@@ -1510,6 +1516,14 @@ it("keeps both legacy cookbook anchors on the same useful section through sessio
     );
     await session.promise;
   });
+
+  const cookbookSection = document.getElementById("cookbooks");
+  const myCookbooksAnchor = document.getElementById("my-cookbooks");
+  expect(cookbookSection).toBeTruthy();
+  expect(myCookbooksAnchor).toBeTruthy();
+  expect(cookbookSection?.textContent).toContain("Cookbooks you can access");
+  expect(myCookbooksAnchor?.textContent).toContain("Cookbooks you can access");
+  expect(screen.getByRole("button", { name: "Create cookbook" })).toBeTruthy();
 
   expect(
     await screen.findByRole("link", { name: "Open cookbook" }),

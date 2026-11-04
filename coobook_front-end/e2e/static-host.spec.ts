@@ -234,9 +234,30 @@ test('preserves invite query on the static root without caching the token URL', 
   expect((await page.request.get('/api/auth/me')).status()).toBe(401)
 })
 
+test('holds the Home shell neutral until an authenticated session resolves', async ({ page, request }) => {
+  await signInWithSyntheticEmail(page, request, 'home-session-flash@example.test', 'Home Reader')
+  let release!: () => void
+  const blocked = new Promise<void>((resolve) => { release = resolve })
+  await page.route('**/api/auth/me', async (route) => {
+    await blocked
+    await route.continue()
+  })
+  try {
+    await page.goto('/', { waitUntil: 'domcontentloaded' })
+    await expect(page.getByText('Checking your session…')).toBeVisible()
+    await expect(page.getByRole('heading', { name: /A little more/ })).toHaveCount(0)
+    release()
+    await expect(page.getByRole('heading', { name: /Welcome back, Home Reader/ })).toBeVisible()
+  } finally {
+    release()
+    await page.unroute('**/api/auth/me')
+  }
+})
+
 test('serves direct account and admin route aliases with private CSP and anonymous guards', async ({ page }) => {
   const policies = JSON.parse(await readFile(`${process.env.PLAYWRIGHT_DIST}/static-csp.json`, 'utf8')) as Array<{ route: string; policy: string }>
   const routes = [
+    { route: '/account', title: /Account/ },
     { route: '/account/security', title: /Account security/ },
     { route: '/account/creator-profile', title: /Creator profile/, description: 'Manage your local creator profile on this Cookbook instance.' },
     { route: '/admin/settings', title: /Instance settings/ },
@@ -264,7 +285,7 @@ test('serves direct account and admin route aliases with private CSP and anonymo
   }
 })
 
-test('serves Discover aliases with private headers and route-backed type filters', async ({ page }) => {
+test('serves Browse aliases with private headers and route-backed type filters', async ({ page }) => {
   const policies = JSON.parse(await readFile(`${process.env.PLAYWRIGHT_DIST}/static-csp.json`, 'utf8')) as Array<{ route: string; policy: string }>
   const policy = policies.find((item) => item.route === '/discover')?.policy
   expect(policy).toBeTruthy()
@@ -277,9 +298,9 @@ test('serves Discover aliases with private headers and route-backed type filters
     expect(response?.headers()['cache-control']).toBe('no-store')
     expect(response?.headers()['referrer-policy']).toBe('no-referrer')
     expect(response?.headers()['content-security-policy']).toBe(policy)
-    await expect(page).toHaveTitle(/Discover/)
+    await expect(page).toHaveTitle(/Browse/)
     await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', 'noindex,nofollow')
-    await expect(page.getByRole('heading', { name: 'Discover', level: 1 })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Browse', level: 1 })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Cookbooks' })).toHaveAttribute('aria-pressed', 'true')
     await expect(page.getByRole('button', { name: 'Courses' })).toBeVisible()
     await expect(page.getByRole('button', { name: /create/i })).toHaveCount(0)
@@ -330,7 +351,7 @@ test('signed-in account users can open Account Security and cannot open instance
 
   for (const path of ['/account/security', '/account/security.html']) {
     await page.goto(path)
-    await expect(page.getByRole('heading', { name: 'Account security', level: 2 })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Account security', level: 1 })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Browser sessions' })).toBeVisible()
     await openAccountMenu(page)
     await expect(page.getByRole('link', { name: 'Account', exact: true })).toBeVisible()

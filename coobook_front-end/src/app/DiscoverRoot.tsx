@@ -69,9 +69,9 @@ function DiscoverPage() {
       />
       <main id="home" tabIndex={-1}>
         <section className="dashboard-welcome">
-          <div><span className="eyebrow">On this Cookbook</span><h1>Discover</h1><p>Browse recipes and cookbooks available from this instance, with public courses when offered.</p></div>
+          <div><span className="eyebrow">Browse this Cookbook</span><h1>Browse</h1><p>Explore recipes and cookbooks available from this instance, with public courses when offered.</p></div>
         </section>
-        <ViewSwitcher label="Discover type" value={route.type} options={discoverOptions.filter((option) => option.value !== "courses" || coursesEnabled === true)} onChange={(type) => updateRoute({ type, query: type === "recipes" ? route.query : "" })} />
+        <ViewSwitcher label="Browse type" value={route.type} options={discoverOptions.filter((option) => option.value !== "courses" || coursesEnabled === true)} onChange={(type) => updateRoute({ type, query: type === "recipes" ? route.query : "" })} />
         {state.status === "loading" ? <p className="cookbook-dashboard" role="status">Checking your session…</p> :
           state.status === "error" ? <SessionCheckError message={state.message} onRetry={() => void refreshSession()} /> :
             route.type === "recipes" ? <DiscoverRecipes signedIn={state.status === "authenticated"} currentUserID={currentUser?.id ?? null} query={route.query} /> :

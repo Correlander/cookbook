@@ -6,6 +6,7 @@ import { SessionCheckError } from "./AppSession.tsx";
 import LibraryCollection from "../features/library/LibraryCollection.tsx";
 import { fetchLibraryCourses, fetchLibraryPage, removeCookbookBookmark, removeCourseBookmark, removeRecipeBookmark } from "../features/library/libraryApi.ts";
 import ViewSwitcher from "../components/ViewSwitcher.tsx";
+import Toast from "../shared/Toast.tsx";
 
 type LibraryItem = LibraryRecipeItem | LibraryCookbookItem | LibraryCourseItem;
 type LibraryPageState = LibraryPage<LibraryItem> & { type: LibraryType; actorID: string; query: string };
@@ -48,7 +49,9 @@ function LibraryPageView() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
   const [moreError, setMoreError] = useState("");
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState<{ actorID: string; message: string } | null>(null);
+  const noticeRevision = useRef(0);
+  const [mutationError, setMutationError] = useState("");
   const [busyBookmarkID, setBusyBookmarkID] = useState("");
   const [coursesEnabled, setCoursesEnabled] = useState(false);
   const [hasSavedCourses, setHasSavedCourses] = useState(false);
@@ -57,6 +60,11 @@ function LibraryPageView() {
   const loadingMoreRef = useRef(false);
   const actorRef = useRef(authenticatedActorID);
   actorRef.current = authenticatedActorID;
+
+  useEffect(() => {
+    setNotice(null);
+    setMutationError("");
+  }, [authenticatedActorID]);
 
   useEffect(() => {
     const synchronize = () => {
@@ -90,7 +98,7 @@ function LibraryPageView() {
     setLoadingMore(false);
     setError("");
     setMoreError("");
-    if (!keepNotice) setNotice("");
+    if (!keepNotice) setNotice(null);
     try {
       const result = requestedType === "courses"
         ? await fetchLibraryCourses(0)
@@ -203,17 +211,19 @@ function LibraryPageView() {
     const selectedType = type;
     const selectedActor = currentUser?.id ?? "";
     setBusyBookmarkID(bookmarkID);
-    setNotice("");
+    setNotice(null);
+    setMutationError("");
     try {
       if (selectedType === "recipes") await removeRecipeBookmark(bookmarkID);
       else if (selectedType === "cookbooks") await removeCookbookBookmark(bookmarkID);
       else await removeCourseBookmark(bookmarkID);
       if (generation.current !== request || typeRef.current !== selectedType || actorRef.current !== selectedActor) return;
-      setNotice("Saved reference removed.");
+      noticeRevision.current += 1;
+      setNotice({ actorID: selectedActor, message: "Saved reference removed." });
       await loadFirstPage(selectedType, selectedActor, selectedType === "recipes" ? queryRef.current.trim() : "", true);
     } catch {
       if (generation.current !== request || typeRef.current !== selectedType || actorRef.current !== selectedActor) return;
-      setNotice("Could not remove that saved reference. The current Library was reloaded.");
+      setMutationError("Could not remove that saved reference. The current Library was reloaded.");
       await loadFirstPage(selectedType, selectedActor, selectedType === "recipes" ? queryRef.current.trim() : "", true);
     } finally {
       if (typeRef.current === selectedType && actorRef.current === selectedActor) setBusyBookmarkID("");
@@ -230,7 +240,7 @@ function LibraryPageView() {
       <AppNavigation currentUser={currentUser} pathname="/library" sessionStatus={state.status} onRetrySession={() => void refreshSession()} />
       <main id="home" tabIndex={-1}>
         <section className="dashboard-welcome">
-          <div><span className="eyebrow">Your kitchen</span><h1>Library</h1><p>One collection for the recipes and cookbooks connected to your account.</p></div>
+          <div><span className="eyebrow">Your kitchen</span><h1>My Library</h1><p>Your personal collection includes things you own, can access through a cookbook, or bookmark.</p></div>
         </section>
         {state.status === "loading" ? <p className="cookbook-dashboard" role="status">Checking your session…</p> :
           state.status === "error" ? <SessionCheckError message={state.message} onRetry={() => void refreshSession()} /> :
@@ -241,10 +251,11 @@ function LibraryPageView() {
                   {type !== "courses" && <a className="text-link" href={`/create?type=${type}`}>Create {type === "recipes" ? "recipe" : "cookbook"}</a>}
                 </div>
                 {type === "recipes" && <div className="library-search"><label htmlFor="library-recipe-search">Search your recipes</label><input id="library-recipe-search" type="search" value={query} onChange={(event) => updateQuery(event.currentTarget.value)} placeholder="Title, description, or tag" autoComplete="off" /></div>}
-                {notice && <p role="status">{notice}</p>}
+                {notice?.actorID === currentUser.id && <Toast actorID={currentUser.id} message={notice.message} revision={noticeRevision.current} onDismiss={() => setNotice(null)} />}
+                {mutationError && <p role="alert" className="form-message">{mutationError}</p>}
                 {loading && !activePage && <p role="status">Loading your {type} Library{activeQuery ? ` for “${activeQuery}”` : ""}…</p>}
                 {error && <div><p role="alert" className="form-message">{error}</p><button type="button" className="text-link" onClick={() => { if (currentUser) void loadFirstPage(type, currentUser.id, activeQuery); }}>Retry loading {type}{activeQuery ? ` for “${activeQuery}”` : ""}</button></div>}
-                {activePage && currentUser && <>{type === "recipes" && activeQuery && activePage.items.length === 0 && <p className="cookbook-empty">No recipes match “{activeQuery}” in your Library.</p>}<LibraryCollection type={type} page={activePage} userID={currentUser.id} busyBookmarkID={busyBookmarkID} onBookmarkChange={() => { setNotice("Library updated."); void loadFirstPage(type, currentUser.id, activeQuery, true); }} onMutationUncertain={() => void loadFirstPage(type, currentUser.id, activeQuery, true)} onRemoveUnavailable={(id) => void removeUnavailable(id)} />{type === "recipes" && activeQuery && activePage.items.length === 0 && <p className="cookbook-empty">Unavailable saved references cannot be searched because their source content is unavailable.</p>}</>}
+                {activePage && currentUser && <>{type === "recipes" && activeQuery && activePage.items.length === 0 && <p className="cookbook-empty">No recipes match “{activeQuery}” in your Library.</p>}<LibraryCollection type={type} page={activePage} userID={currentUser.id} busyBookmarkID={busyBookmarkID} onBookmarkChange={() => { setMutationError(""); noticeRevision.current += 1; setNotice({ actorID: currentUser.id, message: "Bookmark updated." }); void loadFirstPage(type, currentUser.id, activeQuery, true); }} onMutationUncertain={() => void loadFirstPage(type, currentUser.id, activeQuery, true)} onRemoveUnavailable={(id) => void removeUnavailable(id)} />{type === "recipes" && activeQuery && activePage.items.length === 0 && <p className="cookbook-empty">Unavailable saved references cannot be searched because their source content is unavailable.</p>}</>}
                 {moreError && <div><p role="alert" className="form-message">{moreError}</p><button type="button" className="text-link" disabled={loadingMore} onClick={() => void loadMore()}>Retry loading more</button></div>}
                 {hasMore && !loading && <button className="button button--green" type="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? "Loading…" : "Load more"}</button>}
                 {loadingMore && <p role="status">Loading more {type}…</p>}

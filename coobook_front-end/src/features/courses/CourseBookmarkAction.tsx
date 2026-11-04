@@ -34,6 +34,7 @@ function CourseBookmarkActionForActor({ courseID, title, currentUserID, initialB
     } catch (caught: unknown) { if (operation.current === request) { setSaved({ kind: "unknown" }); setError(errorMessage(caught, "Could not update your Library.")); onMutationUncertain?.(); } }
     finally { if (operation.current === request) setBusy(false); }
   }
-  const label = busy ? "Updating…" : saved.kind === "saved" ? `Remove ${title} from Library` : saved.kind === "checking" ? "Checking saved status…" : saved.kind === "unknown" ? "Saved status unavailable" : `Save ${title} to Library`;
-  return <BookmarkActionPresentation label={label} disabled={busy || saved.kind === "checking" || saved.kind === "unknown"} retryDisabled={busy} error={error} onActivate={() => void toggle()} onRetry={saved.kind === "unknown" ? () => void refresh() : undefined} />;
+  const label = busy ? "Updating…" : saved.kind === "saved" ? "Remove bookmark" : saved.kind === "checking" ? "Checking saved status…" : saved.kind === "unknown" ? "Saved status unavailable" : "Bookmark";
+  const accessibleLabel = busy ? `Updating ${title} bookmark` : saved.kind === "saved" ? `Remove ${title} bookmark` : saved.kind === "checking" ? `Checking ${title} saved status` : saved.kind === "unknown" ? `${title} saved status unavailable` : `Bookmark ${title}`;
+  return <BookmarkActionPresentation label={label} accessibleLabel={accessibleLabel} disabled={busy || saved.kind === "checking" || saved.kind === "unknown"} retryDisabled={busy} error={error} onActivate={() => void toggle()} onRetry={saved.kind === "unknown" ? () => void refresh() : undefined} />;
 }

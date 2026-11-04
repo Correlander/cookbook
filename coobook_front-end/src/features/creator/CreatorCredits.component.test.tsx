@@ -113,7 +113,7 @@ it("preserves multiple local roles and labels a cookbook creator as collection c
   );
   const recipeCredits = screen.getByRole("region", { name: "Recipe creator credits" });
   expect(within(recipeCredits).getAllByRole("link", { name: "Avery Cook" })).toHaveLength(3);
-  expect(within(recipeCredits).getByText("Contributor · Self-asserted at creation")).toBeTruthy();
+  expect(within(recipeCredits).getByText("Contributor · Self-reported when added")).toBeTruthy();
   expect(within(recipeCredits).getByText("Adapter · Recorded as a source adapter")).toBeTruthy();
 
   rerender(
@@ -123,7 +123,7 @@ it("preserves multiple local roles and labels a cookbook creator as collection c
       currentUserID="reader-1"
     />,
   );
-  expect(screen.getByText("Collection creator · Self-asserted at creation")).toBeTruthy();
+  expect(screen.getByText("Collection creator · Self-reported when added")).toBeTruthy();
 });
 
 it("uses plain text in compact card context even when a signed-in viewer can open the profile", () => {

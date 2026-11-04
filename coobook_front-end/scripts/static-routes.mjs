@@ -4,6 +4,7 @@ export const staticRoutes = [
   { source: 'index.astro', file: 'index.html', route: '/', aliases: ['/', '/index.html'] },
   { source: 'auth/confirm.astro', file: 'auth/confirm.html', route: '/auth/confirm', aliases: ['/auth/confirm', '/auth/confirm.html'] },
   { source: 'auth/enroll.astro', file: 'auth/enroll.html', route: '/auth/enroll', aliases: ['/auth/enroll', '/auth/enroll.html'] },
+  { source: 'account.astro', file: 'account.html', route: '/account', aliases: ['/account', '/account.html'] },
   { source: 'account/security.astro', file: 'account/security.html', route: '/account/security', aliases: ['/account/security', '/account/security.html'] },
   { source: 'account/creator-profile.astro', file: 'account/creator-profile.html', route: '/account/creator-profile', aliases: ['/account/creator-profile', '/account/creator-profile.html'] },
   { source: 'creator.astro', file: 'creator.html', route: '/creator', aliases: ['/creator', '/creator.html'] },

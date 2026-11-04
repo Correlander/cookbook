@@ -53,6 +53,7 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
     await writeFile(join(dist, 'index.html'), '<!doctype html><html><head><title>Root</title></head></html>')
     await writeFile(join(dist, 'auth/confirm.html'), '<!doctype html><html><head><meta name="robots" content="noindex,follow"><title>Confirm</title></head></html>')
     await writeFile(join(dist, 'auth/enroll.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Passkey enrollment</title></head></html>')
+    await writeFile(join(dist, 'account.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Account</title></head></html>')
     await writeFile(join(dist, 'account/security.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Account security</title></head></html>')
     await writeFile(join(dist, 'admin.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Instance workbench</title></head></html>')
     await writeFile(join(dist, 'admin/settings.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Admin settings</title></head></html>')
@@ -61,12 +62,13 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
     await writeFile(join(dist, 'cookbooks.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Cookbooks</title></head></html>')
     await writeFile(join(dist, 'cookbook.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Cookbook</title></head></html>')
     await writeFile(join(dist, 'course.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Course</title></head></html>')
-    await writeFile(join(dist, 'discover.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Discover</title></head></html>')
+    await writeFile(join(dist, 'discover.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Browse</title></head></html>')
     await writeFile(join(dist, 'create.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Create</title></head></html>')
     await writeFile(join(dist, 'static-csp.json'), JSON.stringify([
       { route: '/', policy: "default-src 'self'; script-src 'self'" },
       { route: '/auth/confirm', policy: "default-src 'self'; style-src 'self'" },
       { route: '/auth/enroll', policy: "default-src 'self'; script-src 'self'" },
+      { route: '/account', policy: "default-src 'self'; script-src 'self'; style-src 'self'" },
       { route: '/account/security', policy: "default-src 'self'; img-src 'self'" },
       { route: '/account/creator-profile', policy: "default-src 'self'; connect-src 'self'" },
       { route: '/admin', policy: "default-src 'self'; script-src 'self'" },
@@ -113,6 +115,7 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
     assert.doesNotMatch(await rootPage.text(), /<meta name="robots"/)
     assert.equal(rootPage.headers.get('content-security-policy'), "default-src 'self'; script-src 'self'")
     for (const page of [
+      { path: '/account', title: /Account/, policy: "default-src 'self'; script-src 'self'; style-src 'self'" },
       { path: '/account/security', title: /Account security/, policy: "default-src 'self'; img-src 'self'" },
       { path: '/account/creator-profile', title: /Creator profile/, policy: "default-src 'self'; connect-src 'self'", description: 'Manage a local creator profile' },
       { path: '/admin', title: /Instance workbench/, policy: "default-src 'self'; script-src 'self'" },
@@ -139,7 +142,7 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
       }
     }
     for (const page of [
-      { path: '/discover', title: /Discover/, policy: "default-src 'self'; script-src 'self'; style-src 'self'" },
+      { path: '/discover', title: /Browse/, policy: "default-src 'self'; script-src 'self'; style-src 'self'" },
       { path: '/create', title: /Create/, policy: "default-src 'self'; script-src 'self'; style-src 'self'" },
       { path: '/creator', title: /Creator profile/, policy: "default-src 'self'; img-src 'self'", description: 'View a local creator profile' },
     ]) {

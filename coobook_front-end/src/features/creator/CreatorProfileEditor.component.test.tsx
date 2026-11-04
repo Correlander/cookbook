@@ -28,7 +28,7 @@ it("loads an empty private profile without copying account identity and explains
   vi.stubGlobal("fetch", fetchMock);
   render(<CreatorProfileEditor actorID="u1" onSessionExpired={vi.fn()} />);
   expect(
-    await screen.findByRole("heading", { name: "Your creator profile" }),
+    await screen.findByRole("heading", { name: "Creator profile details" }),
   ).toBeTruthy();
   expect((screen.getByLabelText("Public name") as HTMLInputElement).value).toBe(
     "",
@@ -47,7 +47,7 @@ it("requires a name for instance visibility and retains input after save errors"
   });
   vi.stubGlobal("fetch", fetchMock);
   render(<CreatorProfileEditor actorID="u1" onSessionExpired={vi.fn()} />);
-  await screen.findByRole("heading", { name: "Your creator profile" });
+  await screen.findByRole("heading", { name: "Creator profile details" });
   fireEvent.change(screen.getByLabelText("Profile visibility"), {
     target: { value: "instance" },
   });
@@ -77,7 +77,7 @@ it("shows an authenticated same-instance preview only after profile creation", a
   );
   render(<CreatorProfileEditor actorID="u1" onSessionExpired={vi.fn()} />);
   const preview = await screen.findByRole("link", {
-    name: "Preview your private profile",
+    name: "Preview private profile",
   });
   expect(preview.getAttribute("href")).toBe("/creator?id=p1");
 });

@@ -1,0 +1,10 @@
+import BaseLayout from '../layouts/BaseLayout.astro'
+import AccountRoot from '../app/AccountRoot.tsx'
+
+const title = 'Account — Cookbook'
+const description = 'Manage your Cookbook profile and account security.'
+---
+
+<BaseLayout title={title} description={description} robots="noindex,nofollow">
+  <AccountRoot client:load />
+</BaseLayout>

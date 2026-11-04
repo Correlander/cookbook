@@ -26,9 +26,9 @@ function roleLabel(
 function provenanceLabel(provenance: string): string {
   switch (provenance) {
     case "self_asserted_at_creation":
-      return "Self-asserted at creation";
+      return "Self-reported when added";
     case "local_record_creation":
-      return "Recorded at cookbook creation";
+      return "Recorded when the cookbook was created";
     case "adapter_source":
       return "Recorded as a source adapter";
     case "portable_claim":
@@ -100,8 +100,8 @@ export default function CreatorCredits({
 
   const Heading = resourceKind === "cookbook" ? "h2" : "h3";
   return (
-    <section className="creator-credits dialog-note" aria-label={label}>
-      <Heading>Typed creator credits</Heading>
+    <section className="creator-credits" aria-label={label}>
+      <Heading>{resourceKind === "cookbook" ? "Creator credits" : "Recipe creator credits"}</Heading>
       <ul>
         {attributions.map((attribution, index) => (
           <li className="creator-credits__item" key={`${attribution.subject_kind}-${attribution.role}-${index}`}>

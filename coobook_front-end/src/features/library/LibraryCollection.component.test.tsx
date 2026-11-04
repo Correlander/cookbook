@@ -46,7 +46,7 @@ it("renders owned-cookbook context without claiming a save, membership, or creat
   expect(screen.queryByText("Saved to Library")).toBeNull();
   expect(screen.queryByText("Shared with you")).toBeNull();
   expect(screen.queryByText("By cookbook-owner")).toBeNull();
-  expect(screen.getByRole("button", { name: "Save to Library" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Bookmark" })).toBeTruthy();
 });
 
 it("links remote recipes to their exact attributed cached detail snapshot", () => {

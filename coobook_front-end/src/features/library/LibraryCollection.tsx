@@ -36,13 +36,13 @@ export default function LibraryCollection({
     <section className="cookbook-dashboard" aria-labelledby="library-collection-title">
       <div className="section-heading">
         <div>
-          <span className="eyebrow">Personal Library</span>
+          <span className="eyebrow">My Library</span>
           <h2 id="library-collection-title">Your {label}</h2>
         </div>
       </div>
       <p role="status">Showing {page.items.length} of {page.total} {label}.</p>
       {page.items.length === 0 ? (
-        <p className="cookbook-empty">Items you own, can access through a cookbook, or save appear here.</p>
+        <p className="cookbook-empty">My Library includes items you own, can access through a cookbook, or bookmark.</p>
       ) : (
         <div className="cookbook-grid">
           {page.items.map((item, index) => type === "recipes"
@@ -78,7 +78,7 @@ function RecipeLibraryCard({
         </a>
         <p>Cached snapshot from {remote.source_origin}; updated {formatDate(remote.updated_at)}. This is not a live feed.</p>
         <RelationshipFacts relationships={item.relationships ?? []} ownedByCurrentUser={false} />
-        <BookmarkAction currentUserID={userID} target={{ remote_object_uri: remote.object_uri }} bookmark={bookmarkForRecipe(item, remote.object_uri)} initialStatus="saved" busy={busy} onMutation={() => onChange(null)} onMutationUncertain={onMutationUncertain} />
+      <BookmarkAction currentUserID={userID} target={{ remote_object_uri: remote.object_uri }} bookmark={bookmarkForRecipe(item, remote.object_uri)} initialStatus="saved" busy={busy} libraryContext onMutation={() => onChange(null)} onMutationUncertain={onMutationUncertain} />
       </article>
     );
   }
@@ -92,7 +92,7 @@ function RecipeLibraryCard({
       </a>
       <RelationshipFacts relationships={item.relationships ?? []} ownedByCurrentUser={recipe.owner_id === userID} inOwnedCookbook={item.in_owned_cookbook === true} membershipRole={item.membership_role} />
       {item.cookbook_contexts?.map((context) => <span className="eyebrow" key={context.id}>Cookbook context{context.membership_role ? ` · ${context.membership_role}` : ""}</span>)}
-      <BookmarkAction currentUserID={userID} target={{ local_recipe_id: recipe.id }} bookmark={bookmark} initialStatus={item.relationships?.includes("saved") ? "saved" : "unsaved"} busy={busy} onMutation={() => onChange(null)} onMutationUncertain={onMutationUncertain} />
+      <BookmarkAction currentUserID={userID} target={{ local_recipe_id: recipe.id }} bookmark={bookmark} initialStatus={item.relationships?.includes("saved") ? "saved" : "unsaved"} busy={busy} libraryContext onMutation={() => onChange(null)} onMutationUncertain={onMutationUncertain} />
     </article>
   );
 }
@@ -112,7 +112,7 @@ function CookbookLibraryCard({ item, userID, onChange, onMutationUncertain, onRe
       {book.owner_name && <p>Cookbook owner: {book.owner_name}</p>}
       <CreatorCredits attributions={book.creator_attributions} resourceKind="cookbook" currentUserID={userID} />
       <RelationshipFacts relationships={item.relationships ?? []} ownedByCurrentUser={book.owner_id === userID} membershipRole={item.membership_role} />
-      <CookbookBookmarkAction cookbookID={book.id} title={book.title} currentUserID={userID} initialBookmarkID={item.relationships?.includes("saved") ? item.bookmark_id ?? null : null} onMutation={() => onChange(null)} onMutationUncertain={onMutationUncertain} />
+      <CookbookBookmarkAction cookbookID={book.id} title={book.title} currentUserID={userID} initialBookmarkID={item.relationships?.includes("saved") ? item.bookmark_id ?? null : null} libraryContext onMutation={() => onChange(null)} onMutationUncertain={onMutationUncertain} />
     </article>
   );
 }

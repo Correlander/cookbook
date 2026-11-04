@@ -74,7 +74,7 @@ export default function SessionMenu({
       {open && (
         <div className="session-menu__panel" id="session-menu-panel" aria-label="Account menu">
           <span className="session-menu__identity">{user.email}</span>
-          <a href="/account/security" aria-current={pathname === "/account/security" ? "page" : undefined}>Account</a>
+          <a href="/account" aria-current={pathname.startsWith("/account") ? "page" : undefined}>Account</a>
           <a href="/account/creator-profile" aria-current={pathname === "/account/creator-profile" ? "page" : undefined}>Creator profile</a>
           {instanceHref && <a href={instanceHref} aria-current={pathname.startsWith("/admin") ? "page" : undefined}>Instance</a>}
           {error && <p role="alert">{error}</p>}

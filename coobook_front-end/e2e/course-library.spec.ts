@@ -20,8 +20,8 @@ test("static course page checks access before lessons and saves an explicit refe
   await expect(page.getByRole("heading", { name: "Bread basics" })).toBeVisible();
   await expect(page.getByText("Owner: Reader")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Mix dough" })).toBeVisible();
-  await page.getByRole("button", { name: "Save Bread basics to Library" }).click();
-  await expect(page.getByRole("button", { name: "Remove Bread basics from Library" })).toBeVisible();
+  await page.getByRole("button", { name: "Bookmark Bread basics" }).click();
+  await expect(page.getByRole("button", { name: "Remove Bread basics bookmark" })).toBeVisible();
   expect(calls).toContain("GET /api/courses/course-e2e");
   expect(calls).toContain("GET /api/courses/course-e2e/lessons");
   expect(calls).not.toContain("GET /api/public/courses/course-e2e");

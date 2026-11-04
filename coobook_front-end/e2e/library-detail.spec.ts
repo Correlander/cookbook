@@ -169,23 +169,23 @@ test("Library and recipe detail preserve account, public, saved, unavailable, an
       .locator("xpath=..");
     await expect(privateEntry).toBeVisible();
     await expect(privateEntry.getByText(/Owned by you/)).toBeVisible();
-    await privateEntry.getByRole("button", { name: "Save to Library" }).click();
+    await privateEntry.getByRole("button", { name: "Bookmark" }).click();
     await expect(
-      privateEntry.getByRole("button", { name: "Remove from Library" }),
+      privateEntry.getByRole("button", { name: "Remove bookmark" }),
     ).toBeVisible();
     await expect(privateEntry.getByText(/Owned by you/)).toBeVisible();
     await expect(privateEntry.getByText(/Saved to Library/)).toBeVisible();
-    await privateEntry.getByRole("button", { name: "Remove from Library" }).click();
+    await privateEntry.getByRole("button", { name: "Remove bookmark" }).click();
     await expect(
-      privateEntry.getByRole("button", { name: "Save to Library" }),
+      privateEntry.getByRole("button", { name: "Bookmark" }),
     ).toBeVisible();
     await expect(privateEntry.getByText(/Owned by you/)).toBeVisible();
     await expect(privateEntry.getByText(/Saved to Library/)).toHaveCount(0);
     expect((await admin.page.request.get(`/api/recipes/${privateRecipe.id}`)).status()).toBe(200);
 
-    await privateEntry.getByRole("button", { name: "Save to Library" }).click();
+    await privateEntry.getByRole("button", { name: "Bookmark" }).click();
     await expect(
-      privateEntry.getByRole("button", { name: "Remove from Library" }),
+      privateEntry.getByRole("button", { name: "Remove bookmark" }),
     ).toBeVisible();
     await privateEntry.getByRole("link", { name: `Open ${privateRecipe.title}` }).click();
     await expect(admin.page).toHaveURL(new RegExp(`/recipe\\?id=${privateRecipe.id}$`));

@@ -206,7 +206,7 @@ it("clears recipe search when switching to cookbooks and restores it through his
   });
   vi.stubGlobal("fetch", fetchMock);
   render(<LibraryRoot />);
-  await screen.findByText("Items you own, can access through a cookbook, or save appear here.");
+  await screen.findByText("My Library includes items you own, can access through a cookbook, or bookmark.");
   fireEvent.click(screen.getByRole("button", { name: "Cookbooks" }));
   await waitFor(() => expect(window.location.search).toBe("?type=cookbooks"));
   expect(screen.queryByRole("searchbox", { name: "Search your recipes" })).toBeNull();
@@ -227,7 +227,7 @@ it("switches types through browser history and requests only the matching endpoi
   });
   vi.stubGlobal("fetch", fetchMock);
   render(<LibraryRoot />);
-  await screen.findByText("Items you own, can access through a cookbook, or save appear here.");
+  await screen.findByText("My Library includes items you own, can access through a cookbook, or bookmark.");
   fireEvent.click(screen.getByRole("button", { name: "Cookbooks" }));
   await waitFor(() => expect(window.location.search).toBe("?type=cookbooks"));
   expect(screen.getByRole("group", { name: "Library type" })).toBeTruthy();
@@ -252,7 +252,7 @@ it("does not apply a recipes page that completes after switching to cookbooks", 
   render(<LibraryRoot />);
   await screen.findByRole("button", { name: "Cookbooks" });
   fireEvent.click(screen.getByRole("button", { name: "Cookbooks" }));
-  await screen.findByText("Items you own, can access through a cookbook, or save appear here.");
+  await screen.findByText("My Library includes items you own, can access through a cookbook, or bookmark.");
   await act(async () => {
     resolveRecipes(jsonResponse({ items: [{ availability: "available", target_kind: "local", relationships: ["owned"], recipe: { ...recipe, id: "late-recipe", title: "Late recipes result" } }], total: 1, limit: 24, offset: 0 }));
   });
@@ -327,6 +327,6 @@ it("keeps Library requests stopped until a failed session check is retried succe
   expect(await screen.findByRole("heading", { name: "Could not check your session" })).toBeTruthy();
   expect(fetchMock.mock.calls.some(([input]) => String(input).startsWith("/api/library/"))).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "Retry session check" }));
-  await screen.findByText("Items you own, can access through a cookbook, or save appear here.");
+  await screen.findByText("My Library includes items you own, can access through a cookbook, or bookmark.");
   expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/api/library/recipes?"))).toHaveLength(1);
 });

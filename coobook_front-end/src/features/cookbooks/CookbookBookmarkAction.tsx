@@ -12,6 +12,7 @@ interface CookbookBookmarkActionProps {
   currentUserID: string | null;
   onMutation?: (saved: boolean) => void;
   onMutationUncertain?: () => void;
+  libraryContext?: boolean;
   initialBookmarkID?: string | null;
 }
 
@@ -47,6 +48,7 @@ function CookbookBookmarkActionForActor({
   currentUserID,
   onMutation,
   onMutationUncertain,
+  libraryContext = false,
   initialBookmarkID,
 }: CookbookBookmarkActionProps & { currentUserID: string }) {
   const [savedState, setSavedState] = useState<SavedState>({
@@ -173,9 +175,11 @@ function CookbookBookmarkActionForActor({
           ? isSaved
             ? "Removing…"
             : "Saving…"
-          : isSaved
-            ? `Remove ${title} from Library`
-            : `Save ${title} to Library`}
+          : libraryContext
+            ? isSaved ? "Remove bookmark" : "Bookmark"
+            : isSaved
+              ? `Remove ${title} from Library`
+              : `Save ${title} to Library`}
       </button>
       {savedState.kind === "checking" && (
         <p role="status">Checking saved status…</p>

@@ -53,8 +53,8 @@ test("static cookbook pages support direct load, refresh, navigation, and browse
     await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex,nofollow");
     await expect(page.getByRole("heading", { name: "Browse public cookbooks" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Home", exact: true })).toHaveAttribute("href", "/");
-    await expect(page.getByRole("link", { name: "Discover", exact: true })).toHaveAttribute("href", "/discover");
-    await expect(page.getByRole("link", { name: "Library", exact: true })).toHaveAttribute("href", "/library");
+    await expect(page.getByRole("link", { name: "Browse", exact: true })).toHaveAttribute("href", "/discover");
+    await expect(page.getByRole("link", { name: "My Library", exact: true })).toHaveAttribute("href", "/library");
     await expect(page.getByRole("link", { name: "Cookbooks", exact: true })).toHaveCount(0);
     expect((await response?.text()) ?? "").not.toContain(publicBook.title);
     await page.reload();

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AuthenticatedUser } from "../apiModels";
 import type { AppSessionStatus } from "./AppSession.tsx";
 import useInstanceAuthority from "../features/auth/useInstanceAuthority.ts";
@@ -47,6 +47,12 @@ export default function AppNavigation({
   onAction,
   activeArea,
 }: AppNavigationProps) {
+  const [showSessionPending, setShowSessionPending] = useState(false);
+  useEffect(() => {
+    if (sessionStatus !== "loading") { setShowSessionPending(false); return; }
+    const timer = window.setTimeout(() => setShowSessionPending(true), 450);
+    return () => window.clearTimeout(timer);
+  }, [sessionStatus]);
   const active = activeArea ?? (
     pathname === "/" || pathname === "/auth/confirm" ? "home" :
       pathname === "/discover" ? "discover" :
@@ -107,14 +113,14 @@ export default function AppNavigation({
           Home
         </a>
         <a className={active === "discover" ? "main-nav__active" : undefined} aria-current={active === "discover" ? "page" : undefined} href="/discover">
-          Discover
+          Browse
         </a>
         <a
           className={active === "library" ? "main-nav__active" : undefined}
           aria-current={active === "library" ? "page" : undefined}
           href="/library"
         >
-          Library
+          My Library
         </a>
         {authenticated && <a className={active === "create" ? "main-nav__active" : undefined} aria-current={active === "create" ? "page" : undefined} href="/create">Create</a>}
       </nav>
@@ -154,9 +160,9 @@ export default function AppNavigation({
           onSessionChange={onRetrySession}
         />
       ) : sessionStatus === "loading" ? (
-        <button className="signin-button" type="button" disabled>
-          Checking session…
-        </button>
+        <span className={showSessionPending ? "session-pending" : "session-pending session-pending--quiet"} role="status" aria-label="Checking your session">
+          {showSessionPending ? "Checking session…" : ""}
+        </span>
       ) : sessionStatus === "error" ? (
         <button
           className="signin-button"

@@ -119,14 +119,9 @@ export default function AccountSecurity() {
   return (
     <section
       className="cookbook-dashboard"
-      aria-labelledby="account-security-title"
+      aria-label="Account security settings"
     >
-      <div className="section-heading">
-        <div>
-          <span className="eyebrow">Your account</span>
-          <h2 id="account-security-title">Account security</h2>
-        </div>
-      </div>
+      <span className="eyebrow">Your account</span>
       <p>Passkeys let you sign in without a link from your email.</p>
       <h3>Browser sessions</h3>
       <p>Review your active sign-ins and revoke access from another browser.</p>

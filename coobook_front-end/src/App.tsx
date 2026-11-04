@@ -170,6 +170,11 @@ function HomeApp({ pathname }: { pathname: string }) {
             onRetry={() => void refreshSession()}
           />
         )}
+        {sessionState.status === "loading" ? (
+          <section className="home-session-pending" aria-label="Home">
+            <p role="status">Checking your session…</p>
+          </section>
+        ) : sessionState.status === "error" ? null : <>
         {signedIn ? (
           <section className="dashboard-welcome">
             <div>
@@ -332,6 +337,7 @@ function HomeApp({ pathname }: { pathname: string }) {
             </button>
           </section>
         )}
+        </>}
       </main>
       <RecipeDialog
         recipe={selectedRemote || selected}

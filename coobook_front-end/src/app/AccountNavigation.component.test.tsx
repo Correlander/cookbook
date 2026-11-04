@@ -11,6 +11,8 @@ it("links creator profile and security from either account page", () => {
   expect(
     screen.getByRole("link", { name: "Creator profile" }).getAttribute("href"),
   ).toBe("/account/creator-profile");
+  expect(screen.getByRole("link", { name: "Overview" }).getAttribute("href")).toBe("/account");
+  expect(screen.getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBeNull();
   expect(
     screen
       .getByRole("link", { name: "Account security" })
@@ -22,4 +24,6 @@ it("links creator profile and security from either account page", () => {
       .getByRole("link", { name: "Creator profile" })
       .getAttribute("aria-current"),
   ).toBe("page");
+  rerender(<AccountNavigation pathname="/account" />);
+  expect(screen.getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBe("page");
 });

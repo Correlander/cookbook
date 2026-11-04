@@ -34,6 +34,21 @@ var (
 // It owns the authorization and projection reads so other features do not need
 // to fabricate HTTP requests or re-enter an HTTP handler to read a recipe.
 func readRecipeDetail(ctx context.Context, queryer contentQueryer, actor ContentActor, recipeID string) (recipe, error) {
+	if db, ok := queryer.(*sql.DB); ok {
+		tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			return recipe{}, fmt.Errorf("begin recipe detail snapshot: %w", err)
+		}
+		defer tx.Rollback()
+		item, err := readRecipeDetail(ctx, tx, actor, recipeID)
+		if err != nil {
+			return recipe{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return recipe{}, fmt.Errorf("commit recipe detail snapshot: %w", err)
+		}
+		return item, nil
+	}
 	var item recipe
 	var public int
 	var ingredients, steps, tags, imagePath string
@@ -83,6 +98,11 @@ func readRecipeDetail(ctx context.Context, queryer contentQueryer, actor Content
 	item.CanEdit = canEditRecipe(actor.AccountID, access{ownerID: item.OwnerID, memberRole: memberRole}, item.EditPolicy)
 	item.CanDelete = actor.AccountID != "" && actor.AccountID == item.OwnerID
 	item.CanManageSharing = canManageRecipeSharing(actor.AccountID, item.OwnerID)
+	attributions, err := readCreatorAttributions(ctx, queryer, actor.AccountID, "recipe", []string{recipeID})
+	if err != nil {
+		return recipe{}, fmt.Errorf("read recipe creator attributions: %w", err)
+	}
+	item.CreatorAttributions = attributions[recipeID]
 	return projectRecipeForActor(item, actor.AccountID), nil
 }
 

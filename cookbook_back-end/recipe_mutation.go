@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -33,6 +34,7 @@ type recipeMutationSnapshot struct {
 // ImagePath nil preserves the current image; a non-nil value restores that path.
 // Cookbook references are replaced only when ReplaceCookbookRefs is true.
 type recipeMutation struct {
+	Context             context.Context
 	RecipeID            string
 	ActorID             string
 	ExpectedVersion     int
@@ -42,6 +44,7 @@ type recipeMutation struct {
 	ReplaceCookbookRefs bool
 	ConfirmPublicAccess bool
 	VisibilityChanged   *bool
+	CanonicalResponse   *recipe
 }
 
 // commitRecipeMutation assumes its caller has already authenticated ActorID,
@@ -100,6 +103,17 @@ func commitRecipeMutation(db *sql.DB, mutation recipeMutation) (int, error) {
 		if err := insertAuditEvent(tx, mutation.ActorID, "recipe.visibility.change", "recipes", mutation.RecipeID, http.StatusOK); err != nil {
 			return 0, err
 		}
+	}
+	if mutation.CanonicalResponse != nil {
+		ctx := mutation.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		response, err := readRecipeDetail(ctx, tx, ContentActor{AccountID: mutation.ActorID}, mutation.RecipeID)
+		if err != nil {
+			return 0, err
+		}
+		*mutation.CanonicalResponse = response
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err

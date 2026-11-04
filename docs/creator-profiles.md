@@ -12,6 +12,12 @@ Private profile names may be empty. Instance visibility requires a 1–80 Unicod
 
 `GET /api/creator-profiles/{id}/recipes?limit=&offset=` returns `{ "profile": CreatorProfile, "items": [{ "recipe": Recipe, "role": string, "provenance": string }], "limit": number, "offset": number }`. The `Recipe` is the existing authenticated recipe DTO after ACL checks. The cookbook route returns the same envelope with items `{ "cookbook": { "id", "title", "description", "visibility", "created_at", "updated_at" }, "role", "provenance" }`; it omits account custody IDs. Both lists include only local typed attribution rows. A visible profile with no readable attributed resources returns an empty `items` array. An absent or inaccessible profile returns `404 not_found`; invalid pagination returns `400 invalid_pagination`. Private API responses are `private, no-store`.
 
+## Typed credits in canonical reads
+
+Authenticated canonical `GET /api/recipes`, `GET /api/recipes/{id}`, `GET /api/cookbooks`, and `GET /api/cookbooks/{id}` responses may include the additive `creator_attributions` array. It is omitted when no typed rows are readable. A local row has `subject_kind: "local"`, a `profile` object containing only `id`, current `public_name` and `visibility`, plus its stored `role` and `provenance`. A private profile row is visible only to its owner; an instance profile row is visible to signed-in local accounts. Both the resource ACL and profile ACL must allow the row. Admin and instance-owner status do not bypass either rule.
+
+An `external_claim` row contains only its discriminant, optional `name_claim`, role, and provenance. It is unverified and never resolves or links to a local profile, even if its foreign identifiers happen to match a local ID. The separate legacy `creator_name` remains unchanged and is not merged or deduplicated with typed credits. Recipe cards and detail views should treat role and provenance as labels, not proof; a cookbook creator denotes collection creation, while a recipe adapter denotes a fork relationship distinct from `source_recipe_id`. Anonymous and `/api/public/*` responses do not gain this field. The authenticated list projection batches credits for the page within its read snapshot.
+
 ## Creation and attribution
 
 Recipe create accepts an optional create-only `creator_attribution` object:

@@ -168,7 +168,7 @@ func TestRecipeDetailGETAndReadAfterWritePreserveStorageErrors(t *testing.T) {
 		t.Fatalf("recipe create read-after-write storage failure = %d %s", create.Code, create.Body)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM recipes WHERE owner_id='owner' AND title='Committed dish'`).Scan(&count); err != nil || count != 1 {
-		t.Fatalf("committed write count=%d err=%v", count, err)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM recipes WHERE owner_id='owner' AND title='Committed dish'`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("rolled-back write count=%d err=%v", count, err)
 	}
 }

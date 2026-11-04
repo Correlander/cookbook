@@ -167,13 +167,14 @@ type user struct {
 }
 
 type cookbook struct {
-	ID          string     `json:"id"`
-	OwnerID     string     `json:"owner_id"`
-	Title       string     `json:"title"`
-	Description string     `json:"description"`
-	Visibility  visibility `json:"visibility"`
-	CreatedAt   string     `json:"created_at"`
-	UpdatedAt   string     `json:"updated_at"`
+	ID                  string                   `json:"id"`
+	OwnerID             string                   `json:"owner_id"`
+	Title               string                   `json:"title"`
+	Description         string                   `json:"description"`
+	Visibility          visibility               `json:"visibility"`
+	CreatedAt           string                   `json:"created_at"`
+	UpdatedAt           string                   `json:"updated_at"`
+	CreatorAttributions []creatorAttributionRead `json:"creator_attributions,omitempty"`
 }
 
 type ingredient struct {
@@ -185,29 +186,30 @@ type recipeStep struct {
 	Text string `json:"text"`
 }
 type recipe struct {
-	OwnerID          string       `json:"owner_id,omitempty"`
-	ID               string       `json:"id"`
-	CreatorName      string       `json:"creator_name"`
-	SourceRecipeID   string       `json:"source_recipe_id,omitempty"`
-	Title            string       `json:"title"`
-	Description      string       `json:"description"`
-	Ingredients      []ingredient `json:"ingredients"`
-	Steps            []recipeStep `json:"steps"`
-	Servings         int          `json:"servings"`
-	PrepTime         int          `json:"prep_time_minutes"`
-	CookTime         int          `json:"cook_time_minutes"`
-	Tags             []string     `json:"tags"`
-	Visibility       visibility   `json:"visibility"`
-	EditPolicy       string       `json:"edit_policy,omitempty"`
-	CanEdit          bool         `json:"can_edit"`
-	CanDelete        bool         `json:"can_delete"`
-	CanManageSharing bool         `json:"can_manage_sharing"`
-	Version          int          `json:"version"`
-	CookbookIDs      []string     `json:"cookbook_ids,omitempty"`
-	CreatedAt        string       `json:"created_at"`
-	UpdatedAt        string       `json:"updated_at"`
-	DeletedAt        string       `json:"deleted_at,omitempty"`
-	Image            string       `json:"image,omitempty"`
+	OwnerID             string                   `json:"owner_id,omitempty"`
+	ID                  string                   `json:"id"`
+	CreatorName         string                   `json:"creator_name"`
+	SourceRecipeID      string                   `json:"source_recipe_id,omitempty"`
+	Title               string                   `json:"title"`
+	Description         string                   `json:"description"`
+	Ingredients         []ingredient             `json:"ingredients"`
+	Steps               []recipeStep             `json:"steps"`
+	Servings            int                      `json:"servings"`
+	PrepTime            int                      `json:"prep_time_minutes"`
+	CookTime            int                      `json:"cook_time_minutes"`
+	Tags                []string                 `json:"tags"`
+	Visibility          visibility               `json:"visibility"`
+	EditPolicy          string                   `json:"edit_policy,omitempty"`
+	CanEdit             bool                     `json:"can_edit"`
+	CanDelete           bool                     `json:"can_delete"`
+	CanManageSharing    bool                     `json:"can_manage_sharing"`
+	Version             int                      `json:"version"`
+	CookbookIDs         []string                 `json:"cookbook_ids,omitempty"`
+	CreatorAttributions []creatorAttributionRead `json:"creator_attributions,omitempty"`
+	CreatedAt           string                   `json:"created_at"`
+	UpdatedAt           string                   `json:"updated_at"`
+	DeletedAt           string                   `json:"deleted_at,omitempty"`
+	Image               string                   `json:"image,omitempty"`
 }
 
 func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -653,11 +655,16 @@ func (h apiHandler) cookbooks(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "storage_error")
 			return
 		}
+		item, err := readCookbookDetail(r.Context(), tx, input.OwnerID, id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
 		if err := tx.Commit(); err != nil {
 			writeError(w, http.StatusInternalServerError, "storage_error")
 			return
 		}
-		writeJSON(w, http.StatusCreated, cookbook{ID: id, OwnerID: input.OwnerID, Title: input.Title, Description: input.Description, Visibility: input.Visibility, CreatedAt: now, UpdatedAt: now})
+		writeJSON(w, http.StatusCreated, item)
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -670,23 +677,48 @@ func (h apiHandler) cookbooks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	userID := authenticatedUser(r)
-	rows, err := h.db.Query(`SELECT c.id,c.owner_id,c.title,c.description,c.visibility,c.created_at,c.updated_at FROM cookbooks c JOIN instance_settings s ON s.id=1 WHERE `+cookbookActorReadPredicate+` ORDER BY c.updated_at DESC,c.id LIMIT ? OFFSET ?`, userID, userID, limit, offset)
+	tx, err := h.db.BeginTx(r.Context(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(r.Context(), `SELECT c.id,c.owner_id,c.title,c.description,c.visibility,c.created_at,c.updated_at FROM cookbooks c JOIN instance_settings s ON s.id=1 WHERE `+cookbookActorReadPredicate+` ORDER BY c.updated_at DESC,c.id LIMIT ? OFFSET ?`, userID, userID, limit, offset)
 	if err != nil {
 		writeError(w, 500, "storage_error")
 		return
 	}
-	defer rows.Close()
 	items := []cookbook{}
+	ids := []string{}
 	for rows.Next() {
 		var c cookbook
 		if err := rows.Scan(&c.ID, &c.OwnerID, &c.Title, &c.Description, &c.Visibility, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			rows.Close()
 			writeError(w, 500, "storage_error")
 			return
 		}
 		items = append(items, c)
+		ids = append(ids, c.ID)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		writeError(w, 500, "storage_error")
+		return
+	}
+	if err := rows.Close(); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	attributions, err := readCreatorAttributions(r.Context(), tx, userID, "cookbook", ids)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	for index := range items {
+		items[index].CreatorAttributions = attributions[items[index].ID]
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
 	writeJSON(w, 200, items)
@@ -694,15 +726,24 @@ func (h apiHandler) cookbooks(w http.ResponseWriter, r *http.Request) {
 
 func (h apiHandler) cookbookByID(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method == http.MethodGet {
-		var c cookbook
 		uid := authenticatedUser(r)
-		err := h.db.QueryRow(`SELECT c.id,c.owner_id,c.title,c.description,c.visibility,c.created_at,c.updated_at FROM cookbooks c JOIN instance_settings s ON s.id=1 WHERE c.id=? AND `+cookbookActorReadPredicate, id, uid, uid).Scan(&c.ID, &c.OwnerID, &c.Title, &c.Description, &c.Visibility, &c.CreatedAt, &c.UpdatedAt)
+		tx, err := h.db.BeginTx(r.Context(), &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		defer tx.Rollback()
+		c, err := readCookbookDetail(r.Context(), tx, uid, id)
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, 404, "not_found")
 			return
 		}
 		if err != nil {
 			writeError(w, 500, "storage_error")
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
 			return
 		}
 		writeJSON(w, 200, c)
@@ -723,21 +764,41 @@ func (h apiHandler) cookbookByID(w http.ResponseWriter, r *http.Request, id stri
 	}
 	input.Title = strings.TrimSpace(input.Title)
 	input.UserID = authenticatedUser(r)
+	tx, err := h.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	defer tx.Rollback()
 	var owner string
-	if err := h.db.QueryRow(`SELECT owner_id FROM cookbooks WHERE id=?`, id).Scan(&owner); err != nil {
+	if err := tx.QueryRowContext(r.Context(), `SELECT owner_id FROM cookbooks WHERE id=?`, id).Scan(&owner); err != nil {
 		writeError(w, 404, "not_found")
 		return
 	}
-	if owner != input.UserID || input.Title == "" || !validVisibility(input.Visibility) || (input.Visibility != visibilityPrivate && !h.instancePublic()) {
+	var public int
+	if err := tx.QueryRowContext(r.Context(), `SELECT public_instance FROM instance_settings WHERE id=1`).Scan(&public); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	if owner != input.UserID || input.Title == "" || !validVisibility(input.Visibility) || (input.Visibility != visibilityPrivate && public != 1) {
 		writeError(w, 403, "forbidden")
 		return
 	}
-	_, err := h.db.Exec(`UPDATE cookbooks SET title=?,description=?,visibility=?,updated_at=? WHERE id=?`, input.Title, input.Description, input.Visibility, timestamp(), id)
+	_, err = tx.ExecContext(r.Context(), `UPDATE cookbooks SET title=?,description=?,visibility=?,updated_at=? WHERE id=?`, input.Title, input.Description, input.Visibility, timestamp(), id)
 	if err != nil {
 		writeError(w, 500, "storage_error")
 		return
 	}
-	h.cookbookByID(w, requestForUser(http.MethodGet, "/api/cookbooks/"+id, input.UserID), id)
+	item, err := readCookbookDetail(r.Context(), tx, input.UserID, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 const recipeRowsQuery = `SELECT r.id,r.owner_id,r.creator_name,r.source_recipe_id,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,s.public_instance,r.image_path
@@ -850,12 +911,18 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "storage_error")
 			return
 		}
+		item, err := readRecipeDetail(r.Context(), tx, ContentActor{AccountID: in.OwnerID}, id)
+		if err != nil {
+			_ = tx.Rollback()
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
 		if err = tx.Commit(); err != nil {
 			writeError(w, 500, "storage_error")
 			return
 		}
 		markTransactionalAuditSuccess(r)
-		h.writeRecipeDetail(w, r.Context(), ContentActor{AccountID: in.OwnerID}, id)
+		writeJSON(w, http.StatusOK, item)
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -893,7 +960,13 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_pagination_or_query")
 		return
 	}
-	rows, err := h.db.Query(recipeRowsQuery+order+` LIMIT ? OFFSET ?`, uid, uid, q, q, cookbookID, cookbookID, uid, uid, cookbookID, cookbookID, tagJSON, tagJSON, limit, offset)
+	tx, err := h.db.BeginTx(r.Context(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(r.Context(), recipeRowsQuery+order+` LIMIT ? OFFSET ?`, uid, uid, q, q, cookbookID, cookbookID, uid, uid, cookbookID, cookbookID, tagJSON, tagJSON, limit, offset)
 	if err != nil {
 		writeError(w, 500, "storage_error")
 		return
@@ -934,21 +1007,45 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "storage_error")
 		return
 	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	memberRoles, err := recipeMemberRolesForActor(r.Context(), tx, uid, ids)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	cookbookIDs, err := recipeCookbookIDsForActor(r.Context(), tx, uid, ids)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	attributions, err := readCreatorAttributions(r.Context(), tx, uid, "recipe", ids)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
 	visibleItems := make([]recipe, 0, len(items))
 	for index := range items {
 		it := items[index]
-		member := recipeMemberRole(h.db, it.ID, uid)
+		member := memberRoles[it.ID]
 		if !canReadResource(uid, access{instancePublic: publicFlags[index], visibility: it.Visibility, ownerID: it.OwnerID, memberRole: member}) {
 			continue
 		}
 		if !hasLocalRecipeRead(uid, it.OwnerID, member) {
 			it.SourceRecipeID = ""
 		}
-		it.CookbookIDs = h.recipeCookbooks(it.ID, uid)
+		it.CookbookIDs = cookbookIDs[it.ID]
+		it.CreatorAttributions = attributions[it.ID]
 		it.CanEdit = canEditRecipe(uid, access{ownerID: it.OwnerID, memberRole: member}, it.EditPolicy)
 		it.CanDelete = uid != "" && uid == it.OwnerID
 		it.CanManageSharing = canManageRecipeSharing(uid, it.OwnerID)
 		visibleItems = append(visibleItems, projectRecipeForActor(it, uid))
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
 	}
 	writeJSON(w, 200, visibleItems)
 }
@@ -1149,8 +1246,9 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 	stepsJSON, _ := json.Marshal(in.Steps)
 	tagsJSON, _ := json.Marshal(in.Tags)
 	visibilityChanged := false
+	var response recipe
 	_, err := commitRecipeMutation(h.db, recipeMutation{
-		RecipeID: id, ActorID: in.UserID, ExpectedVersion: in.Version,
+		Context: r.Context(), RecipeID: id, ActorID: in.UserID, ExpectedVersion: in.Version,
 		Snapshot: recipeMutationSnapshot{
 			Title: in.Title, Description: in.Description, IngredientsJSON: ingredientsJSON,
 			StepsJSON: stepsJSON, Servings: in.Servings, PrepTime: in.PrepTime,
@@ -1158,6 +1256,7 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 		},
 		CookbookIDs: in.cookbookIDs(), ReplaceCookbookRefs: in.CookbookIDs != nil || in.UserID == owner,
 		ConfirmPublicAccess: input.ConfirmPublicAccess, VisibilityChanged: &visibilityChanged,
+		CanonicalResponse: &response,
 	})
 	if errors.Is(err, errRecipeMutationConflict) {
 		writeError(w, http.StatusConflict, "version_conflict")
@@ -1198,7 +1297,7 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 	if visibilityChanged {
 		markTransactionalAuditSuccess(r)
 	}
-	h.writeRecipeDetail(w, r.Context(), ContentActor{AccountID: in.UserID}, id)
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h apiHandler) recipeTrash(w http.ResponseWriter, r *http.Request) {
@@ -1471,8 +1570,9 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 		return
 	}
 	visibilityChanged := false
+	var response recipe
 	_, err = commitRecipeMutation(h.db, recipeMutation{
-		RecipeID: recipeID, ActorID: userID, ExpectedVersion: input.ExpectedVersion,
+		Context: r.Context(), RecipeID: recipeID, ActorID: userID, ExpectedVersion: input.ExpectedVersion,
 		Snapshot: recipeMutationSnapshot{
 			Title: title, Description: description, IngredientsJSON: []byte(ingredients),
 			StepsJSON: []byte(steps), Servings: servings, PrepTime: prepTime,
@@ -1480,6 +1580,7 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 		},
 		ImagePath: &restoredImage, ConfirmPublicAccess: input.ConfirmPublicAccess,
 		VisibilityChanged: &visibilityChanged,
+		CanonicalResponse: &response,
 	})
 	if errors.Is(err, errRecipeMutationConflict) {
 		writeError(w, http.StatusConflict, "version_conflict")
@@ -1516,7 +1617,7 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 	if visibilityChanged {
 		markTransactionalAuditSuccess(r)
 	}
-	h.writeRecipeDetail(w, r.Context(), ContentActor{AccountID: userID}, recipeID)
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h apiHandler) writeRecipeDetail(w http.ResponseWriter, ctx context.Context, actor ContentActor, recipeID string) {

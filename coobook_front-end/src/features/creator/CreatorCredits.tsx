@@ -2,7 +2,7 @@ import type { CreatorAttribution } from "../../apiModels";
 
 type CreatorCreditsProps = {
   attributions?: CreatorAttribution[];
-  resourceKind: "recipe" | "cookbook";
+  resourceKind: "recipe" | "cookbook" | "course";
   variant?: "compact" | "detail";
   currentUserID?: string | null;
 };
@@ -13,7 +13,8 @@ function roleLabel(
 ): string {
   switch (role) {
     case "creator":
-      return resourceKind === "cookbook" ? "Collection creator" : "Creator";
+      if (resourceKind === "cookbook") return "Collection creator";
+      return resourceKind === "course" ? "Course creator" : "Creator";
     case "contributor":
       return "Contributor";
     case "adapter":
@@ -38,12 +39,12 @@ function provenanceLabel(provenance: string): string {
   }
 }
 
-function subjectText(attribution: CreatorAttribution): string {
+function subjectText(attribution: CreatorAttribution, resourceKind: CreatorCreditsProps["resourceKind"]): string {
   if (attribution.subject_kind === "external_claim") {
     const name = attribution.name_claim?.trim();
     return name
-      ? `Unverified creator claim: ${name}`
-      : "Unverified creator claim";
+      ? `Unverified ${resourceKind === "course" ? "course creator" : "creator"} claim: ${name}`
+      : `Unverified ${resourceKind === "course" ? "course creator" : "creator"} claim`;
   }
   const name = attribution.profile.public_name.trim();
   if (name) return name;
@@ -55,9 +56,11 @@ function subjectText(attribution: CreatorAttribution): string {
 function CreatorCreditIdentity({
   attribution,
   currentUserID,
+  resourceKind,
 }: {
   attribution: CreatorAttribution;
   currentUserID: string | null;
+  resourceKind: CreatorCreditsProps["resourceKind"];
 }) {
   if (
     attribution.subject_kind === "local" &&
@@ -70,7 +73,7 @@ function CreatorCreditIdentity({
       </a>
     );
   }
-  return <span>{subjectText(attribution)}</span>;
+  return <span>{subjectText(attribution, resourceKind)}</span>;
 }
 
 export default function CreatorCredits({
@@ -80,15 +83,14 @@ export default function CreatorCredits({
   currentUserID = null,
 }: CreatorCreditsProps) {
   if (!attributions?.length) return null;
-  const label =
-    resourceKind === "cookbook" ? "Cookbook creator credits" : "Recipe creator credits";
+  const label = resourceKind === "cookbook" ? "Cookbook creator credits" : resourceKind === "course" ? "Course creator credits" : "Recipe creator credits";
 
   if (variant === "compact") {
     return (
       <span className="creator-credits creator-credits--compact">
         {attributions.map((attribution, index) => (
           <span className="creator-credits__item" key={`${attribution.subject_kind}-${attribution.role}-${index}`}>
-            <span>{subjectText(attribution)}</span>
+            <span>{subjectText(attribution, resourceKind)}</span>
             <span>
               {roleLabel(attribution.role, resourceKind)} · {provenanceLabel(attribution.provenance)}
             </span>
@@ -98,16 +100,17 @@ export default function CreatorCredits({
     );
   }
 
-  const Heading = resourceKind === "cookbook" ? "h2" : "h3";
+  const Heading = resourceKind === "cookbook" || resourceKind === "course" ? "h2" : "h3";
   return (
     <section className="creator-credits" aria-label={label}>
-      <Heading>{resourceKind === "cookbook" ? "Creator credits" : "Recipe creator credits"}</Heading>
+      <Heading>{resourceKind === "cookbook" ? "Creator credits" : resourceKind === "course" ? "Course creator credits" : "Recipe creator credits"}</Heading>
       <ul>
         {attributions.map((attribution, index) => (
           <li className="creator-credits__item" key={`${attribution.subject_kind}-${attribution.role}-${index}`}>
             <CreatorCreditIdentity
               attribution={attribution}
               currentUserID={currentUserID}
+              resourceKind={resourceKind}
             />
             <span>
               {roleLabel(attribution.role, resourceKind)} · {provenanceLabel(attribution.provenance)}

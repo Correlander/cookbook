@@ -2,6 +2,8 @@ import { lazy, useEffect, useState } from "react";
 import type { Course } from "./apiModels";
 import FeatureIsland from "./components/FeatureIsland.tsx";
 import { useAppSession } from "./app/AppSession.tsx";
+import { parseCourseList } from "./features/courses/courseApi.ts";
+import CreatorCredits from "./features/creator/CreatorCredits.tsx";
 
 const CourseDetail = lazy(() => import("./features/courses/CourseDetail.tsx"));
 
@@ -13,7 +15,8 @@ export default function PublicCourses() {
     let active = true;
     fetch("/api/public/courses?limit=24")
       .then(async (response) => (response.ok ? response.json() : []))
-      .then((items: Course[]) => {
+      .then((value: unknown) => {
+        const items = parseCourseList(value);
         if (active) setCourses(items);
       })
       .catch(() => {
@@ -44,6 +47,8 @@ export default function PublicCourses() {
             <h3><a href={`/course?id=${encodeURIComponent(course.id)}`}>{course.title}</a></h3>
             {course.description && <p>{course.description}</p>}
             <p className="course-owner">Owner: {course.owner_name}</p>
+            {course.creator_name && <p>Unverified creator name: {course.creator_name}</p>}
+            <CreatorCredits attributions={course.creator_attributions} resourceKind="course" currentUserID={currentUser?.id ?? null} />
             <button
               className="text-link"
               type="button"

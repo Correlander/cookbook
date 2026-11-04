@@ -26,3 +26,19 @@ it("renders shared detail content inline without modal or owner edit controls", 
   expect(screen.queryByRole("button", { name: "Delete course" })).toBeNull();
   expect(screen.getByRole("link", { name: "Open course page" })).toBeTruthy();
 });
+
+it("keeps course custody, unverified name claim, and typed credits separate", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json([])));
+  render(<CourseDetail course={{ ...course, creator_name: "Claimed teacher", creator_attributions: [{ subject_kind: "external_claim", name_claim: "Imported teacher", role: "contributor", provenance: "portable_claim" }] }} mode="page" currentUserID="reader" onClose={vi.fn()} onEdit={vi.fn()} onChanged={async () => {}} />);
+  expect(await screen.findByText("public course · Owner: Current Owner")).toBeTruthy();
+  expect(screen.getByText("Unverified creator name: Claimed teacher")).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Course creator credits" }).textContent).toContain("Unverified course creator claim: Imported teacher");
+});
+
+it("keeps course custody, unverified name claim, and typed credits separate", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json([])));
+  render(<CourseDetail course={{ ...course, creator_name: "Claimed teacher", creator_attributions: [{ subject_kind: "external_claim", name_claim: "Imported teacher", role: "contributor", provenance: "portable_claim" }] }} mode="page" currentUserID="reader" onClose={vi.fn()} onEdit={vi.fn()} onChanged={async () => {}} />);
+  expect(await screen.findByText("public course · Owner: Current Owner")).toBeTruthy();
+  expect(screen.getByText("Unverified creator name: Claimed teacher")).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Course creator credits" }).textContent).toContain("Unverified course creator claim: Imported teacher");
+});

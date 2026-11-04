@@ -36,6 +36,19 @@ it("parses course Library unions and preserves unavailable-reference redaction",
   expect(page.items[1]).toEqual({ availability: "unavailable", relationships: ["saved"], bookmark_id: "bm-2", created_at: "then" });
 });
 
+it("rejects malformed available course credits and attribution bodies on unavailable references", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ items: [{
+    availability: "available", relationships: ["saved"], bookmark_id: "bm-1",
+    course: { id: "course-1", owner_name: "Owner", title: "Basics", description: "", visibility: "private", lesson_count: 2, created_at: "now", updated_at: "now", creator_attributions: [{ subject_kind: "local", role: "creator", provenance: "x", profile: { id: "p", public_name: "Private", visibility: "hidden" } }] },
+  }], total: 1, limit: 24, offset: 0 })));
+  await expect(fetchLibraryCourses()).rejects.toThrow("Could not load this course.");
+
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ items: [{
+    availability: "unavailable", relationships: ["saved"], bookmark_id: "bm-1", created_at: "then", creator_name: "stale claim",
+  }], total: 1, limit: 24, offset: 0 })));
+  await expect(fetchLibraryCourses()).rejects.toThrow("Could not load your courses Library.");
+});
+
 it("uses exact course saved-status, idempotent save and reference removal endpoints", async () => {
   const fetchMock = vi.fn()
     .mockResolvedValueOnce(jsonResponse({ saved: true, bookmark_id: "bm-1" }))

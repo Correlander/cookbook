@@ -140,3 +140,12 @@ it("uses plain text in compact card context even when a signed-in viewer can ope
   expect(screen.getByRole("button").querySelector("a")).toBeNull();
   expect(screen.getByText("Avery Cook")).toBeTruthy();
 });
+
+it("uses course-specific human labels without implying verified authorship", () => {
+  render(<CreatorCredits attributions={[{
+    subject_kind: "external_claim", name_claim: "Claimed teacher", role: "creator", provenance: "portable_claim",
+  }]} resourceKind="course" />);
+  const region = screen.getByRole("region", { name: "Course creator credits" });
+  expect(within(region).getByText("Unverified course creator claim: Claimed teacher")).toBeTruthy();
+  expect(within(region).getByText("Course creator · Imported claim")).toBeTruthy();
+});

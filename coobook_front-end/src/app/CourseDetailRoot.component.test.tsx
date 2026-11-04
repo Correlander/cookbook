@@ -33,3 +33,20 @@ it("uses one authenticated read and never falls back to anonymous detail after d
   await waitFor(() => expect(calls.filter((url) => url === "/api/courses/course-1")).toHaveLength(1));
   expect(calls.some((url) => url === "/api/public/courses/course-1")).toBe(false);
 });
+
+it("parses an accepted authenticated course detail and keeps creator data separate from owner", async () => {
+  const course = { id: "course-1", owner_id: "actor", owner_name: "Custodian", title: "Bread", description: "", visibility: "private", lesson_count: 0, created_at: "then", updated_at: "then", creator_name: "Claimed teacher", creator_attributions: [{ subject_kind: "external_claim", name_claim: "Imported teacher", role: "contributor", provenance: "portable_claim" }] };
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/auth/me") return Promise.resolve(json({ id: "actor", email: "a@example.test", display_name: "A", is_admin: false }));
+    if (url === "/api/public/config") return Promise.resolve(json({ courses_enabled: true }));
+    if (url === "/api/courses/course-1") return Promise.resolve(json(course));
+    if (url === "/api/courses/course-1/lessons") return Promise.resolve(json([]));
+    return Promise.resolve(json({}, 404));
+  }));
+  render(<CourseDetailRoot />);
+  expect(await screen.findByRole("heading", { name: "Bread" })).toBeTruthy();
+  expect(screen.getByText("private course · Owner: Custodian")).toBeTruthy();
+  expect(screen.getByText("Unverified creator name: Claimed teacher")).toBeTruthy();
+  expect(screen.getByText("Unverified course creator claim: Imported teacher")).toBeTruthy();
+});

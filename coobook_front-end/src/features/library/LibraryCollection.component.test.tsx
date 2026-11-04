@@ -8,12 +8,14 @@ it("renders course owner labels, canonical links, and removable redacted referen
   const remove = vi.fn();
   render(<LibraryCollection type="courses" userID="owner-1" busyBookmarkID="" onBookmarkChange={vi.fn()} onMutationUncertain={vi.fn()} onRemoveUnavailable={remove} page={{
     total: 2, limit: 24, offset: 0, items: [
-      { availability: "available", relationships: ["owned"], course: { id: "course-1", owner_id: "owner-1", owner_name: "Current Custodian", title: "Bread", description: "Starter", visibility: "public", lesson_count: 3, created_at: "now", updated_at: "now" } },
+      { availability: "available", relationships: ["owned"], course: { id: "course-1", owner_id: "owner-1", owner_name: "Current Custodian", title: "Bread", description: "Starter", visibility: "public", lesson_count: 3, created_at: "now", updated_at: "now", creator_name: "Claimed chef", creator_attributions: [{ subject_kind: "external_claim", name_claim: "Imported teacher", role: "creator", provenance: "portable_claim" }] } },
       { availability: "unavailable", relationships: ["saved"], bookmark_id: "opaque-course", created_at: "then" },
     ],
   }} />);
   expect(screen.getByRole("link", { name: "Open Bread" }).getAttribute("href")).toBe("/course?id=course-1");
   expect(screen.getByText("Owner: Current Custodian")).toBeTruthy();
+  expect(screen.getByText("Unverified creator name: Claimed chef")).toBeTruthy();
+  expect(screen.getByText("Unverified course creator claim: Imported teacher")).toBeTruthy();
   expect(document.body.textContent).not.toContain("opaque-course");
   fireEvent.click(screen.getByRole("button", { name: "Remove unavailable course reference" }));
   expect(remove).toHaveBeenCalledWith("opaque-course");

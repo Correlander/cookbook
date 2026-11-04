@@ -14,6 +14,7 @@ import useModalFocus from "../../useModalFocus.ts";
 import Icon from "./RecipeIcon.tsx";
 import type { RecipeCreatorAttribution } from "../../apiModels";
 import { CreatorProfileRequestError, getMyCreatorProfile } from "../creator/creatorProfileApi.ts";
+import CreatorAttributionFields from "../creator/CreatorAttributionFields.tsx";
 
 const StepListEditor = lazy(() => import("../../StepListEditor.tsx"));
 
@@ -458,24 +459,13 @@ function RecipeFormInstance({
                 <p>This server does not support typed creator credit. Older servers may use your account display name as an unverified recipe byline; that byline follows this recipe’s visibility.</p>
                 <label><input type="checkbox" checked={legacyCreationConfirmed} onChange={(event) => setLegacyCreationConfirmed(event.target.checked)} /> I understand the legacy byline disclosure and want to continue</label>
               </>}
-              {creatorSupport === "ready" && <>
-                <legend>Who created this recipe? <span aria-hidden="true">*</span></legend>
-                <label htmlFor="creator-attribution">Creator credit</label>
-                <select id="creator-attribution" value={creatorChoice} onChange={(event) => { setCreatorChoice(event.target.value as RecipeCreatorAttribution["kind"] | ""); setError(""); }} required>
-                  <option value="">Choose a creator credit</option>
-                  <option value="local_profile">I created this recipe</option>
-                  <option value="name_claim">Someone else created this recipe</option>
-                  <option value="unknown">I don’t know who created this recipe</option>
-                </select>
-                {creatorChoice === "name_claim" && <>
-                  <label htmlFor="creator-name-claim">Creator name (unverified)</label>
-                  <input id="creator-name-claim" value={creatorName} maxLength={320} onChange={(event) => setCreatorName(event.target.value)} />
-                  <p className="dialog-note">This is unverified text, not a linked profile. A public recipe can expose this name. It follows the recipe’s visibility.</p>
-                </>}
-                {creatorChoice === "local_profile" && <p className="dialog-note">This is a self-asserted credit. A private profile with an empty name is created if needed. This does not publish your profile or recipe.</p>}
-                {creatorChoice === "unknown" && <p className="dialog-note">No creator name or typed creator relation will be recorded.</p>}
-                <p className="dialog-note">Creator credit and profile visibility are separate from recipe visibility.</p>
-              </>}
+              {creatorSupport === "ready" && <CreatorAttributionFields
+                resourceKind="recipe"
+                choice={creatorChoice}
+                name={creatorName}
+                onChoiceChange={(choice) => { setCreatorChoice(choice); setError(""); }}
+                onNameChange={setCreatorName}
+              />}
             </fieldset>
           )}
           {!recipe && (

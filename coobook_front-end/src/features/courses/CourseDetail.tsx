@@ -4,6 +4,7 @@ import { moveStep } from "../../steps.ts";
 import type { Course, CourseLesson, PublicRecipe } from "../../apiModels";
 import { errorMessage } from "../../apiModels";
 import CourseBookmarkAction from "./CourseBookmarkAction.tsx";
+import CreatorCredits from "../creator/CreatorCredits.tsx";
 
 interface CourseDetailProps {
   course: Course;
@@ -104,6 +105,8 @@ export default function CourseDetail({
         <span className="eyebrow">{course.visibility} course · Owner: {course.owner_name}</span>
         <Heading id="course-title-heading">{course.title}</Heading>
         {course.description && <p>{course.description}</p>}
+        {course.creator_name && <p>Unverified creator name: {course.creator_name}</p>}
+        <CreatorCredits attributions={course.creator_attributions} resourceKind="course" currentUserID={currentUserID} />
         {currentUserID && <CourseBookmarkAction courseID={course.id} title={course.title} currentUserID={currentUserID} />}
         <a className="text-link" href={`/course?id=${encodeURIComponent(course.id)}`}>Open course page</a>
         {owner && mode === "modal" && <div className="course-actions"><button className="text-link" type="button" onClick={onEdit}>Edit course</button><button className="text-link" type="button" onClick={() => setLessonOpen(true)}>Add lesson</button><button className="text-link" type="button" onClick={async () => { if (!window.confirm(`Delete “${course.title}” and all its lessons?`)) return; const response = await fetch(`/api/courses/${course.id}`, { method: "DELETE" }); if (!response.ok) { setError("Could not delete this course."); return; } onClose(); await onChanged(); }}>Delete course</button></div>}

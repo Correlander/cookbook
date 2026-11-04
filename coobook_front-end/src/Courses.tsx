@@ -4,6 +4,8 @@ import { errorMessage } from "./apiModels";
 import CourseDetail from "./features/courses/CourseDetail.tsx";
 import CourseForm from "./features/courses/CourseForm.tsx";
 import { useAppSession } from "./app/AppSession.tsx";
+import { parseCourseList } from "./features/courses/courseApi.ts";
+import CreatorCredits from "./features/creator/CreatorCredits.tsx";
 
 interface CoursesProps {
   onOpenRecipe?: (recipe: PublicRecipe) => void;
@@ -25,7 +27,7 @@ export default function Courses({ onOpenRecipe }: CoursesProps) {
       return;
     }
     if (!response.ok) throw new Error("Could not load courses.");
-    setCourses((await response.json()) as Course[]);
+    setCourses(parseCourseList(await response.json()));
     setEnabled(true);
   }
 
@@ -38,7 +40,7 @@ export default function Courses({ onOpenRecipe }: CoursesProps) {
           return null;
         }
         if (!response.ok) throw new Error("Could not load courses.");
-        return response.json() as Promise<Course[]>;
+        return parseCourseList(await response.json());
       })
       .then((items) => {
         if (active && items) {
@@ -95,6 +97,8 @@ export default function Courses({ onOpenRecipe }: CoursesProps) {
               <h3><a href={`/course?id=${encodeURIComponent(course.id)}`}>{course.title}</a></h3>
               {course.description && <p>{course.description}</p>}
               <p className="course-owner">Owner: {course.owner_name}</p>
+              {course.creator_name && <p>Unverified creator name: {course.creator_name}</p>}
+              <CreatorCredits attributions={course.creator_attributions} resourceKind="course" currentUserID={currentUser?.id ?? null} />
               <button
                 type="button"
                 className="text-link"

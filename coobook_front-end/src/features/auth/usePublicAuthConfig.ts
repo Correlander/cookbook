@@ -21,6 +21,19 @@ function isPublicAuthConfig(value: unknown): value is PublicAuthConfig {
   );
 }
 
+function publicAuthConfig(value: unknown): PublicAuthConfig {
+  const config = value as PublicAuthConfig;
+  return {
+    ...config,
+    // Capability negotiation is deliberately fail-closed and optional for older APIs.
+    course_creator_attribution: isRecord(value) && value.course_creator_attribution === true,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 export default function usePublicAuthConfig(): {
   state: PublicAuthConfigState;
   retry: () => void;
@@ -40,7 +53,7 @@ export default function usePublicAuthConfig(): {
       if (!isPublicAuthConfig(value))
         throw new Error("Could not load sign-in options.");
       if (requestID.current === currentRequest)
-        setState({ status: "ready", config: value });
+        setState({ status: "ready", config: publicAuthConfig(value) });
     } catch {
       if (requestID.current === currentRequest)
         setState({

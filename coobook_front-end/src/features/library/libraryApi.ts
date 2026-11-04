@@ -2,11 +2,9 @@ import type {
   CookbookBookmarkPage,
   CookbookBookmarkStatus,
   CookbookBookmarkView,
-  Course,
   CourseBookmarkStatus,
   Cookbook,
   LibraryRelationship,
-  CreatorAttribution,
   LibraryCookbookItem,
   LibraryCourseItem,
   LibraryPage,
@@ -23,6 +21,8 @@ import type {
   RecipeBookmarkTarget,
   RecipeBookmarkView,
 } from "../../apiModels";
+import { parseCourse } from "../courses/courseApi.ts";
+import { parseOptionalCreatorAttributions } from "../creator/creatorAttributionParser.ts";
 
 export const LIBRARY_PAGE_SIZE = 24;
 
@@ -65,12 +65,12 @@ export async function removeCourseBookmark(bookmarkID: string): Promise<void> {
 function parseLibraryCourseItem(value: unknown): LibraryCourseItem {
   if (!isRecord(value) || (value.availability !== "available" && value.availability !== "unavailable") || !Array.isArray(value.relationships)) throw new Error("Could not load your courses Library.");
   if (value.availability === "unavailable") {
-    if (value.relationships.length !== 1 || value.relationships[0] !== "saved" || typeof value.bookmark_id !== "string" || typeof value.created_at !== "string" || "course" in value || "course_id" in value || "local_course_id" in value)
+    if (value.relationships.length !== 1 || value.relationships[0] !== "saved" || typeof value.bookmark_id !== "string" || typeof value.created_at !== "string" || "course" in value || "course_id" in value || "local_course_id" in value || "creator_name" in value || "creator_attributions" in value)
       throw new Error("Could not load your courses Library.");
     return { availability: "unavailable", relationships: ["saved"], bookmark_id: value.bookmark_id, created_at: value.created_at };
   }
-  if (!value.relationships.length || value.relationships.some((item) => item !== "owned" && item !== "saved") || !isRecord(value.course) || typeof value.course.id !== "string" || typeof value.course.title !== "string" || typeof value.course.owner_name !== "string") throw new Error("Could not load your courses Library.");
-  return { availability: "available", relationships: value.relationships as ("owned" | "saved")[], ...(typeof value.bookmark_id === "string" ? { bookmark_id: value.bookmark_id } : {}), course: value.course as unknown as Course };
+  if (!value.relationships.length || value.relationships.some((item) => item !== "owned" && item !== "saved") || !isRecord(value.course)) throw new Error("Could not load your courses Library.");
+  return { availability: "available", relationships: value.relationships as ("owned" | "saved")[], ...(typeof value.bookmark_id === "string" ? { bookmark_id: value.bookmark_id } : {}), course: parseCourse(value.course) };
 }
 
 export function fetchLibraryPage(type: "recipes", offset?: number, query?: string): Promise<LibraryPage<LibraryRecipeItem>>;
@@ -465,7 +465,7 @@ function parseRecipe(value: unknown): Recipe {
     steps,
     tags, visibility: value.visibility, created_at: value.created_at, updated_at: value.updated_at,
     ...(value.owner_id === undefined ? {} : { owner_id: requiredString(value.owner_id) }),
-    ...parseOptionalCreatorAttributions(value.creator_attributions),
+    ...parseOptionalCreatorAttributions(value.creator_attributions, "Could not load Library creator attribution."),
     ...(typeof value.image === "string" ? { image: value.image } : {}),
   };
 }
@@ -478,7 +478,7 @@ function parseCookbook(value: unknown): Cookbook {
     throw new Error("Could not load your cookbooks Library.");
   return { id: value.id, title: value.title, description: value.description, owner_id: value.owner_id, visibility: value.visibility,
     ...(typeof value.owner_name === "string" ? { owner_name: value.owner_name } : {}),
-    ...parseOptionalCreatorAttributions(value.creator_attributions),
+    ...parseOptionalCreatorAttributions(value.creator_attributions, "Could not load Library creator attribution."),
     ...(isNonnegativeInteger(value.recipe_count) ? { recipe_count: value.recipe_count } : {}),
     ...(typeof value.created_at === "string" ? { created_at: value.created_at } : {}),
     ...(typeof value.updated_at === "string" ? { updated_at: value.updated_at } : {}) };
@@ -638,25 +638,6 @@ function parseStringList(value: unknown, message: string): string[] {
 }
 
 function isString(value: unknown): value is string { return typeof value === "string"; }
-
-function parseCreatorAttribution(value: unknown): CreatorAttribution {
-  if (!isRecord(value) || (value.role !== "creator" && value.role !== "contributor" && value.role !== "adapter") || typeof value.provenance !== "string")
-    throw new Error("Could not load Library creator attribution.");
-  if (value.subject_kind === "external_claim") {
-    if (value.name_claim !== undefined && typeof value.name_claim !== "string") throw new Error("Could not load Library creator attribution.");
-    return { subject_kind: "external_claim", role: value.role, provenance: value.provenance, ...(typeof value.name_claim === "string" ? { name_claim: value.name_claim } : {}) };
-  }
-  if (value.subject_kind !== "local" || !isRecord(value.profile) || typeof value.profile.id !== "string" ||
-      typeof value.profile.public_name !== "string" || (value.profile.visibility !== "private" && value.profile.visibility !== "instance"))
-    throw new Error("Could not load Library creator attribution.");
-  return { subject_kind: "local", role: value.role, provenance: value.provenance, profile: { id: value.profile.id, public_name: value.profile.public_name, visibility: value.profile.visibility } };
-}
-
-function parseOptionalCreatorAttributions(value: unknown): { creator_attributions?: CreatorAttribution[] } {
-  if (value === undefined) return {};
-  if (!Array.isArray(value)) throw new Error("Could not load Library creator attribution.");
-  return { creator_attributions: value.map(parseCreatorAttribution) };
-}
 
 function parseBookmarkStatus(value: unknown): RecipeBookmarkStatus {
   if (!isRecord(value) || typeof value.saved !== "boolean") throw new Error("Could not check saved status.");

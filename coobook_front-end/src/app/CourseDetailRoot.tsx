@@ -4,6 +4,7 @@ import AppNavigation from "./AppNavigation.tsx";
 import { AppSessionProvider, useAppSession } from "./AppSession.tsx";
 import { SessionCheckError } from "./AppSession.tsx";
 import CourseDetail from "../features/courses/CourseDetail.tsx";
+import { parseCourse } from "../features/courses/courseApi.ts";
 
 function CourseDetailPage() {
   const { state, currentUser, refreshSession } = useAppSession();
@@ -32,7 +33,7 @@ function CourseDetailPage() {
         const endpoint = state.status === "authenticated" ? `/api/courses/${encodeURIComponent(routeID)}` : `/api/public/courses/${encodeURIComponent(routeID)}`;
         const response = await fetch(endpoint, { cache: "no-store", credentials: "same-origin" });
         if (!response.ok) throw new Error("Course unavailable");
-        const result = await response.json() as Course;
+        const result = parseCourse(await response.json());
         if (active && (state.status === "anonymous" || state.currentUser.id === actor)) { setCourse(result); setCourseKey(`${actor}:${routeID}`); }
       })
       .catch(() => { if (active) setUnavailable(true); })

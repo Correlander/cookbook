@@ -68,6 +68,7 @@ export interface PublicAuthConfig {
   registration_policy: RegistrationPolicy;
   public_instance: boolean;
   courses_enabled: boolean;
+  course_creator_attribution?: boolean;
 }
 
 export interface AdminSettingsModel {
@@ -93,7 +94,14 @@ export interface Course {
   lesson_count: number;
   created_at: string;
   updated_at: string;
+  creator_name?: string;
+  creator_attributions?: CreatorAttribution[];
 }
+
+export type CourseCreatorAttribution =
+  | { kind: "local_profile" }
+  | { kind: "name_claim"; name: string }
+  | { kind: "unknown" };
 
 export interface CourseLesson {
   id: string;

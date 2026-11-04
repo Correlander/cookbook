@@ -1,7 +1,9 @@
 import { useRef, useState } from "react";
 import useModalFocus from "../../useModalFocus.ts";
-import type { Course } from "../../apiModels";
+import type { Course, CourseCreatorAttribution } from "../../apiModels";
 import { errorMessage } from "../../apiModels";
+import usePublicAuthConfig from "../auth/usePublicAuthConfig.ts";
+import CreatorAttributionFields from "../creator/CreatorAttributionFields.tsx";
 
 interface CourseFormProps {
   course: Course | null;
@@ -19,9 +21,24 @@ export default function CourseForm({ course, onClose, onSaved }: CourseFormProps
   );
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const { state: configState } = usePublicAuthConfig();
+  const attributionEnabled = !course && configState.status === "ready" && configState.config.course_creator_attribution === true;
+  const configChecking = !course && configState.status === "loading";
+  const [creatorChoice, setCreatorChoice] = useState<CourseCreatorAttribution["kind"] | "">("");
+  const [creatorName, setCreatorName] = useState("");
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!course && attributionEnabled && !creatorChoice) {
+      setError("Choose who created this course before saving.");
+      return;
+    }
+    const trimmedCreatorName = creatorName.trim();
+    if (attributionEnabled && creatorChoice === "name_claim" &&
+        (Array.from(trimmedCreatorName).length < 1 || Array.from(trimmedCreatorName).length > 80 || new TextEncoder().encode(trimmedCreatorName).length > 320)) {
+      setError("Enter a creator name of up to 80 characters.");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
@@ -30,7 +47,14 @@ export default function CourseForm({ course, onClose, onSaved }: CourseFormProps
         {
           method: course ? "PATCH" : "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title, description, visibility }),
+          body: JSON.stringify({
+            title,
+            description,
+            visibility,
+            ...(!course && attributionEnabled && creatorChoice
+              ? { creator_attribution: creatorChoice === "name_claim" ? { kind: "name_claim", name: trimmedCreatorName } : { kind: creatorChoice } }
+              : {}),
+          }),
         },
       );
       if (!response.ok)
@@ -102,10 +126,20 @@ export default function CourseForm({ course, onClose, onSaved }: CourseFormProps
             Public courses can be read anonymously only when public browsing is
             enabled for this instance.
           </p>
+          {attributionEnabled && <fieldset className="form-choice-group">
+            <CreatorAttributionFields
+              resourceKind="course"
+              choice={creatorChoice}
+              name={creatorName}
+              onChoiceChange={(choice) => { setCreatorChoice(choice); setError(""); }}
+              onNameChange={setCreatorName}
+            />
+          </fieldset>}
+          {configChecking && <p role="status">Checking creator-credit support…</p>}
           <button
             className="button button--green"
             type="submit"
-            disabled={saving}
+            disabled={saving || configChecking}
           >
             {saving ? "Saving…" : "Save course"}
           </button>

@@ -94,6 +94,11 @@ func registeredSchemaMigrations() []schemaMigration {
 		name:     "federation-retention-receipts",
 		checksum: migrationChecksum("federation-retention-receipts", federationRetentionReceiptsDDL),
 		apply:    applyFederationRetentionReceiptsMigration,
+	}, {
+		version:  13,
+		name:     "private-remote-recipe-snapshots",
+		checksum: migrationChecksum("private-remote-recipe-snapshots", libraryRemoteSnapshotsDDL),
+		apply:    applyLibraryRemoteSnapshotsMigration,
 	}}
 }
 

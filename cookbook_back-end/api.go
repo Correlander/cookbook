@@ -236,6 +236,10 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.recipeBookmarks(w, r, "")
 	case len(parts) == 3 && parts[0] == "library" && parts[1] == "bookmarks" && parts[2] == "status":
 		h.recipeBookmarkStatus(w, r)
+	case len(parts) == 4 && parts[0] == "library" && parts[1] == "bookmarks" && parts[3] == "snapshot":
+		h.remoteSnapshotByBookmark(w, r, parts[2])
+	case len(parts) == 4 && parts[0] == "library" && parts[1] == "bookmarks" && parts[3] == "capture":
+		h.captureRemoteSnapshotHTTP(w, r, parts[2])
 	case len(parts) == 3 && parts[0] == "library" && parts[1] == "recipes" && parts[2] == "remote":
 		h.libraryRemoteRecipeDetail(w, r)
 	case len(parts) == 3 && parts[0] == "library" && parts[1] == "bookmarks":
@@ -296,6 +300,8 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.federationOutbox(w, r)
 	case len(parts) == 3 && parts[0] == "admin" && parts[1] == "users":
 		h.adminUserByID(w, r, parts[2])
+	case len(parts) == 4 && parts[0] == "admin" && parts[1] == "library" && parts[2] == "snapshots":
+		h.moderateRemoteSnapshot(w, r, parts[3])
 	case len(parts) >= 1 && parts[0] == "courses":
 		h.courseRoutes(w, r, parts)
 	case len(parts) >= 2 && parts[0] == "public" && parts[1] == "courses":

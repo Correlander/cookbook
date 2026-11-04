@@ -40,7 +40,7 @@ func TestInstanceSettingsRequireAdminAndConfirmExistingPublication(t *testing.T)
 	if initial.Code != http.StatusOK || json.Unmarshal(initial.Body.Bytes(), &settings) != nil {
 		t.Fatalf("admin settings status=%d body=%s", initial.Code, initial.Body)
 	}
-	if settings.PublicInstance || settings.PublicCookbooks != 1 || settings.PublicRecipes != 1 || settings.RegistrationPolicy != "invite_only" || settings.RevisionRetention != 365 || settings.AuditRetention != 365 {
+	if settings.PublicInstance || settings.PublicCookbooks != 1 || settings.PublicRecipes != 1 || settings.RegistrationPolicy != "invite_only" || settings.RevisionRetention != 365 || settings.AuditRetention != 365 || settings.PrivateSnapshotStorageLimitBytes != defaultRemoteSnapshotStoreSize {
 		t.Fatalf("unexpected initial settings: %+v", settings)
 	}
 
@@ -59,6 +59,14 @@ func TestInstanceSettingsRequireAdminAndConfirmExistingPublication(t *testing.T)
 	}
 	if !settings.PublicInstance || settings.RegistrationPolicy != "open" || settings.RevisionRetention != 90 || settings.AuditRetention != 30 {
 		t.Fatalf("settings not updated: %+v", settings)
+	}
+	quota := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]any{"private_snapshot_storage_limit_bytes": int64(1024)}, adminCookie)
+	if quota.Code != http.StatusOK || json.Unmarshal(quota.Body.Bytes(), &settings) != nil || settings.PrivateSnapshotStorageLimitBytes != 1024 {
+		t.Fatalf("snapshot quota update status=%d settings=%+v body=%s", quota.Code, settings, quota.Body)
+	}
+	invalidQuota := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]any{"private_snapshot_storage_limit_bytes": 0}, adminCookie)
+	if invalidQuota.Code != http.StatusBadRequest {
+		t.Fatalf("zero snapshot quota status=%d body=%s", invalidQuota.Code, invalidQuota.Body)
 	}
 	publicRecipes := callAPI(handler, http.MethodGet, "/api/public/recipes", nil, nil)
 	var recipes []recipe

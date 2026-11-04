@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	"Cookbook_Database_Backend/internal/federation/exchangev2"
@@ -182,4 +187,117 @@ func resetFederationPeerExchangeProfileToV1(ctx context.Context, tx sqliteExecut
 	}
 	_, err := tx.ExecContext(ctx, `DELETE FROM federation_retention_receipts WHERE source_origin=?`, origin)
 	return err
+}
+
+// readEligibleFederationRetentionReceipt is called only while holding the
+// instance's immediate SQLite write lock. Receipt admission, replacement,
+// closure, and snapshot capture therefore share one serialization boundary.
+// Its presence represents a receipt accepted by the authenticated inbox; this
+// helper rechecks that receipt's current peer, key, profile, catalog, and cache
+// fences but does not perform HTTP signature verification itself.
+func readEligibleFederationRetentionReceipt(ctx context.Context, tx sqliteExecutor, objectURI string) (remoteSnapshotReceipt, error) {
+	origin, recipeID, err := parseFederationRecipeObjectURI(objectURI)
+	if err != nil {
+		return remoteSnapshotReceipt{}, errRemoteSnapshotNotEligible
+	}
+	var item remoteSnapshotReceipt
+	var bodyDigest []byte
+	var catalogSequence, cacheSequence int64
+	var deleted, peerEnabled int
+	var sourceState, profile, keyOrigin, keyStatus string
+	var currentPublicKey []byte
+	var currentKeyCreated string
+	err = tx.QueryRowContext(ctx, `SELECT rr.receipt_id,rr.object_id,rr.source_origin,rr.event_id,rr.sequence,rr.body_digest,rr.event_body,
+		rr.signature_input,rr.signature_value,rr.request_method,rr.request_target,rr.covered_components,rr.covered_values,
+		rr.authenticated_origin,rr.key_id,rr.public_key,rr.key_status_at_receipt,rr.key_created_at,rr.profile_at_receipt,rr.accepted_at,rr.evidence_bytes,
+		c.high_water_sequence,c.deleted,c.source_state,p.enabled,p.exchange_profile,k.origin,k.status,k.public_key,k.created_at,
+		r.source_recipe_id,r.creator_name,r.sequence
+		FROM federation_retention_receipts rr
+		JOIN federation_remote_catalog c ON c.source_origin=rr.source_origin AND c.object_id=rr.object_id
+		JOIN federation_peers p ON p.origin=rr.source_origin
+		JOIN federation_peer_keys k ON k.origin=p.origin AND k.key_id=rr.key_id
+		JOIN federation_remote_recipes r ON r.object_id=rr.object_id AND r.deleted=0
+		WHERE rr.object_id=? AND rr.source_origin=?`, objectURI, origin).Scan(
+		&item.ReceiptID, &item.ObjectURI, &item.SourceOrigin, &item.EventID, &item.Sequence, &bodyDigest, &item.EventBody,
+		&item.SignatureInput, &item.SignatureValue, &item.RequestMethod, &item.RequestTarget, &item.CoveredComponents, &item.CoveredValues,
+		&item.AuthenticatedOrigin, &item.KeyID, &item.PublicKey, &item.KeyStatus, &item.KeyCreatedAt, &item.Profile, &item.AcceptedAt, &item.EvidenceBytes,
+		&catalogSequence, &deleted, &sourceState, &peerEnabled, &profile, &keyOrigin, &keyStatus, &currentPublicKey, &currentKeyCreated,
+		&item.SourceRecipeID, &item.CreatorName, &cacheSequence)
+	if errors.Is(err, sql.ErrNoRows) {
+		return remoteSnapshotReceipt{}, errRemoteSnapshotNotEligible
+	}
+	if err != nil {
+		return remoteSnapshotReceipt{}, err
+	}
+	if item.ObjectURI != objectURI || item.SourceOrigin != origin || item.AuthenticatedOrigin != origin ||
+		item.SourceRecipeID != recipeID || item.RequestMethod != http.MethodPost || item.RequestTarget != "/api/federation/inbox" ||
+		item.KeyStatus != "active" || item.Profile != federationExchangeV2Retention || profile != federationExchangeV2Retention ||
+		peerEnabled != 1 || keyOrigin != origin || keyStatus != "active" || item.KeyCreatedAt != currentKeyCreated ||
+		string(item.PublicKey) != string(currentPublicKey) || catalogSequence != item.Sequence || cacheSequence != item.Sequence ||
+		deleted != 0 || sourceState != "published" || item.EvidenceBytes < 1 || item.EvidenceBytes > federationRetentionReceiptMaxEvidenceBytes {
+		return remoteSnapshotReceipt{}, errRemoteSnapshotNotEligible
+	}
+	verifiedEvidenceBytes := int64(len(item.SignatureInput) + len(item.SignatureValue) + len(item.RequestMethod) + len(item.RequestTarget) + len(item.CoveredComponents) + len(item.CoveredValues) + len(item.AuthenticatedOrigin) + len(item.KeyID) + len(item.PublicKey) + len(item.KeyStatus) + len(item.KeyCreatedAt) + len(item.Profile))
+	if item.EvidenceBytes != verifiedEvidenceBytes {
+		return remoteSnapshotReceipt{}, errRemoteSnapshotEvidence
+	}
+	event, err := exchangev2.Decode(item.EventBody)
+	if err != nil || event.EventID != item.EventID || event.EventType == exchangev2.RecipeWithdrawal ||
+		event.SourceOrigin != origin || event.ObjectID != objectURI || event.Sequence != item.Sequence ||
+		event.Attribution == nil || strings.TrimSpace(event.Attribution.CreatorName) != strings.TrimSpace(item.CreatorName) ||
+		event.RetentionGrant == nil || event.RetentionGrant.Purpose != exchangev2.GrantPurpose ||
+		event.RetentionGrant.Retention != exchangev2.GrantRetention || event.RetentionGrant.Portability != exchangev2.GrantPortability ||
+		event.RetentionGrant.ObjectID != objectURI || event.RetentionGrant.Sequence != item.Sequence {
+		return remoteSnapshotReceipt{}, errRemoteSnapshotEvidence
+	}
+	actualBodyDigest := sha256.Sum256(item.EventBody)
+	if len(bodyDigest) != sha256.Size || !bytes.Equal(bodyDigest, actualBodyDigest[:]) {
+		return remoteSnapshotReceipt{}, errRemoteSnapshotEvidence
+	}
+	item.Payload = append([]byte(nil), event.Payload...)
+	item.PayloadDigest = make([]byte, sha256.Size)
+	decodedDigest, err := hex.DecodeString(event.PayloadSHA256)
+	actualPayloadDigest := sha256.Sum256(item.Payload)
+	if err != nil || len(decodedDigest) != sha256.Size || !bytes.Equal(decodedDigest, actualPayloadDigest[:]) ||
+		event.RetentionGrant.PayloadSHA256 != event.PayloadSHA256 {
+		return remoteSnapshotReceipt{}, errRemoteSnapshotEvidence
+	}
+	item.PayloadDigest = decodedDigest
+	item.GrantPurpose = event.RetentionGrant.Purpose
+	item.GrantRetention = event.RetentionGrant.Retention
+	item.GrantPortability = event.RetentionGrant.Portability
+	item.EventType = event.EventType
+	item.EventBodyDigest = append([]byte(nil), bodyDigest...)
+	item.ReceivedAt = item.AcceptedAt
+	components, values, err := decodeRetentionCoveredValues(item.CoveredComponents, item.CoveredValues)
+	if err != nil {
+		return remoteSnapshotReceipt{}, errRemoteSnapshotEvidence
+	}
+	for index, component := range components {
+		if component == "content-digest" {
+			item.ContentDigest = values[index]
+		}
+	}
+	if item.ContentDigest == "" || len(item.SignatureInput) == 0 || len(item.SignatureValue) == 0 || len(item.PublicKey) != 32 {
+		return remoteSnapshotReceipt{}, errRemoteSnapshotEvidence
+	}
+	return item, nil
+}
+
+func decodeRetentionCoveredValues(componentsJSON, valuesJSON string) ([]string, []string, error) {
+	var components, values []string
+	if json.Unmarshal([]byte(componentsJSON), &components) != nil || json.Unmarshal([]byte(valuesJSON), &values) != nil || len(components) == 0 || len(components) != len(values) {
+		return nil, nil, errFederationRetentionEvidence
+	}
+	seen := make(map[string]struct{}, len(components))
+	for _, component := range components {
+		if component == "" {
+			return nil, nil, errFederationRetentionEvidence
+		}
+		if _, duplicate := seen[component]; duplicate {
+			return nil, nil, errFederationRetentionEvidence
+		}
+		seen[component] = struct{}{}
+	}
+	return components, values, nil
 }

@@ -103,9 +103,10 @@ func TestRecipeBookmarkStatusUsesExactReadableTargets(t *testing.T) {
 		var body map[string]json.RawMessage
 		var decoded struct {
 			Saved      bool   `json:"saved"`
+			ID         string `json:"id"`
 			BookmarkID string `json:"bookmark_id"`
 		}
-		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &body) != nil || json.Unmarshal(response.Body.Bytes(), &decoded) != nil || len(body) != 2 || !decoded.Saved || decoded.BookmarkID != bookmark.ID {
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &body) != nil || json.Unmarshal(response.Body.Bytes(), &decoded) != nil || !decoded.Saved || (decoded.ID != bookmark.ID && decoded.BookmarkID != bookmark.ID) {
 			t.Fatalf("saved %s status=%d body=%s bookmark=%q", selector, response.Code, response.Body, bookmark.ID)
 		}
 		other := status("other", selector, value)

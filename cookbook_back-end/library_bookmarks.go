@@ -85,17 +85,30 @@ type RecipeBookmarkTarget struct {
 }
 
 type SaveRecipeBookmarkInput struct {
-	Target RecipeBookmarkTarget `json:"target"`
+	Target   RecipeBookmarkTarget `json:"target"`
+	SaveMode string               `json:"save_mode,omitempty"`
 }
 
 type RecipeBookmarkView struct {
-	ID           string                `json:"id"`
-	TargetKind   string                `json:"target_kind"`
-	Target       *RecipeBookmarkTarget `json:"target,omitempty"`
-	Availability string                `json:"availability"`
-	LocalRecipe  *recipe               `json:"local_recipe,omitempty"`
-	RemoteRecipe *RemoteRecipeReadView `json:"remote_recipe,omitempty"`
-	CreatedAt    string                `json:"created_at"`
+	ID                      string                         `json:"id"`
+	TargetKind              string                         `json:"target_kind"`
+	Target                  *RecipeBookmarkTarget          `json:"target,omitempty"`
+	Availability            string                         `json:"availability"`
+	LocalRecipe             *recipe                        `json:"local_recipe,omitempty"`
+	RemoteRecipe            *RemoteRecipeReadView          `json:"remote_recipe,omitempty"`
+	SnapshotRecipe          *PrivateSnapshotRecipeReadView `json:"snapshot_recipe,omitempty"`
+	SaveState               string                         `json:"save_state,omitempty"`
+	VersionID               string                         `json:"version_id,omitempty"`
+	SourceState             string                         `json:"source_state,omitempty"`
+	ProvenanceState         string                         `json:"provenance_state,omitempty"`
+	PublisherRetentionClaim string                         `json:"publisher_retention_claim,omitempty"`
+	ModerationReason        string                         `json:"moderation_reason,omitempty"`
+	ModeratedAt             string                         `json:"moderated_at,omitempty"`
+	ModerationOutcome       string                         `json:"moderation_outcome,omitempty"`
+	Saved                   bool                           `json:"saved,omitempty"`
+	SnapshotAvailable       bool                           `json:"snapshot_available,omitempty"`
+	CanCaptureSnapshot      bool                           `json:"can_capture_snapshot,omitempty"`
+	CreatedAt               string                         `json:"created_at"`
 }
 
 type RecipeBookmarkPage struct {
@@ -191,6 +204,10 @@ func (h apiHandler) recipeBookmarkStatus(w http.ResponseWriter, r *http.Request)
 	kind, validationErr := validateRecipeBookmarkTarget(target)
 	if validationErr != nil {
 		writeError(w, http.StatusBadRequest, "invalid_bookmark_target")
+		return
+	}
+	if kind == "remote" {
+		h.remoteRecipeBookmarkStatus(w, r, userID, target.RemoteObjectURI)
 		return
 	}
 
@@ -304,6 +321,28 @@ func (h apiHandler) listRecipeBookmarks(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
+	remoteBookmarkIDs := make([]string, 0, len(bookmarks))
+	for _, bookmark := range bookmarks {
+		if bookmark.TargetKind == "remote" {
+			remoteBookmarkIDs = append(remoteBookmarkIDs, bookmark.ID)
+		}
+	}
+	snapshotStates, err := readRemoteSnapshotBookmarkStates(r.Context(), tx, actor.AccountID, remoteBookmarkIDs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	activeSnapshotIDs := make([]string, 0, len(remoteBookmarkIDs))
+	for _, id := range remoteBookmarkIDs {
+		if snapshotStates[id].State == "active" {
+			activeSnapshotIDs = append(activeSnapshotIDs, id)
+		}
+	}
+	snapshotRecipes, err := readRemoteSnapshotRecipesByBookmark(r.Context(), tx, actor.AccountID, activeSnapshotIDs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
 	page := RecipeBookmarkPage{Items: make([]RecipeBookmarkView, 0, len(bookmarks)), Total: total, Limit: limit, Offset: offset}
 	for _, bookmark := range bookmarks {
 		view := RecipeBookmarkView{ID: bookmark.ID, TargetKind: bookmark.TargetKind, Availability: "unavailable", CreatedAt: bookmark.CreatedAt}
@@ -334,18 +373,48 @@ func (h apiHandler) listRecipeBookmarks(w http.ResponseWriter, r *http.Request, 
 				writeError(w, http.StatusInternalServerError, "storage_error")
 				return
 			}
-			item, readErr := readCachedPublicRemoteRecipe(r.Context(), tx, actor, bookmark.RemoteObjectURI.String)
-			if errors.Is(readErr, errRemoteRecipeNotFound) {
-				page.Items = append(page.Items, view)
-				continue
-			}
-			if readErr != nil {
+			pinState := snapshotStates[bookmark.ID]
+			view.Target = &RecipeBookmarkTarget{RemoteObjectURI: bookmark.RemoteObjectURI.String}
+			view.SourceState = pinState.SourceState
+			view.SaveState = "reference"
+			view.ModerationReason = pinState.Reason
+			view.ModeratedAt = pinState.ModeratedAt
+			view.ModerationOutcome = pinState.Outcome
+			switch pinState.State {
+			case "active":
+				item, found := snapshotRecipes[bookmark.ID]
+				if !found {
+					writeError(w, http.StatusInternalServerError, "storage_error")
+					return
+				}
+				view.Availability = "available"
+				view.SaveState = "snapshot"
+				view.VersionID = pinState.VersionID
+				view.ProvenanceState = pinState.Provenance
+				if pinState.Provenance == "publisher_verified" {
+					view.PublisherRetentionClaim = remoteSnapshotGrantPurpose
+				}
+				view.SnapshotRecipe = &item
+			case "restricted", "removed":
+				view.Availability = "unavailable"
+				view.SaveState = pinState.State
+			case "":
+				item, readErr := readCachedPublicRemoteRecipe(r.Context(), tx, actor, bookmark.RemoteObjectURI.String)
+				if errors.Is(readErr, errRemoteRecipeNotFound) {
+					view.Target = nil
+					page.Items = append(page.Items, view)
+					continue
+				}
+				if readErr != nil {
+					writeError(w, http.StatusInternalServerError, "storage_error")
+					return
+				}
+				view.Availability = "available"
+				view.RemoteRecipe = &item
+			default:
 				writeError(w, http.StatusInternalServerError, "storage_error")
 				return
 			}
-			view.Availability = "available"
-			view.Target = &RecipeBookmarkTarget{RemoteObjectURI: item.ObjectURI}
-			view.RemoteRecipe = &item
 		default:
 			writeError(w, http.StatusInternalServerError, "storage_error")
 			return
@@ -367,6 +436,10 @@ func (h apiHandler) saveRecipeBookmark(w http.ResponseWriter, r *http.Request, a
 	kind, err := validateRecipeBookmarkTarget(input.Target)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_bookmark_target")
+		return
+	}
+	if kind == "remote" {
+		h.saveRemoteRecipeBookmark(w, r, actor, input)
 		return
 	}
 	tx, err := h.db.BeginTx(r.Context(), nil)

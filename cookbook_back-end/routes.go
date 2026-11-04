@@ -74,6 +74,8 @@ func handlerWithAuthConfig(db *sql.DB, auth authHandler, cfg config) http.Handle
 	mux.Handle("POST /api/recipes/{id}/transfer", csrfProtection(auth.origin, requireSession(db, auditChanges(db, requireRecentAuthentication(db, api)))))
 	mux.Handle("POST /api/recipes/{id}/federation-retention", csrfProtection(auth.origin, requireSession(db, auditChanges(db, requireRecentAuthentication(db, api)))))
 	mux.Handle("PATCH /api/admin/users/{id}", csrfProtection(auth.origin, requireSession(db, auditChanges(db, requireRecentAuthentication(db, api)))))
+	mux.Handle("PATCH /api/admin/library/snapshots/{id}", recentPasskeyChange(api))
+	mux.Handle("GET /api/library/recipes/remote", requireSession(db, http.HandlerFunc(api.libraryRemoteRecipeDetailGuard)))
 	mux.Handle("/api/public/courses", api)
 	mux.Handle("/api/public/courses/", api)
 	media := mediaHandler{db: db, rootDir: cfg.mediaDir}
@@ -91,7 +93,44 @@ func handlerWithAuthConfig(db *sql.DB, auth authHandler, cfg config) http.Handle
 	mux.Handle("/api/", csrfProtection(auth.origin, requireSession(db, auditChanges(db, api))))
 	mux.HandleFunc("/", staticFrontendHandler)
 
-	return securityHeaders(mux)
+	return securityHeaders(apiPathCanonicalityGuard(mux))
+}
+
+func apiPathCanonicalityGuard(mux *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		apiPath := strings.TrimLeft(path, "/")
+		if apiPath != "api" && !strings.HasPrefix(apiPath, "api/") {
+			mux.ServeHTTP(w, r)
+			return
+		}
+
+		escapedPath := strings.ToLower(r.URL.EscapedPath())
+		ambiguous := strings.Contains(escapedPath, "%2f") || strings.Contains(path, "//")
+		if !ambiguous {
+			for _, segment := range strings.Split(path, "/") {
+				if segment == "." || segment == ".." {
+					ambiguous = true
+					break
+				}
+			}
+		}
+		if !ambiguous && strings.HasSuffix(path, "/") {
+			_, pattern := mux.Handler(r)
+			if _, routePath, hasMethod := strings.Cut(pattern, " "); hasMethod {
+				pattern = routePath
+			}
+			// Keep exact registered subtree roots working, while leaf aliases
+			// continue to the generic /api/ fallback only after rejection.
+			ambiguous = pattern != path
+		}
+		if ambiguous {
+			w.Header().Set("Cache-Control", "no-store")
+			writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func staticFrontendHandler(w http.ResponseWriter, r *http.Request) {

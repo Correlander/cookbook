@@ -8,16 +8,17 @@ import (
 )
 
 type instanceSettings struct {
-	PublicInstance     bool   `json:"public_instance"`
-	CoursesEnabled     bool   `json:"courses_enabled"`
-	RegistrationPolicy string `json:"registration_policy"`
-	RevisionRetention  int    `json:"revision_retention_days"`
-	AuditRetention     int    `json:"audit_retention_days"`
-	FederationEnabled  bool   `json:"federation_enabled"`
-	FederationOrigin   string `json:"federation_origin"`
-	PublicCookbooks    int    `json:"public_cookbooks"`
-	PublicRecipes      int    `json:"public_recipes"`
-	PublicCourses      int    `json:"public_courses"`
+	PublicInstance                   bool   `json:"public_instance"`
+	CoursesEnabled                   bool   `json:"courses_enabled"`
+	RegistrationPolicy               string `json:"registration_policy"`
+	RevisionRetention                int    `json:"revision_retention_days"`
+	AuditRetention                   int    `json:"audit_retention_days"`
+	PrivateSnapshotStorageLimitBytes int64  `json:"private_snapshot_storage_limit_bytes"`
+	FederationEnabled                bool   `json:"federation_enabled"`
+	FederationOrigin                 string `json:"federation_origin"`
+	PublicCookbooks                  int    `json:"public_cookbooks"`
+	PublicRecipes                    int    `json:"public_recipes"`
+	PublicCourses                    int    `json:"public_courses"`
 }
 
 func (h apiHandler) instanceSettings(w http.ResponseWriter, r *http.Request) {
@@ -40,18 +41,19 @@ func (h apiHandler) instanceSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, settings)
 	case http.MethodPatch:
 		var input struct {
-			PublicInstance     *bool   `json:"public_instance"`
-			CoursesEnabled     *bool   `json:"courses_enabled"`
-			RegistrationPolicy *string `json:"registration_policy"`
-			RevisionRetention  *int    `json:"revision_retention_days"`
-			AuditRetention     *int    `json:"audit_retention_days"`
-			FederationEnabled  *bool   `json:"federation_enabled"`
-			ConfirmPublication bool    `json:"confirm_publication"`
+			PublicInstance                   *bool   `json:"public_instance"`
+			CoursesEnabled                   *bool   `json:"courses_enabled"`
+			RegistrationPolicy               *string `json:"registration_policy"`
+			RevisionRetention                *int    `json:"revision_retention_days"`
+			AuditRetention                   *int    `json:"audit_retention_days"`
+			FederationEnabled                *bool   `json:"federation_enabled"`
+			PrivateSnapshotStorageLimitBytes *int64  `json:"private_snapshot_storage_limit_bytes"`
+			ConfirmPublication               bool    `json:"confirm_publication"`
 		}
 		if !decodeJSON(w, r, &input) {
 			return
 		}
-		if input.PublicInstance == nil && input.CoursesEnabled == nil && input.RegistrationPolicy == nil && input.RevisionRetention == nil && input.AuditRetention == nil && input.FederationEnabled == nil {
+		if input.PublicInstance == nil && input.CoursesEnabled == nil && input.RegistrationPolicy == nil && input.RevisionRetention == nil && input.AuditRetention == nil && input.FederationEnabled == nil && input.PrivateSnapshotStorageLimitBytes == nil {
 			writeError(w, http.StatusBadRequest, "empty_settings_update")
 			return
 		}
@@ -65,6 +67,10 @@ func (h apiHandler) instanceSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if input.AuditRetention != nil && !validRetentionDays(*input.AuditRetention) {
 			writeError(w, http.StatusBadRequest, "invalid_audit_retention")
+			return
+		}
+		if input.PrivateSnapshotStorageLimitBytes != nil && *input.PrivateSnapshotStorageLimitBytes <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid_private_snapshot_storage_limit")
 			return
 		}
 		if input.FederationEnabled != nil && *input.FederationEnabled {
@@ -83,7 +89,7 @@ func (h apiHandler) instanceSettings(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		settings, err := updateInstanceSettings(h.db, input.PublicInstance, input.CoursesEnabled, input.RegistrationPolicy, input.RevisionRetention, input.AuditRetention, input.ConfirmPublication, input.FederationEnabled)
+		settings, err := updateInstanceSettingsWithSnapshotLimit(h.db, input.PublicInstance, input.CoursesEnabled, input.RegistrationPolicy, input.RevisionRetention, input.AuditRetention, input.ConfirmPublication, input.PrivateSnapshotStorageLimitBytes, input.FederationEnabled)
 		if errors.Is(err, errPublicationConfirmationRequired) {
 			writeError(w, http.StatusConflict, "publication_confirmation_required")
 			return
@@ -119,7 +125,7 @@ func readInstanceSettings(db *sql.DB) (instanceSettings, error) {
 	var public int
 	var courses int
 	var federation int
-	if err := db.QueryRow(`SELECT public_instance,courses_enabled,registration_policy,revision_retention_days,audit_retention_days,federation_enabled,federation_origin FROM instance_settings WHERE id=1`).Scan(&public, &courses, &current.RegistrationPolicy, &current.RevisionRetention, &current.AuditRetention, &federation, &current.FederationOrigin); err != nil {
+	if err := db.QueryRow(`SELECT public_instance,courses_enabled,registration_policy,revision_retention_days,audit_retention_days,federation_enabled,federation_origin,private_snapshot_storage_limit_bytes FROM instance_settings WHERE id=1`).Scan(&public, &courses, &current.RegistrationPolicy, &current.RevisionRetention, &current.AuditRetention, &federation, &current.FederationOrigin, &current.PrivateSnapshotStorageLimitBytes); err != nil {
 		return current, err
 	}
 	current.PublicInstance = public == 1
@@ -140,6 +146,10 @@ func readInstanceSettings(db *sql.DB) (instanceSettings, error) {
 var errPublicationConfirmationRequired = errors.New("public content requires administrator confirmation")
 
 func updateInstanceSettings(db *sql.DB, publicInstance, coursesEnabled *bool, registrationPolicy *string, revisionRetention, auditRetention *int, confirmPublication bool, federationSwitch ...*bool) (instanceSettings, error) {
+	return updateInstanceSettingsWithSnapshotLimit(db, publicInstance, coursesEnabled, registrationPolicy, revisionRetention, auditRetention, confirmPublication, nil, federationSwitch...)
+}
+
+func updateInstanceSettingsWithSnapshotLimit(db *sql.DB, publicInstance, coursesEnabled *bool, registrationPolicy *string, revisionRetention, auditRetention *int, confirmPublication bool, privateSnapshotStorageLimitBytes *int64, federationSwitch ...*bool) (instanceSettings, error) {
 	tx, err := db.Begin()
 	if err != nil {
 		return instanceSettings{}, err
@@ -152,7 +162,8 @@ func updateInstanceSettings(db *sql.DB, publicInstance, coursesEnabled *bool, re
 	var currentRevisionRetention, currentAuditRetention int
 	var federation int
 	var origin string
-	if err := tx.QueryRow(`SELECT public_instance,courses_enabled,registration_policy,revision_retention_days,audit_retention_days,federation_enabled,federation_origin FROM instance_settings WHERE id=1`).Scan(&wasPublic, &courses, &currentPolicy, &currentRevisionRetention, &currentAuditRetention, &federation, &origin); err != nil {
+	var currentPrivateSnapshotStorageLimit int64
+	if err := tx.QueryRow(`SELECT public_instance,courses_enabled,registration_policy,revision_retention_days,audit_retention_days,federation_enabled,federation_origin,private_snapshot_storage_limit_bytes FROM instance_settings WHERE id=1`).Scan(&wasPublic, &courses, &currentPolicy, &currentRevisionRetention, &currentAuditRetention, &federation, &origin, &currentPrivateSnapshotStorageLimit); err != nil {
 		return instanceSettings{}, err
 	}
 	wasCoursesEnabled := courses == 1
@@ -211,11 +222,17 @@ func updateInstanceSettings(db *sql.DB, publicInstance, coursesEnabled *bool, re
 	if auditRetention != nil {
 		currentAuditRetention = *auditRetention
 	}
+	if privateSnapshotStorageLimitBytes != nil {
+		if *privateSnapshotStorageLimitBytes <= 0 {
+			return instanceSettings{}, errors.New("private snapshot storage limit must be positive")
+		}
+		currentPrivateSnapshotStorageLimit = *privateSnapshotStorageLimitBytes
+	}
 	publicValue := 0
 	if public {
 		publicValue = 1
 	}
-	if _, err := tx.Exec(`UPDATE instance_settings SET public_instance=?,courses_enabled=?,registration_policy=?,registration_policy_configured=1,revision_retention_days=?,audit_retention_days=?,federation_enabled=?,federation_origin_locked=CASE WHEN ?=1 THEN 1 ELSE federation_origin_locked END WHERE id=1`, publicValue, courses, currentPolicy, currentRevisionRetention, currentAuditRetention, federation, federation); err != nil {
+	if _, err := tx.Exec(`UPDATE instance_settings SET public_instance=?,courses_enabled=?,registration_policy=?,registration_policy_configured=1,revision_retention_days=?,audit_retention_days=?,federation_enabled=?,federation_origin_locked=CASE WHEN ?=1 THEN 1 ELSE federation_origin_locked END,private_snapshot_storage_limit_bytes=? WHERE id=1`, publicValue, courses, currentPolicy, currentRevisionRetention, currentAuditRetention, federation, federation, currentPrivateSnapshotStorageLimit); err != nil {
 		return instanceSettings{}, err
 	}
 	if oldFederation != federation || (publicInstance != nil && (wasPublic == 1) != public) {

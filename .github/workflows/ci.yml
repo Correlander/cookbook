@@ -55,6 +55,7 @@ jobs:
       - run: npm run e2e
         env:
           E2E_SKIP_BUILD: "1"
+          COOKBOOK_E2E_PRIVATE_SNAPSHOT: "1"
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/playwright-browsers
       - run: cd .. && docker compose config --quiet
       - run: cd .. && docker compose build

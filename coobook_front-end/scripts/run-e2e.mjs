@@ -7,6 +7,7 @@ import { existsSync } from 'node:fs'
 
 const root = resolve(import.meta.dirname, '../..')
 const frontend = join(root, 'coobook_front-end')
+const privateSnapshotOptIn = process.env.COOKBOOK_E2E_PRIVATE_SNAPSHOT === '1'
 const nodeVersion = process.versions.node.split('.').map(Number)
 if (nodeVersion[0] < 22 || (nodeVersion[0] === 22 && nodeVersion[1] < 23) || (nodeVersion[0] === 22 && nodeVersion[1] === 23 && nodeVersion[2] < 4)) {
   throw new Error('E2E requires the frontend/CI Node version 22.23.4 or newer')
@@ -130,6 +131,7 @@ try {
     PLAYWRIGHT_OUTPUT_DIR: join(runDir, 'playwright-output'),
     PLAYWRIGHT_DIST: join(runDir, 'dist'),
     E2E_EMAIL_CAPTURE: capture,
+    ...(privateSnapshotOptIn ? { COOKBOOK_FEDERATION_ORIGIN: 'https://cookbook-e2e.example.org' } : {}),
   }
   const retainedBrowserCache = resolve(root, '..', 'engineering-local/tools/playwright/browsers')
   if (!env.PLAYWRIGHT_BROWSERS_PATH && existsSync(retainedBrowserCache)) env.PLAYWRIGHT_BROWSERS_PATH = retainedBrowserCache
@@ -164,6 +166,20 @@ try {
       await new Promise((done) => setTimeout(done, 100))
     }
     if (!ready) throw new Error(`service did not become ready: ${new URL(url).pathname}`)
+  }
+  if (privateSnapshotOptIn) {
+    await run('go', ['test', '-run', '^TestPreparePrivateSnapshotBrowserFixture$', '-count=1', '.'], {
+      cwd: join(root, 'cookbook_back-end'),
+      env: {
+        ...env,
+        COOKBOOK_E2E_PRIVATE_SNAPSHOT_FIXTURE: '1',
+        COOKBOOK_E2E_RUN_DIR: runDir,
+        COOKBOOK_E2E_INBOX_URL: `http://127.0.0.1:${apiPort}/api/federation/inbox`,
+        GOCACHE: process.env.GOCACHE ?? join(runDir, 'go-cache'),
+        GOMODCACHE: process.env.GOMODCACHE ?? join(runDir, 'go-mod-cache'),
+        GOPATH: process.env.GOPATH ?? join(runDir, 'go-path'),
+      },
+    })
   }
   await run(join(frontend, 'node_modules/.bin/playwright'), ['test', '--config=e2e/playwright.config.ts', ...process.argv.slice(2)], { cwd: frontend, env })
 } finally {

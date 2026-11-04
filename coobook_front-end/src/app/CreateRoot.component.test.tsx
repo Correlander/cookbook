@@ -6,7 +6,22 @@ function response(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 }
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.history.replaceState(null, "", "/create"); });
+
+it("opens the existing recipe form for a contextual Library query", async () => {
+  window.history.replaceState(null, "", "/create?type=recipes");
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/auth/me") return Promise.resolve(response({ id: "u1", email: "u@example.test", display_name: "User", is_admin: false }));
+    if (url === "/api/public/config") return Promise.resolve(response({ courses_enabled: false }));
+    if (url === "/api/cookbooks") return Promise.resolve(response([]));
+    return Promise.resolve(response({}));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<CreateRoot />);
+  expect(await screen.findByRole("heading", { name: "Add a recipe" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Recipe" })).toBeNull();
+});
 
 it("requires a confirmed signed-in session before offering creation forms", async () => {
   const fetchMock = vi.fn((input: RequestInfo | URL) => Promise.resolve(response(null, String(input) === "/api/auth/me" ? 401 : 404)));

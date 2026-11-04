@@ -6,8 +6,14 @@ import RecipeForm from "../features/recipes/RecipeForm.tsx";
 import { fetchRecipeDetail } from "../features/recipes/recipeDetailApi.ts";
 import type { Recipe } from "../apiModels";
 import type { RecipeDetailRead } from "../features/recipes/recipeDetailApi.ts";
-import useRecipeBookmarks from "../features/library/useRecipeBookmarks.ts";
+import type { RemoteRecipe } from "../features/recipes/recipeUiTypes.ts";
+import { fetchCachedRemoteRecipe } from "../features/library/libraryApi.ts";
 import { SessionCheckError } from "./AppSession.tsx";
+
+type DetailTarget =
+  | { kind: "local"; id: string }
+  | { kind: "remote"; objectURI: string }
+  | null;
 
 function RecipeDetailPage() {
   const { currentUser } = useAppSession();
@@ -16,19 +22,26 @@ function RecipeDetailPage() {
 
 function RecipeDetailSession() {
   const { state, currentUser, refreshSession, clearSession } = useAppSession();
-  const [recipeID, setRecipeID] = useState("");
-  const [recipe, setRecipe] = useState<RecipeDetailRead | null>(null);
+  const [target, setTarget] = useState<DetailTarget>(null);
+  const [recipe, setRecipe] = useState<RecipeDetailRead | RemoteRecipe | null>(null);
   const [loading, setLoading] = useState(true);
   const [unavailable, setUnavailable] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [notice, setNotice] = useState("");
-  const bookmarks = useRecipeBookmarks(
-    state.status === "authenticated" ? state.currentUser.id : null,
-    state.status === "authenticated" && Boolean(recipe),
-  );
 
   useEffect(() => {
-    setRecipeID(new URLSearchParams(window.location.search).get("id") ?? "");
+    const params = new URLSearchParams(window.location.search);
+    const localIDs = params.getAll("id");
+    const remoteURIs = params.getAll("remote_object_uri");
+    if (params.size !== 1 || localIDs.length + remoteURIs.length !== 1) {
+      setTarget(null);
+    } else if (localIDs.length === 1 && localIDs[0]) {
+      setTarget({ kind: "local", id: localIDs[0] });
+    } else if (remoteURIs.length === 1 && remoteURIs[0]) {
+      setTarget({ kind: "remote", objectURI: remoteURIs[0] });
+    } else {
+      setTarget(null);
+    }
   }, []);
 
   useEffect(() => {
@@ -38,7 +51,7 @@ function RecipeDetailSession() {
       setRecipe(null);
       return;
     }
-    if (!recipeID) {
+    if (!target || (target.kind === "remote" && state.status !== "authenticated")) {
       setLoading(false);
       setUnavailable(true);
       setRecipe(null);
@@ -48,7 +61,16 @@ function RecipeDetailSession() {
     setLoading(true);
     setUnavailable(false);
     setRecipe(null);
-    void fetchRecipeDetail(recipeID, state.status === "authenticated")
+    const request = target.kind === "local"
+      ? fetchRecipeDetail(target.id, state.status === "authenticated")
+      : fetchCachedRemoteRecipe(target.objectURI).then((remote) => ({
+          ...remote.recipe,
+          id: remote.object_uri,
+          creator_name: remote.creator_name,
+          source_origin: remote.source_origin,
+          sequence: remote.sequence,
+        }));
+    void request
       .then((result) => {
         if (active) setRecipe(result);
       })
@@ -61,15 +83,12 @@ function RecipeDetailSession() {
     return () => {
       active = false;
     };
-  }, [currentUser, recipeID, state.status]);
+  }, [currentUser, state.status, target]);
 
   const localRecipe = recipe && "can_edit" in recipe ? recipe : null;
-  const isPublicRead = Boolean(recipe && !localRecipe);
-  const bookmark = localRecipe
-    ? bookmarks.items.find(
-        (item) => item.target?.local_recipe_id === localRecipe.id,
-      )
-    : undefined;
+  const isRemote = Boolean(recipe && "source_origin" in recipe);
+  const isPublicRead = Boolean(recipe && !localRecipe && !isRemote);
+  const bookmark = undefined;
 
   return (
     <div className="app-content">
@@ -136,7 +155,6 @@ function RecipeDetailSession() {
               canDelete={Boolean(localRecipe?.can_delete)}
               canFork={Boolean(currentUser && localRecipe)}
               bookmark={bookmark}
-              onBookmarkChange={bookmarks.update}
               onCopied={(copy: Recipe) => {
                 setNotice("A new private copy was created.");
                 window.location.assign(`/recipe?id=${encodeURIComponent(copy.id)}`);

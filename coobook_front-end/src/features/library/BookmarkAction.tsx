@@ -1,10 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   RecipeBookmarkTarget,
   RecipeBookmarkView,
 } from "../../apiModels";
 import { errorMessage } from "../../apiModels";
-import { removeRecipeBookmark, saveRecipeBookmark } from "./libraryApi.ts";
+import {
+  fetchRecipeBookmarkStatus,
+  removeRecipeBookmark,
+  saveRecipeBookmark,
+} from "./libraryApi.ts";
 
 interface BookmarkActionProps {
   currentUserID: string | null;
@@ -15,6 +19,10 @@ interface BookmarkActionProps {
     created?: boolean,
     removed?: RecipeBookmarkView,
   ) => void;
+  busy?: boolean;
+  initialStatus?: "saved" | "unsaved";
+  onMutation?: (bookmark: RecipeBookmarkView | null) => void;
+  onMutationUncertain?: () => void;
 }
 
 export default function BookmarkAction({
@@ -22,15 +30,62 @@ export default function BookmarkAction({
   target,
   bookmark,
   onChange,
+  busy = false,
+  initialStatus,
+  onMutation,
+  onMutationUncertain,
 }: BookmarkActionProps) {
   const [saved, setSaved] = useState(bookmark ?? null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [status, setStatus] = useState<"checking" | "unknown" | "known">(
+    bookmark ? "known" : "checking",
+  );
+  const [loadedKey, setLoadedKey] = useState("");
+  const [retry, setRetry] = useState(0);
+  const request = useRef(0);
+
+  const localID = target?.local_recipe_id ?? "";
+  const remoteURI = target?.remote_object_uri ?? "";
+  const currentKey = `${currentUserID ?? "anonymous"}|${localID}|${remoteURI}`;
+  const keyMatches = loadedKey === currentKey;
 
   useEffect(() => {
-    setSaved(bookmark ?? null);
+    const currentRequest = ++request.current;
+    setLoadedKey(currentKey);
+    if (!currentUserID || (!localID && !remoteURI) || (initialStatus !== undefined && retry === 0) || (bookmark && retry === 0)) {
+      setSaved(bookmark ?? null);
+      setStatus("known");
+      setError("");
+      return () => { request.current += 1; };
+    }
+    let active = true;
+    setSaved(null);
+    setStatus("checking");
     setError("");
-  }, [bookmark]);
+    const exactTarget = localID
+      ? { local_recipe_id: localID }
+      : { remote_object_uri: remoteURI };
+    void fetchRecipeBookmarkStatus(exactTarget).then((result) => {
+      if (!active || request.current !== currentRequest) return;
+      setSaved(result.saved ? {
+        id: result.bookmark_id,
+        target_kind: localID ? "local" : "remote",
+        target: exactTarget,
+        availability: "available",
+        created_at: "",
+      } : null);
+      setStatus("known");
+    }).catch(() => {
+      if (!active || request.current !== currentRequest) return;
+      setStatus("unknown");
+      setError("Could not check saved status.");
+    });
+    return () => {
+      active = false;
+      request.current += 1;
+    };
+  }, [bookmark, currentKey, currentUserID, initialStatus, localID, remoteURI, retry]);
 
   if (!currentUserID)
     return (
@@ -40,23 +95,35 @@ export default function BookmarkAction({
     );
 
   async function toggle(): Promise<void> {
+    if (!keyMatches || status !== "known") return;
+    const operation = ++request.current;
     setSaving(true);
     setError("");
     try {
       if (saved) {
         await removeRecipeBookmark(saved.id);
+        if (request.current !== operation) return;
         setSaved(null);
+        setStatus("known");
         onChange?.(null, false, saved);
+        onMutation?.(null);
       } else {
         if (!target) return;
         const result = await saveRecipeBookmark(target);
+        if (request.current !== operation) return;
         setSaved(result.bookmark);
+        setStatus("known");
         onChange?.(result.bookmark, result.created);
+        onMutation?.(result.bookmark);
       }
     } catch (caught: unknown) {
+      if (request.current !== operation) return;
       setError(errorMessage(caught, "Could not update your Library."));
+      setStatus("unknown");
+      setRetry((value) => value + 1);
+      onMutationUncertain?.();
     } finally {
-      setSaving(false);
+      if (request.current === operation) setSaving(false);
     }
   }
 
@@ -65,10 +132,14 @@ export default function BookmarkAction({
       <button
         className="text-link"
         type="button"
-        disabled={saving || (!saved && !target)}
+        disabled={saving || busy || !keyMatches || status !== "known" || (!saved && !target)}
         onClick={() => void toggle()}
       >
-        {saving
+        {!keyMatches || status === "checking"
+          ? "Checking saved status…"
+          : status === "unknown"
+            ? "Saved status unavailable"
+          : saving
           ? saved
             ? "Removing…"
             : "Saving…"
@@ -76,10 +147,15 @@ export default function BookmarkAction({
             ? "Remove from Library"
             : "Save to Library"}
       </button>
-      {error && (
+      {keyMatches && error && (
         <span className="form-message" role="alert">
           {error}
         </span>
+      )}
+      {keyMatches && status === "unknown" && (
+        <button className="text-link" type="button" disabled={busy || saving} onClick={() => setRetry((value) => value + 1)}>
+          Retry saved status
+        </button>
       )}
     </span>
   );

@@ -16,6 +16,11 @@ function CreatePage({ navigate }: { navigate: (path: string) => void }) {
   const [selected, setSelected] = useState<CreateType | null>(null);
 
   useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get("type");
+    if (requested === "recipes" || requested === "cookbooks") setSelected(requested);
+  }, []);
+
+  useEffect(() => {
     if (state.status !== "authenticated") return;
     let active = true;
     setCourseEnabled(null);

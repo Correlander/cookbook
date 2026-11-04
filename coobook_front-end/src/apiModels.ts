@@ -178,6 +178,66 @@ export interface RecipeBookmarkPage {
   offset: number;
 }
 
+export interface CookbookBookmarkView {
+  id: string;
+  target_kind: "local_cookbook";
+  target?: { local_cookbook_id: string };
+  availability: "available" | "unavailable";
+  cookbook?: Cookbook;
+  created_at: string;
+}
+
+export interface CookbookBookmarkPage {
+  items: CookbookBookmarkView[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export type LibraryType = "recipes" | "cookbooks";
+export type LibraryRelationship = "owned" | "shared" | "saved";
+
+export interface LibraryRecipeCookbookContext {
+  id: string;
+  membership_role?: string;
+}
+
+export interface LibraryRecipeItem {
+  availability: "available" | "unavailable";
+  target_kind: "local" | "remote";
+  bookmark_id?: string;
+  relationships?: LibraryRelationship[];
+  membership_role?: string;
+  in_owned_cookbook?: boolean;
+  cookbook_contexts?: LibraryRecipeCookbookContext[];
+  recipe?: Recipe;
+  remote_recipe?: RemoteRecipeReadView;
+  created_at?: string;
+}
+
+export interface LibraryCookbookItem {
+  availability: "available" | "unavailable";
+  bookmark_id?: string;
+  relationships?: LibraryRelationship[];
+  membership_role?: string;
+  cookbook?: Cookbook;
+  created_at?: string;
+}
+
+export interface LibraryPage<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export type RecipeBookmarkStatus =
+  | { saved: false }
+  | { saved: true; bookmark_id: string };
+
+export type CookbookBookmarkStatus =
+  { saved: false } | { saved: true; bookmark_id: string };
+
 export interface RemoteRecipeListItem {
   object_id: string;
   source_origin: string;
@@ -280,8 +340,7 @@ export interface ExternalCreatorAttribution {
 }
 
 export type CreatorAttribution =
-  | LocalCreatorAttribution
-  | ExternalCreatorAttribution;
+  LocalCreatorAttribution | ExternalCreatorAttribution;
 
 export interface Recipe {
   id: string;
@@ -353,7 +412,10 @@ export interface CreatorRecipeItem {
 }
 
 export interface CreatorCookbookItem {
-  cookbook: Pick<Cookbook, "id" | "title" | "description" | "visibility" | "created_at" | "updated_at">;
+  cookbook: Pick<
+    Cookbook,
+    "id" | "title" | "description" | "visibility" | "created_at" | "updated_at"
+  >;
   role: string;
   provenance: string;
 }
@@ -376,7 +438,10 @@ export interface InitialPublicationInput {
   index_eligible: false;
 }
 
-export interface RecipeCreatePayload extends Omit<RecipeWritePayload, "version"> {
+export interface RecipeCreatePayload extends Omit<
+  RecipeWritePayload,
+  "version"
+> {
   initial_publication: InitialPublicationInput;
   creator_attribution?: RecipeCreatorAttribution;
 }

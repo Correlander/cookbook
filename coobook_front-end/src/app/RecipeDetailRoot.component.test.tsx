@@ -62,22 +62,8 @@ it("waits for session then reads signed-in detail and current saved status", asy
     calls.push(url);
     if (url === "/api/auth/me") return Promise.resolve(jsonResponse(user));
     if (url === "/api/recipes/recipe-1") return Promise.resolve(jsonResponse(recipe));
-    if (url === "/api/library/bookmarks?limit=24&offset=0")
-      return Promise.resolve(
-        jsonResponse({
-          items: [{
-            id: "bookmark-1",
-            target_kind: "local",
-            target: { local_recipe_id: "recipe-1" },
-            availability: "available",
-            local_recipe: recipe,
-            created_at: "2026-01-02T00:00:00Z",
-          }],
-          total: 1,
-          limit: 24,
-          offset: 0,
-        }),
-      );
+    if (url === "/api/library/bookmarks/status?local_recipe_id=recipe-1")
+      return Promise.resolve(jsonResponse({ saved: true, bookmark_id: "bookmark-1" }));
     return Promise.resolve(jsonResponse({}, 404));
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -91,6 +77,8 @@ it("waits for session then reads signed-in detail and current saved status", asy
   ).toBeTruthy();
   expect(calls).toContain("/api/recipes/recipe-1");
   expect(calls).not.toContain("/api/public/recipes/recipe-1");
+  expect(calls).toContain("/api/library/bookmarks/status?local_recipe_id=recipe-1");
+  expect(calls.some((url) => url.startsWith("/api/library/bookmarks?"))).toBe(false);
 });
 
 it("uses only the redacted public endpoint for an anonymous detail and keeps denials generic", async () => {
@@ -113,6 +101,101 @@ it("uses only the redacted public endpoint for an anonymous detail and keeps den
   expect(calls).not.toContain("/api/recipes/hidden-id");
   expect(calls.some((url) => url.startsWith("/api/library/bookmarks"))).toBe(false);
   expect(screen.queryByText("hidden-id")).toBeNull();
+});
+
+it("loads an authenticated exact remote snapshot, keeps it read-only, and checks that URI's saved state", async () => {
+  const uri = "https://peer.example/federation/recipes/abc?rev=4";
+  window.history.replaceState(null, "", `/recipe?remote_object_uri=${encodeURIComponent(uri)}`);
+  const calls: string[] = [];
+  const remoteView = {
+    object_uri: uri,
+    source_origin: "https://peer.example",
+    source_recipe_id: "abc",
+    creator_name: "Remote chef",
+    sequence: 4,
+    updated_at: "2026-10-01T00:00:00Z",
+    recipe: { title: "Remote stew", description: "Cached copy", ingredients: [], steps: [{ text: "Simmer." }], servings: 2, prep_time_minutes: 0, cook_time_minutes: 20, tags: [] },
+  };
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    calls.push(url);
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse(user));
+    if (url === `/api/library/recipes/remote?remote_object_uri=${encodeURIComponent(uri)}`)
+      return Promise.resolve(jsonResponse(remoteView));
+    if (url === `/api/library/bookmarks/status?remote_object_uri=${encodeURIComponent(uri)}`)
+      return Promise.resolve(jsonResponse({ saved: true, bookmark_id: "bookmark-remote" }));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<RecipeDetailRoot />);
+
+  expect(await screen.findByRole("heading", { name: "Remote stew" })).toBeTruthy();
+  expect(screen.getByText("From https://peer.example. This saved snapshot is read-only.")).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Remove from Library" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Edit recipe" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Move to trash" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Create a copy" })).toBeNull();
+  expect(calls).toContain(`/api/library/recipes/remote?remote_object_uri=${encodeURIComponent(uri)}`);
+  expect(calls).toContain(`/api/library/bookmarks/status?remote_object_uri=${encodeURIComponent(uri)}`);
+  expect(calls.some((url) => url.startsWith("/api/public/remote-recipes"))).toBe(false);
+  expect(calls.some((url) => url.startsWith("/api/recipes/"))).toBe(false);
+});
+
+it("does not request an exact remote snapshot when the session is anonymous", async () => {
+  const uri = "https://peer.example/federation/recipes/abc";
+  window.history.replaceState(null, "", `/recipe?remote_object_uri=${encodeURIComponent(uri)}`);
+  const calls: string[] = [];
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    calls.push(url);
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse({}, 401));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<RecipeDetailRoot />);
+
+  expect(await screen.findByRole("heading", { name: "Recipe unavailable" })).toBeTruthy();
+  expect(calls).toContain("/api/auth/me");
+  expect(calls.some((url) => url.startsWith("/api/recipes/"))).toBe(false);
+  expect(calls.some((url) => url.startsWith("/api/library/recipes/remote?"))).toBe(false);
+});
+
+it("rejects ambiguous detail selectors without requesting either target", async () => {
+  window.history.replaceState(null, "", "/recipe?id=recipe-1&remote_object_uri=https%3A%2F%2Fpeer.example%2Fabc");
+  const calls: string[] = [];
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    calls.push(url);
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse(user));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<RecipeDetailRoot />);
+
+  expect(await screen.findByRole("heading", { name: "Recipe unavailable" })).toBeTruthy();
+  expect(calls).toContain("/api/auth/me");
+  expect(calls.some((url) => url.startsWith("/api/recipes/"))).toBe(false);
+  expect(calls.some((url) => url.startsWith("/api/library/recipes/remote?"))).toBe(false);
+});
+
+it("keeps saved state unknown after an exact status failure and offers a deliberate retry", async () => {
+  window.history.replaceState(null, "", "/recipe?id=recipe-1");
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse(user));
+    if (url === "/api/recipes/recipe-1") return Promise.resolve(jsonResponse(recipe));
+    if (url === "/api/library/bookmarks/status?local_recipe_id=recipe-1") return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<RecipeDetailRoot />);
+  expect(await screen.findByRole("heading", { name: "Tomato soup" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Retry saved status" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Remove from Library" })).toBeNull();
+  expect(fetchMock.mock.calls.some(([input]) => String(input).startsWith("/api/library/bookmarks?"))).toBe(false);
 });
 
 it("does not choose an anonymous detail endpoint after a transient session error", async () => {

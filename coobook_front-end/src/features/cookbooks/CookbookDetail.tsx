@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import type { Cookbook, PublicCookbook, PublicCookbookRecipe, Recipe } from "../../apiModels";
+import type {
+  Cookbook,
+  PublicCookbook,
+  PublicCookbookRecipe,
+  Recipe,
+} from "../../apiModels";
 import { errorMessage } from "../../apiModels";
 import CreatorCredits from "../creator/CreatorCredits.tsx";
 import RecipeCardContents from "../recipes/RecipeCardContents.tsx";
+import CookbookBookmarkAction from "./CookbookBookmarkAction.tsx";
 import CookbookForm from "./CookbookForm.tsx";
 import CookbookMembers from "./CookbookMembers.tsx";
 import {
@@ -71,11 +77,7 @@ export default function CookbookDetail({
           { offset: 0, sort, query, tag },
           "Could not load recipes in this cookbook.",
         )
-      : listCookbookRecipes(
-          book.id,
-          { offset: 0, sort, query, tag },
-          failure,
-        );
+      : listCookbookRecipes(book.id, { offset: 0, sort, query, tag }, failure);
     request
       .then((data) => {
         if (!active) return;
@@ -86,10 +88,7 @@ export default function CookbookDetail({
       .catch((loadError: unknown) => {
         if (active) {
           setError(
-            errorMessage(
-              loadError,
-              "Could not load recipes in this cookbook.",
-            ),
+            errorMessage(loadError, "Could not load recipes in this cookbook."),
           );
           setRecipes([]);
           setHasMore(false);
@@ -133,7 +132,10 @@ export default function CookbookDetail({
   }
 
   return (
-    <section className="cookbook-dashboard" aria-labelledby="cookbook-detail-title">
+    <section
+      className="cookbook-dashboard"
+      aria-labelledby="cookbook-detail-title"
+    >
       <div className="section-heading">
         <div>
           <span className="eyebrow">
@@ -164,6 +166,11 @@ export default function CookbookDetail({
           </div>
         )}
       </div>
+      <CookbookBookmarkAction
+        cookbookID={book.id}
+        title={book.title}
+        currentUserID={currentUserID}
+      />
       {book.description && <p>{book.description}</p>}
       {!isPublic && currentUserID && "owner_id" in book && (
         <CreatorCredits
@@ -210,9 +217,13 @@ export default function CookbookDetail({
         </label>
       </div>
       {loading ? (
-        <p className="cookbook-empty" role="status">Loading recipes…</p>
+        <p className="cookbook-empty" role="status">
+          Loading recipes…
+        </p>
       ) : error && recipes.length === 0 ? (
-        <p className="form-message" role="alert">{error}</p>
+        <p className="form-message" role="alert">
+          {error}
+        </p>
       ) : recipes.length ? (
         <div className="recipe-grid">
           {recipes.map((recipe) => (
@@ -245,7 +256,9 @@ export default function CookbookDetail({
         </p>
       )}
       {error && recipes.length > 0 && (
-        <p className="form-message" role="alert">{error}</p>
+        <p className="form-message" role="alert">
+          {error}
+        </p>
       )}
       {hasMore && (
         <button

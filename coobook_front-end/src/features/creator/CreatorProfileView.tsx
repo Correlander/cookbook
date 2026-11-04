@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type {
   CreatorCookbookItem,
+  CreatorCourseItem,
   CreatorProfile,
   CreatorProfileList,
   CreatorRecipeItem,
@@ -10,8 +11,10 @@ import {
   CreatorProfileApiError,
   getCreatorProfile,
   listCreatorCookbooks,
+  listCreatorCourses,
   listCreatorRecipes,
 } from "./creatorProfileApi.ts";
+import usePublicAuthConfig from "../auth/usePublicAuthConfig.ts";
 
 interface CollectionPage<T> {
   items: T[];
@@ -41,8 +44,9 @@ function asPage<T>(page: CreatorProfileList<T>): CollectionPage<T> {
   };
 }
 
-function roleLabel(role: string, target: "recipe" | "cookbook") {
+function roleLabel(role: string, target: "recipe" | "cookbook" | "course") {
   if (role === "creator" && target === "cookbook") return "Cookbook creator";
+  if (role === "creator" && target === "course") return "Course creator";
   if (role === "creator") return "Creator";
   if (role === "adapter") return "Adapter";
   if (role === "contributor") return "Contributor";
@@ -74,11 +78,20 @@ export default function CreatorProfileView({
     useState<CollectionPage<CreatorRecipeItem>>(emptyPage);
   const [cookbooks, setCookbooks] =
     useState<CollectionPage<CreatorCookbookItem>>(emptyPage);
+  const [courses, setCourses] =
+    useState<CollectionPage<CreatorCourseItem>>(emptyPage);
+  const [courseLoadState, setCourseLoadState] = useState<
+    "not-started" | "pending" | "complete"
+  >("not-started");
   const [state, setState] = useState<
     "loading" | "ready" | "unavailable" | "session-error"
   >("loading");
   const [retry, setRetry] = useState(0);
   const requestGeneration = useRef(0);
+  const courseRequestGeneration = useRef(0);
+  const { state: publicConfig } = usePublicAuthConfig();
+  const coursesEnabled =
+    publicConfig.status === "ready" && publicConfig.config.courses_enabled;
 
   useEffect(() => {
     let active = true;
@@ -87,6 +100,8 @@ export default function CreatorProfileView({
     setProfile(null);
     setRecipes(emptyPage());
     setCookbooks(emptyPage());
+    setCourses(emptyPage());
+    setCourseLoadState("not-started");
     if (!profileID) {
       setState("unavailable");
       return () => {
@@ -156,15 +171,54 @@ export default function CreatorProfileView({
     };
   }, [profileID, actorID, retry]);
 
-  async function loadMore(kind: "recipes" | "cookbooks") {
-    const page = kind === "recipes" ? recipes : cookbooks;
+  useEffect(() => {
+    let active = true;
+    const generation = ++courseRequestGeneration.current;
+    setCourses(emptyPage());
+    setCourseLoadState("not-started");
+    if (!coursesEnabled || !profile?.id) {
+      return () => {
+        active = false;
+        courseRequestGeneration.current += 1;
+      };
+    }
+    setCourseLoadState("pending");
+    void listCreatorCourses(profile.id)
+      .then((result) => {
+        if (!active || courseRequestGeneration.current !== generation) return;
+        setCourses(asPage(result));
+        setCourseLoadState("complete");
+      })
+      .catch(() => {
+        if (!active || courseRequestGeneration.current !== generation) return;
+        setCourses({
+          ...emptyPage<CreatorCourseItem>(),
+          error: "Could not load attributed courses. Retry this list.",
+        });
+        setCourseLoadState("complete");
+      });
+    return () => {
+      active = false;
+      courseRequestGeneration.current += 1;
+    };
+  }, [profile?.id, actorID, coursesEnabled, retry]);
+
+  async function loadMore(kind: "recipes" | "cookbooks" | "courses") {
+    const page =
+      kind === "recipes" ? recipes : kind === "cookbooks" ? cookbooks : courses;
     if ((!page.hasMore && !page.error) || page.loadingMore) return;
     const offset = page.error && page.items.length === 0 ? 0 : page.offset;
-    const generation = requestGeneration.current;
+    const generation =
+      kind === "courses"
+        ? courseRequestGeneration.current
+        : requestGeneration.current;
     if (kind === "recipes") {
       setRecipes((current) => ({ ...current, loadingMore: true, error: "" }));
-    } else {
+    } else if (kind === "cookbooks") {
       setCookbooks((current) => ({ ...current, loadingMore: true, error: "" }));
+    } else {
+      setCourses((current) => ({ ...current, loadingMore: true, error: "" }));
+      if (offset === 0) setCourseLoadState("pending");
     }
     try {
       if (kind === "recipes") {
@@ -185,7 +239,7 @@ export default function CreatorProfileView({
           loadingMore: false,
           error: "",
         }));
-      } else {
+      } else if (kind === "cookbooks") {
         const result = await listCreatorCookbooks(profileID, offset);
         if (generation !== requestGeneration.current) return;
         if (result.offset !== offset) {
@@ -203,15 +257,48 @@ export default function CreatorProfileView({
           loadingMore: false,
           error: "",
         }));
+      } else {
+        const result = await listCreatorCourses(profileID, offset);
+        if (generation !== courseRequestGeneration.current) return;
+        if (result.offset !== offset) {
+          throw new CreatorProfileApiError(
+            "The creator list page did not match the requested offset.",
+            502,
+            "invalid_pagination_response",
+          );
+        }
+        setCourses((current) => ({
+          ...current,
+          items: [...current.items, ...result.items],
+          offset: result.offset + result.items.length,
+          hasMore: result.items.length === result.limit,
+          loadingMore: false,
+          error: "",
+        }));
+        if (offset === 0) setCourseLoadState("complete");
       }
     } catch (cause) {
-      if (generation !== requestGeneration.current) return;
-      if (cause instanceof CreatorProfileApiError && cause.status === 401) {
+      if (
+        generation !==
+        (kind === "courses"
+          ? courseRequestGeneration.current
+          : requestGeneration.current)
+      )
+        return;
+      if (
+        kind !== "courses" &&
+        cause instanceof CreatorProfileApiError &&
+        cause.status === 401
+      ) {
         setProfile(null);
         setState("session-error");
         return;
       }
-      if (cause instanceof CreatorProfileApiError && cause.status === 404) {
+      if (
+        kind !== "courses" &&
+        cause instanceof CreatorProfileApiError &&
+        cause.status === 404
+      ) {
         setProfile(null);
         setState("unavailable");
         return;
@@ -222,12 +309,19 @@ export default function CreatorProfileView({
           loadingMore: false,
           error: "Could not load more recipes. Retry this list.",
         }));
-      } else {
+      } else if (kind === "cookbooks") {
         setCookbooks((current) => ({
           ...current,
           loadingMore: false,
           error: "Could not load more cookbooks. Retry this list.",
         }));
+      } else {
+        setCourses((current) => ({
+          ...current,
+          loadingMore: false,
+          error: "Could not load more courses. Retry this list.",
+        }));
+        if (offset === 0) setCourseLoadState("complete");
       }
     }
   }
@@ -294,8 +388,9 @@ export default function CreatorProfileView({
         </p>
       )}
       <p className="dialog-note">
-        Profile visibility does not grant access to recipes or cookbooks. Each
-        item follows its own access rules.
+        Profile visibility does not grant access to recipes, cookbooks, or
+        courses. Each item follows its own access rules; course ownership is
+        separate from profile attribution.
       </p>
       <section aria-labelledby="creator-recipes-title">
         <h3 id="creator-recipes-title">Recipes</h3>
@@ -385,6 +480,59 @@ export default function CreatorProfileView({
           </button>
         )}
       </section>
+      {coursesEnabled && (
+        <section aria-labelledby="creator-courses-title">
+          <h3 id="creator-courses-title">Courses</h3>
+          <p className="dialog-note">
+            Courses appear here only when they explicitly credit this profile
+            and remain readable to you. Attribution does not show course
+            ownership or grant editing access.
+          </p>
+          {courseLoadState !== "complete" && courses.items.length === 0 ? (
+            <p role="status">Loading attributed courses…</p>
+          ) : courses.error ? (
+            <p role="alert" className="form-message">
+              {courses.error}
+            </p>
+          ) : courses.items.length ? (
+            <ul>
+              {courses.items.map(({ course, role, provenance }) => (
+                <li key={`${course.id}:${role}`}>
+                  <a href={`/course?id=${encodeURIComponent(course.id)}`}>
+                    {course.title}
+                  </a>
+                  <span>
+                    {" "}
+                    —{" "}
+                    <span className="creator-attribution__role">
+                      {roleLabel(role, "course")}
+                    </span>
+                    <span className="creator-attribution__provenance">
+                      {" "}
+                      · {provenanceLabel(provenance)}
+                    </span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>No readable attributed courses.</p>
+          )}
+          {(courses.hasMore || courses.error) && (
+            <button
+              type="button"
+              disabled={courses.loadingMore}
+              onClick={() => void loadMore("courses")}
+            >
+              {courses.loadingMore
+                ? "Loading more courses…"
+                : courses.error
+                  ? "Retry loading courses"
+                  : "Load more courses"}
+            </button>
+          )}
+        </section>
+      )}
       <span className="sr-only">
         Each list loads up to {CREATOR_PROFILE_PAGE_SIZE} items at a time.
       </span>

@@ -1,5 +1,7 @@
 import type {
   CreatorCookbookItem,
+  CreatorCourseItem,
+  CreatorCourseProfileList,
   CreatorProfile,
   CreatorProfileEnvelope,
   CreatorProfileList,
@@ -169,6 +171,57 @@ function isCookbookItem(item: unknown): item is CreatorCookbookItem {
   );
 }
 
+function isCreatorCourseItem(item: unknown): item is CreatorCourseItem {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+  const value = item as Record<string, unknown>;
+  const course = value.course;
+  if (!course || typeof course !== "object" || Array.isArray(course))
+    return false;
+  const record = course as Record<string, unknown>;
+  return (
+    Object.keys(value).length === 3 &&
+    Object.keys(value).every((key) =>
+      ["course", "role", "provenance"].includes(key),
+    ) &&
+    Object.keys(record).length === 2 &&
+    Object.keys(record).every((key) => ["id", "title"].includes(key)) &&
+    typeof record.id === "string" &&
+    record.id.length > 0 &&
+    typeof record.title === "string" &&
+    record.title.length > 0 &&
+    value.role === "creator" &&
+    value.provenance === "self_asserted_at_creation"
+  );
+}
+
+function isCreatorCourseProfileList(
+  value: unknown,
+): value is CreatorCourseProfileList {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const list = value as Record<string, unknown>;
+  return (
+    Object.keys(list).length === 5 &&
+    Object.keys(list).every((key) =>
+      ["profile", "items", "total", "limit", "offset"].includes(key),
+    ) &&
+    isProfile(list.profile) &&
+    Array.isArray(list.items) &&
+    list.items.every(isCreatorCourseItem) &&
+    typeof list.total === "number" &&
+    Number.isSafeInteger(list.total) &&
+    list.total >= 0 &&
+    typeof list.limit === "number" &&
+    Number.isSafeInteger(list.limit) &&
+    list.limit > 0 &&
+    list.limit <= 100 &&
+    typeof list.offset === "number" &&
+    Number.isSafeInteger(list.offset) &&
+    list.offset >= 0 &&
+    list.offset <= 1_000_000 &&
+    list.items.length <= list.limit
+  );
+}
+
 export async function listCreatorRecipes(
   profileID: string,
   offset = 0,
@@ -196,5 +249,20 @@ export async function listCreatorCookbooks(
     `/api/creator-profiles/${encodeURIComponent(profileID)}/cookbooks?${query}`,
   );
   if (!isProfileList(result, isCookbookItem)) throw malformedResponse();
+  return result;
+}
+
+export async function listCreatorCourses(
+  profileID: string,
+  offset = 0,
+): Promise<CreatorCourseProfileList> {
+  const query = new URLSearchParams({
+    limit: String(CREATOR_PROFILE_PAGE_SIZE),
+    offset: String(offset),
+  });
+  const result = await requestJSON(
+    `/api/creator-profiles/${encodeURIComponent(profileID)}/courses?${query}`,
+  );
+  if (!isCreatorCourseProfileList(result)) throw malformedResponse();
   return result;
 }

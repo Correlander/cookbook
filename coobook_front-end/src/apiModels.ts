@@ -485,11 +485,21 @@ export interface CreatorCookbookItem {
   provenance: string;
 }
 
+export interface CreatorCourseItem {
+  course: Pick<Course, "id" | "title">;
+  role: "creator";
+  provenance: "self_asserted_at_creation";
+}
+
 export interface CreatorProfileList<T> {
   profile: CreatorProfile;
   items: T[];
   limit: number;
   offset: number;
+}
+
+export interface CreatorCourseProfileList extends CreatorProfileList<CreatorCourseItem> {
+  total: number;
 }
 
 export type PublicationState = "unpublished" | "published" | "withdrawn";

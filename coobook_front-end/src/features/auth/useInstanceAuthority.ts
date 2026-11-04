@@ -7,6 +7,8 @@ export type InstanceAuthorityState =
   | { status: "ready"; userID: string; authority: InstanceAuthority }
   | { status: "error"; userID: string; message: string };
 
+const INSTANCE_AUTHORITY_ERROR = "Could not load instance permissions. Try again.";
+
 function isInstanceAuthority(value: unknown): value is InstanceAuthority {
   if (!value || typeof value !== "object") return false;
   const authority = value as Partial<InstanceAuthority>;
@@ -14,7 +16,9 @@ function isInstanceAuthority(value: unknown): value is InstanceAuthority {
     typeof authority.is_instance_owner === "boolean" &&
     typeof authority.is_admin === "boolean" &&
     typeof authority.owner_claimed === "boolean" &&
-    typeof authority.can_manage_instance_roles === "boolean"
+    typeof authority.can_manage_instance_roles === "boolean" &&
+    (authority.can_manage_instance_settings === undefined ||
+      typeof authority.can_manage_instance_settings === "boolean")
   );
 }
 
@@ -37,10 +41,10 @@ export default function useInstanceAuthority(
       const response = await fetch("/api/instance/authority", {
         cache: "no-store",
       });
-      if (!response.ok) throw new Error("Could not load role permissions.");
+      if (!response.ok) throw new Error(INSTANCE_AUTHORITY_ERROR);
       const value: unknown = await response.json();
       if (!isInstanceAuthority(value))
-        throw new Error("Could not load role permissions.");
+        throw new Error(INSTANCE_AUTHORITY_ERROR);
       if (isCurrent())
         setStoredState({ status: "ready", userID, authority: value });
     } catch {
@@ -48,7 +52,7 @@ export default function useInstanceAuthority(
         setStoredState({
           status: "error",
           userID,
-          message: "Could not load role permissions. Try again.",
+          message: INSTANCE_AUTHORITY_ERROR,
         });
     }
   }, [enabled, userID]);

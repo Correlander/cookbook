@@ -19,6 +19,7 @@ export interface InstanceAuthority {
   is_admin: boolean;
   owner_claimed: boolean;
   can_manage_instance_roles: boolean;
+  can_manage_instance_settings?: boolean;
 }
 
 export type OwnerTransferDirection = "incoming" | "outgoing";

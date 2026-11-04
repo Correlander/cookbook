@@ -1,0 +1,179 @@
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vitest";
+import type { AdminSettingsModel } from "./apiModels";
+import AdminSettings from "./AdminSettings.tsx";
+
+const settings: AdminSettingsModel = {
+  public_instance: false,
+  courses_enabled: false,
+  registration_policy: "open",
+  revision_retention_days: 365,
+  audit_retention_days: 365,
+  federation_enabled: false,
+  federation_origin: "",
+  public_cookbooks: 0,
+  public_recipes: 0,
+  public_courses: 0,
+};
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+it("clears a denied settings draft and reloads fresh state only after explicit retry", async () => {
+  let settingsReads = 0;
+  let writes = 0;
+  let permissionRestored = false;
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/admin/settings" && init?.method === "PATCH") {
+      writes += 1;
+      return Promise.resolve(jsonResponse({ error: "forbidden" }, 403));
+    }
+    if (url === "/api/admin/settings") {
+      settingsReads += 1;
+      if (settingsReads > 1 && !permissionRestored)
+        return Promise.resolve(jsonResponse({ error: "forbidden" }, 403));
+      return Promise.resolve(jsonResponse(settings));
+    }
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<AdminSettings />);
+
+  const registration = await screen.findByRole("combobox", { name: "Account registration" });
+  fireEvent.change(registration, { target: { value: "disabled" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save instance settings" }));
+
+  expect(await screen.findByRole("heading", { name: "Instance settings access changed" })).toBeTruthy();
+  expect(screen.getByRole("alert").textContent).toContain("Your draft was cleared");
+  expect(screen.queryByRole("combobox", { name: "Account registration" })).toBeNull();
+  expect(settingsReads).toBe(1);
+  expect(writes).toBe(1);
+
+  fireEvent.click(screen.getByRole("button", { name: "Reload settings" }));
+  expect(await screen.findByRole("heading", { name: "Instance settings access changed" })).toBeTruthy();
+  expect(screen.queryByRole("combobox", { name: "Account registration" })).toBeNull();
+  expect(settingsReads).toBe(2);
+
+  permissionRestored = true;
+  fireEvent.click(screen.getByRole("button", { name: "Reload settings" }));
+  const reloadedRegistration = await screen.findByRole("combobox", { name: "Account registration" });
+
+  expect(reloadedRegistration).toHaveProperty("value", "open");
+  expect(settingsReads).toBe(3);
+  expect(writes).toBe(1);
+});
+
+it("clears the editor on an expired session and offers sign-in and settings reload", async () => {
+  let settingsReads = 0;
+  let writes = 0;
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/admin/settings" && init?.method === "PATCH") {
+      writes += 1;
+      return Promise.resolve(new Response(null, { status: 401 }));
+    }
+    if (url === "/api/admin/settings") {
+      settingsReads += 1;
+      return Promise.resolve(jsonResponse(settings));
+    }
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<AdminSettings />);
+
+  expect(await screen.findByRole("checkbox", { name: /Enable recipe federation/ })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Save instance settings" }));
+
+  expect(await screen.findByRole("heading", { name: "Settings session expired" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Sign in" }).getAttribute("href")).toBe("/?signin=1");
+  expect(screen.queryByRole("checkbox", { name: /Enable recipe federation/ })).toBeNull();
+  expect(settingsReads).toBe(1);
+  expect(writes).toBe(1);
+
+  fireEvent.click(screen.getByRole("button", { name: "Reload settings" }));
+  expect(await screen.findByRole("checkbox", { name: /Enable recipe federation/ })).toBeTruthy();
+  expect(settingsReads).toBe(2);
+  expect(writes).toBe(1);
+});
+
+it("explains a recent-authentication denial without retrying the write", async () => {
+  let writes = 0;
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/admin/settings" && init?.method === "PATCH") {
+      writes += 1;
+      return Promise.resolve(jsonResponse({ error: "reauthentication_required" }, 403));
+    }
+    if (url === "/api/admin/settings") return Promise.resolve(jsonResponse(settings));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<AdminSettings />);
+  fireEvent.click(await screen.findByRole("button", { name: "Save instance settings" }));
+
+  expect(await screen.findByRole("heading", { name: "Recent sign-in required" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Sign in" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Save instance settings" })).toBeNull();
+  expect(writes).toBe(1);
+});
+
+it("keeps the draft and editor on validation failures", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/admin/settings" && init?.method === "PATCH")
+      return Promise.resolve(jsonResponse({ error: "federation_origin_required" }, 400));
+    if (url === "/api/admin/settings") return Promise.resolve(jsonResponse(settings));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<AdminSettings />);
+
+  const federation = await screen.findByRole("checkbox", { name: /Enable recipe federation/ });
+  fireEvent.click(federation);
+  fireEvent.click(screen.getByRole("button", { name: "Save instance settings" }));
+
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    "Set the instance’s stable HTTPS federation origin before enabling federation.",
+  );
+  expect(screen.getByRole("checkbox", { name: /Enable recipe federation/ })).toHaveProperty("checked", true);
+  expect(screen.getByRole("button", { name: "Save instance settings" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Reload settings" })).toBeNull();
+});
+
+it("keeps the editor active after an allowed save", async () => {
+  let writes = 0;
+  const savedSettings = { ...settings, federation_enabled: true };
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/admin/settings" && init?.method === "PATCH") {
+      writes += 1;
+      return Promise.resolve(jsonResponse(savedSettings));
+    }
+    if (url === "/api/admin/settings") return Promise.resolve(jsonResponse(settings));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<AdminSettings />);
+  fireEvent.click(await screen.findByRole("checkbox", { name: /Enable recipe federation/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Save instance settings" }));
+
+  expect((await screen.findByRole("status")).textContent).toContain("Instance settings saved.");
+  expect(screen.getByRole("checkbox", { name: /Enable recipe federation/ })).toHaveProperty("checked", true);
+  expect(screen.getByRole("button", { name: "Save instance settings" })).toBeTruthy();
+  expect(writes).toBe(1);
+});

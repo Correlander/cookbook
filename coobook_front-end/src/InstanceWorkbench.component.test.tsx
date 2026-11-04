@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import InstanceWorkbenchRoot from "./app/InstanceWorkbenchRoot.tsx";
 
@@ -7,6 +7,7 @@ const ordinaryAuthority = {
   is_admin: false,
   owner_claimed: true,
   can_manage_instance_roles: false,
+  can_manage_instance_settings: false,
 };
 
 const ownerAuthority = {
@@ -14,10 +15,19 @@ const ownerAuthority = {
   is_admin: false,
   owner_claimed: true,
   can_manage_instance_roles: true,
+  can_manage_instance_settings: true,
 };
 
 function response(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 afterEach(() => {
@@ -56,6 +66,76 @@ it("does not request the account list for an ordinary account without an incomin
     .every(({ init }) => init?.cache === "no-store")).toBe(true);
 });
 
+it("shows the Workbench settings link only after server capability is confirmed", async () => {
+  const authorityResponse = deferred<Response>();
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/auth/me")
+      return Promise.resolve(response({
+        id: "reader-1",
+        email: "reader@example.test",
+        display_name: "Reader",
+        is_admin: false,
+      }));
+    if (url === "/api/instance/authority")
+      return authorityResponse.promise.then((result) => result.clone());
+    if (url === "/api/instance/owner-transfers")
+      return Promise.resolve(response({ transfers: [] }));
+    return Promise.resolve(response([], 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<InstanceWorkbenchRoot />);
+
+  expect(await screen.findByText("Checking instance permissions…")).toBeTruthy();
+  expect(screen.queryByRole("link", { name: "Open Instance Settings" })).toBeNull();
+  await act(async () => {
+    authorityResponse.resolve(response({
+      is_instance_owner: false,
+      is_admin: false,
+      owner_claimed: true,
+      can_manage_instance_roles: false,
+      can_manage_instance_settings: true,
+    }));
+    await authorityResponse.promise;
+  });
+
+  expect(await screen.findByRole("link", { name: "Open Instance Settings" })).toBeTruthy();
+});
+
+it("shows a retryable unsupported state when the server omits settings capability", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/auth/me")
+      return Promise.resolve(response({
+        id: "owner-1",
+        email: "owner@example.test",
+        display_name: "Owner",
+        is_admin: false,
+      }));
+    if (url === "/api/instance/authority")
+      return Promise.resolve(response({
+        is_instance_owner: true,
+        is_admin: false,
+        owner_claimed: true,
+        can_manage_instance_roles: false,
+      }));
+    if (url === "/api/instance/owner-transfers")
+      return Promise.resolve(response({ transfers: [] }));
+    if (url === "/api/admin/users?limit=100&offset=0")
+      return Promise.resolve(response([]));
+    return Promise.resolve(response([], 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<InstanceWorkbenchRoot />);
+
+  expect(await screen.findByRole("heading", { name: "Instance settings access unavailable" })).toBeTruthy();
+  expect(screen.getByRole("alert").textContent).toContain("This server did not report");
+  expect(screen.getByRole("button", { name: "Retry permissions" })).toBeTruthy();
+  expect(screen.queryByRole("link", { name: "Open Instance Settings" })).toBeNull();
+});
+
 it("loads administrator panels only after current authority confirms an administrator", async () => {
   const calls: string[] = [];
   const adminAuthority = {
@@ -63,6 +143,7 @@ it("loads administrator panels only after current authority confirms an administ
     is_admin: true,
     owner_claimed: false,
     can_manage_instance_roles: true,
+    can_manage_instance_settings: true,
   };
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
@@ -108,6 +189,7 @@ it("loads administrator panels only after current authority confirms an administ
   expect(calls.indexOf("/api/admin/audit?limit=24&offset=0")).toBeGreaterThan(authorityIndex);
   expect(screen.getByRole("heading", { name: "Invitations" })).toBeTruthy();
   expect(screen.getByRole("heading", { name: "Audit log" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Open Instance Settings" })).toBeTruthy();
 });
 
 it("creates a named transfer from the existing paginated account row and refreshes current state", async () => {
@@ -164,6 +246,7 @@ it("creates a named transfer from the existing paginated account row and refresh
 
   render(<InstanceWorkbenchRoot />);
 
+  expect(await screen.findByRole("link", { name: "Open Instance Settings" })).toBeTruthy();
   fireEvent.click(await screen.findByRole("button", { name: "Transfer ownership to Member" }));
   await waitFor(() => expect(screen.getByText(/Ownership request created/)).toBeTruthy());
   expect(confirmMock).toHaveBeenCalledWith(expect.stringContaining("Member (member@example.test)"));
@@ -501,6 +584,7 @@ it("keeps admin federation sections visible when a non-owner admin cannot read i
     is_admin: true,
     owner_claimed: true,
     can_manage_instance_roles: false,
+    can_manage_instance_settings: false,
   };
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
@@ -527,6 +611,7 @@ it("keeps admin federation sections visible when a non-owner admin cannot read i
   expect(await screen.findByText("No peers have been configured.")).toBeTruthy();
   expect(await screen.findByText("No queued deliveries.")).toBeTruthy();
   expect(screen.getByRole("heading", { name: "Accounts" })).toBeTruthy();
+  expect(screen.queryByRole("link", { name: "Open Instance Settings" })).toBeNull();
   expect(calls).not.toContain("/api/admin/federation/identity");
   expect(calls).toContain("/api/admin/federation/peers");
   expect(calls).toContain("/api/admin/federation/outbox");
@@ -558,11 +643,13 @@ it("clears the owner identity after authoritative permission revocation", async 
   render(<InstanceWorkbenchRoot />);
 
   expect(await screen.findByText("revoked-key")).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Open Instance Settings" })).toBeTruthy();
   revoked = true;
   window.dispatchEvent(new Event("focus"));
   expect(await screen.findByRole("heading", { name: "No instance actions are available" })).toBeTruthy();
   expect(screen.queryByText("revoked-key")).toBeNull();
   expect(screen.queryByText("secret-public-data")).toBeNull();
+  expect(screen.queryByRole("link", { name: "Open Instance Settings" })).toBeNull();
   expect(calls.filter((url) => url === "/api/admin/federation/identity")).toHaveLength(1);
 });
 

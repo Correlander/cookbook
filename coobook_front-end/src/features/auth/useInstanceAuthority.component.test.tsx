@@ -13,6 +13,7 @@ const ownerAuthority = {
   is_admin: false,
   owner_claimed: true,
   can_manage_instance_roles: true,
+  can_manage_instance_settings: true,
 };
 
 function response(value: unknown, status = 200): Response {
@@ -38,11 +39,20 @@ function Probe({
       </>
     );
   return (
-    <p>
-      {state.authority.can_manage_instance_roles
-        ? "Can manage roles"
-        : "Cannot manage roles"}
-    </p>
+    <>
+      <p>
+        {state.authority.can_manage_instance_roles
+          ? "Can manage roles"
+          : "Cannot manage roles"}
+      </p>
+      <p>
+        {state.authority.can_manage_instance_settings === true
+          ? "Can manage settings"
+          : state.authority.can_manage_instance_settings === false
+            ? "Cannot manage settings"
+            : "Settings permission unavailable"}
+      </p>
+    </>
   );
 }
 
@@ -79,6 +89,21 @@ it("loads the exact server authority after authentication and retries failures",
   expect(fetchMock).toHaveBeenCalledTimes(2);
 });
 
+it("does not infer settings access from owner status when the server omits the capability", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(response({
+    is_instance_owner: true,
+    is_admin: false,
+    owner_claimed: true,
+    can_manage_instance_roles: true,
+  }));
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<Probe userID="owner" />);
+
+  expect(await screen.findByText("Can manage roles")).toBeTruthy();
+  expect(screen.getByText("Settings permission unavailable")).toBeTruthy();
+});
+
 it("does not fetch while unauthenticated and clears authority on logout", async () => {
   const fetchMock = vi.fn().mockResolvedValue(response(ownerAuthority));
   vi.stubGlobal("fetch", fetchMock);
@@ -103,6 +128,7 @@ it("ignores a late capability response after an account switch", async () => {
         is_admin: true,
         owner_claimed: true,
         can_manage_instance_roles: false,
+        can_manage_instance_settings: false,
       }),
     );
   vi.stubGlobal("fetch", fetchMock);
@@ -110,11 +136,13 @@ it("ignores a late capability response after an account switch", async () => {
   const view = render(<Probe userID="first" />);
   view.rerender(<Probe userID="second" />);
   expect(await screen.findByText("Cannot manage roles")).toBeTruthy();
+  expect(screen.getByText("Cannot manage settings")).toBeTruthy();
 
   await act(async () => {
     firstResponse.resolve(response(ownerAuthority));
     await firstResponse.promise;
   });
   expect(screen.getByText("Cannot manage roles")).toBeTruthy();
+  expect(screen.getByText("Cannot manage settings")).toBeTruthy();
   expect(screen.queryByText("Can manage roles")).toBeNull();
 });

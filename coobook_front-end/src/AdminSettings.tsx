@@ -1,5 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AdminSettingsModel, RegistrationPolicy } from "./apiModels";
+
+type SettingsAccessFailure = "session" | "recent-authentication" | "permission";
 
 interface AdminSettingsProps {
   onSaved?: (settings: AdminSettingsModel) => void;
@@ -15,48 +17,73 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
   const [auditRetention, setAuditRetention] = useState(365);
   const [federationEnabled, setFederationEnabled] = useState(false);
   const [confirmPublication, setConfirmPublication] = useState(false);
-  const [authorized, setAuthorized] = useState<boolean | null>(null);
+  const [loadingSettings, setLoadingSettings] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [accessFailure, setAccessFailure] = useState<SettingsAccessFailure | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const loadSequence = useRef(0);
+
+  const clearSettings = useCallback(() => {
+    setSettings(null);
+    setPublicInstance(false);
+    setCoursesEnabled(false);
+    setRegistrationPolicy("invite_only");
+    setRevisionRetention(365);
+    setAuditRetention(365);
+    setFederationEnabled(false);
+    setConfirmPublication(false);
+    setError("");
+    setNotice("");
+  }, []);
+
+  const loadSettings = useCallback(async () => {
+    const request = ++loadSequence.current;
+    const isCurrent = () => loadSequence.current === request;
+    clearSettings();
+    setAccessFailure(null);
+    setLoadError("");
+    setLoadingSettings(true);
+    try {
+      const response = await fetch("/api/admin/settings");
+      if (!isCurrent()) return;
+      if (response.status === 401 || response.status === 403) {
+        setAccessFailure(response.status === 401 ? "session" : "permission");
+        return;
+      }
+      if (!response.ok) throw new Error("Could not load instance settings.");
+      const data = (await response.json()) as AdminSettingsModel;
+      if (!isCurrent()) return;
+      setSettings(data);
+      setPublicInstance(data.public_instance);
+      setCoursesEnabled(data.courses_enabled);
+      setRegistrationPolicy(data.registration_policy);
+      setRevisionRetention(data.revision_retention_days);
+      setAuditRetention(data.audit_retention_days);
+      setFederationEnabled(data.federation_enabled);
+    } catch (loadError) {
+      if (isCurrent())
+        setLoadError(
+          loadError instanceof Error
+            ? loadError.message
+            : "Could not load instance settings.",
+        );
+    } finally {
+      if (isCurrent()) setLoadingSettings(false);
+    }
+  }, [clearSettings]);
 
   useEffect(() => {
-    let active = true;
-    fetch("/api/admin/settings")
-      .then(async (response) => {
-        if (response.status === 403 || response.status === 401) {
-          if (active) setAuthorized(false);
-          return null;
-        }
-        if (!response.ok) throw new Error("Could not load instance settings.");
-        return response.json() as Promise<AdminSettingsModel>;
-      })
-      .then((data) => {
-        if (!active || !data) return;
-        setSettings(data);
-        setPublicInstance(data.public_instance);
-        setCoursesEnabled(data.courses_enabled);
-        setRegistrationPolicy(data.registration_policy);
-        setRevisionRetention(data.revision_retention_days);
-        setAuditRetention(data.audit_retention_days);
-        setFederationEnabled(data.federation_enabled);
-        setAuthorized(true);
-      })
-      .catch((loadError) => {
-        if (active)
-          setError(
-            loadError instanceof Error
-              ? loadError.message
-              : "Could not load instance settings.",
-          );
-      });
+    void loadSettings();
     return () => {
-      active = false;
+      loadSequence.current += 1;
     };
-  }, []);
+  }, [loadSettings]);
 
   async function save(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!settings || saving) return;
     setSaving(true);
     setError("");
     setNotice("");
@@ -74,9 +101,28 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
           confirm_publication: confirmPublication,
         }),
       });
-      const updated = (await response.json()) as AdminSettingsModel & {
-        error?: string;
-      };
+      let updated: (AdminSettingsModel & { error?: string }) | null = null;
+      if (response.status !== 401) {
+        try {
+          updated = (await response.json()) as AdminSettingsModel & {
+            error?: string;
+          };
+        } catch {
+          if (response.status !== 403)
+            throw new Error("Could not save instance settings.");
+        }
+      }
+      if (response.status === 401 || response.status === 403) {
+        clearSettings();
+        setAccessFailure(
+          response.status === 401
+            ? "session"
+            : updated?.error === "reauthentication_required"
+              ? "recent-authentication"
+              : "permission",
+        );
+        return;
+      }
       if (!response.ok) {
         const messages = {
           reauthentication_required:
@@ -90,13 +136,14 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
           enabled_peer_required:
             "Add and enable at least one peer with an approved public key before enabling federation.",
         };
-        const reason = updated.error;
+        const reason = updated?.error;
         throw new Error(
           (reason && reason in messages
             ? messages[reason as keyof typeof messages]
             : undefined) || "Could not save instance settings.",
         );
       }
+      if (!updated) throw new Error("Could not save instance settings.");
       setSettings(updated);
       setPublicInstance(updated.public_instance);
       setCoursesEnabled(updated.courses_enabled);
@@ -118,8 +165,48 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
     }
   }
 
-  if (authorized === false) return null;
-  if (!settings && !error) return null;
+  if (accessFailure) {
+    const copy = {
+      session: {
+        title: "Settings session expired",
+        message: "Your session expired. Sign in again, then reload settings before continuing.",
+        showSignIn: true,
+      },
+      "recent-authentication": {
+        title: "Recent sign-in required",
+        message: "Sign in again before changing instance settings. Your draft was cleared; reload settings to start a fresh edit.",
+        showSignIn: true,
+      },
+      permission: {
+        title: "Instance settings access changed",
+        message: "The server denied this request. Your draft was cleared; reload settings to check current access.",
+        showSignIn: false,
+      },
+    }[accessFailure];
+    return (
+      <section className="cookbook-dashboard" aria-labelledby="settings-access-failure">
+        <h2 id="settings-access-failure">{copy.title}</h2>
+        <p className="form-message" role="alert">{copy.message}</p>
+        {copy.showSignIn && <a className="text-link" href="/?signin=1">Sign in</a>}
+        <button className="button button--green" type="button" onClick={() => void loadSettings()}>
+          Reload settings
+        </button>
+      </section>
+    );
+  }
+  if (loadingSettings)
+    return <p className="cookbook-dashboard" role="status">Loading instance settings…</p>;
+  if (loadError)
+    return (
+      <section className="cookbook-dashboard" aria-labelledby="settings-load-error">
+        <h2 id="settings-load-error">Could not load instance settings</h2>
+        <p className="form-message" role="alert">{loadError}</p>
+        <button className="button button--green" type="button" onClick={() => void loadSettings()}>
+          Retry settings load
+        </button>
+      </section>
+    );
+  if (!settings) return null;
 
   const publicResourceCount =
     (settings?.public_cookbooks || 0) +

@@ -331,16 +331,22 @@ export default function InstanceWorkbench() {
               />
             )}
 
-            {!authorityValue.is_admin && authorityValue.is_instance_owner && (
+            {authorityValue.can_manage_instance_settings === true && (
               <p className="admin-settings-note">
-                General instance settings remain administrator-only. You can appoint a separate
-                administrator to manage them.
+                <a className="text-link" href="/admin/settings">Open Instance Settings</a>
               </p>
             )}
-            {authorityValue.is_admin && (
-              <p className="admin-settings-note">
-                <a className="text-link" href="/admin/settings">Open Admin Settings</a>
-              </p>
+            {authorityValue.can_manage_instance_settings === undefined && (
+              <section className="cookbook-dashboard" aria-labelledby="settings-capability-unavailable">
+                <h2 id="settings-capability-unavailable">Instance settings access unavailable</h2>
+                <p role="alert">
+                  This server did not report whether this account can manage instance settings.
+                  Update server support, then check permissions again.
+                </p>
+                <button className="text-link" type="button" onClick={authority.retry}>
+                  Retry permissions
+                </button>
+              </section>
             )}
 
             {authorityValue.is_admin && (

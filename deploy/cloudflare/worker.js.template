@@ -13,6 +13,8 @@ const staticDocuments = new Map([
   ['/recipe', '/recipe.html'],
   ['/cookbooks', '/cookbooks.html'],
   ['/cookbook', '/cookbook.html'],
+  ['/discover', '/discover.html'],
+  ['/create', '/create.html'],
 ])
 
 export default {

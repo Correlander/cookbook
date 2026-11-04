@@ -13,7 +13,7 @@ async function withDist(run) {
   const dist = await mkdtemp(join(tmpdir(), 'cookbook-csp-'))
   try {
     await writeFile(join(dist, 'index.html'), good())
-    for (const file of ['auth/confirm.html', 'auth/enroll.html', 'account/security.html', 'account/creator-profile.html', 'creator.html', 'admin.html', 'admin/settings.html', 'library.html', 'recipe.html', 'cookbooks.html', 'cookbook.html']) {
+    for (const file of ['auth/confirm.html', 'auth/enroll.html', 'account/security.html', 'account/creator-profile.html', 'creator.html', 'admin.html', 'admin/settings.html', 'library.html', 'recipe.html', 'cookbooks.html', 'cookbook.html', 'discover.html', 'create.html']) {
       const directory = file.slice(0, file.lastIndexOf('/'))
       await (await import('node:fs/promises')).mkdir(join(dist, directory), { recursive: true })
       await writeFile(join(dist, file), good())
@@ -55,6 +55,10 @@ test('emits Cloudflare headers and equivalent Caddy policies for every static ro
   assert.match(headers, /\/cookbooks\.html\n  Content-Security-Policy:/)
   assert.match(headers, /\/cookbook\n  Content-Security-Policy:/)
   assert.match(headers, /\/cookbook\.html\n  Content-Security-Policy:/)
+  assert.match(headers, /\/discover\n  Content-Security-Policy:/)
+  assert.match(headers, /\/discover\.html\n  Content-Security-Policy:/)
+  assert.match(headers, /\/create\n  Content-Security-Policy:/)
+  assert.match(headers, /\/create\.html\n  Content-Security-Policy:/)
   assert.match(headers, /\/\n  Cache-Control: no-store/)
   assert.match(headers, /\/auth\/confirm\n  Cache-Control: no-store/)
   assert.match(headers, /\/auth\/enroll\n  Cache-Control: no-store/)
@@ -69,8 +73,12 @@ test('emits Cloudflare headers and equivalent Caddy policies for every static ro
   assert.match(headers, /\/recipe\n  Cache-Control: no-store/)
   assert.match(headers, /\/cookbooks\n  Cache-Control: no-store/)
   assert.match(headers, /\/cookbook\n  Cache-Control: no-store/)
+  assert.match(headers, /\/discover\n  Cache-Control: no-store/)
+  assert.match(headers, /\/discover\.html\n  Cache-Control: no-store/)
+  assert.match(headers, /\/create\n  Cache-Control: no-store/)
+  assert.match(headers, /\/create\.html\n  Cache-Control: no-store/)
   assert.match(headers, /\/index\.html\n  Cache-Control: no-store/)
-  assert.match(caddy, /@html path \/ \/index\.html \/auth\/confirm \/auth\/confirm\.html \/auth\/enroll \/auth\/enroll\.html \/account\/security \/account\/security\.html \/account\/creator-profile \/account\/creator-profile\.html \/creator \/creator\.html \/admin \/admin\.html \/admin\/settings \/admin\/settings\.html \/library \/library\.html \/recipe \/recipe\.html \/cookbooks \/cookbooks\.html \/cookbook \/cookbook\.html/)
+  assert.match(caddy, /@html path \/ \/index\.html \/auth\/confirm \/auth\/confirm\.html \/auth\/enroll \/auth\/enroll\.html \/account\/security \/account\/security\.html \/account\/creator-profile \/account\/creator-profile\.html \/creator \/creator\.html \/admin \/admin\.html \/admin\/settings \/admin\/settings\.html \/library \/library\.html \/recipe \/recipe\.html \/cookbooks \/cookbooks\.html \/cookbook \/cookbook\.html \/discover \/discover\.html \/create \/create\.html/)
   assert.match(headers, /Cache-Control: no-store/)
   assert.match(caddy, /@document0 path \/ \/index\.html\nheader @document0 Content-Security-Policy/)
   assert.match(caddy, /@document1 path \/auth\/confirm/)
@@ -84,7 +92,9 @@ test('emits Cloudflare headers and equivalent Caddy policies for every static ro
   assert.match(caddy, /@document9 path \/recipe \/recipe\.html/)
   assert.match(caddy, /@document10 path \/cookbooks \/cookbooks\.html/)
   assert.match(caddy, /@document11 path \/cookbook \/cookbook\.html/)
-  assert.equal(JSON.parse(manifest).length, 12)
+  assert.match(caddy, /@document12 path \/discover \/discover\.html/)
+  assert.match(caddy, /@document13 path \/create \/create\.html/)
+  assert.equal(JSON.parse(manifest).length, 14)
 }))
 
 for (const [name, bad] of [

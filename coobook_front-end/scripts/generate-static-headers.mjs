@@ -15,6 +15,8 @@ const pages = [
   { file: 'recipe.html', route: '/recipe' },
   { file: 'cookbooks.html', route: '/cookbooks' },
   { file: 'cookbook.html', route: '/cookbook' },
+  { file: 'discover.html', route: '/discover' },
+  { file: 'create.html', route: '/create' },
 ]
 const defaults = {
   'default-src': ["'self'"],

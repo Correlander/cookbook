@@ -58,6 +58,8 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
     await writeFile(join(dist, 'recipe.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Recipe</title></head></html>')
     await writeFile(join(dist, 'cookbooks.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Cookbooks</title></head></html>')
     await writeFile(join(dist, 'cookbook.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Cookbook</title></head></html>')
+    await writeFile(join(dist, 'discover.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Discover</title></head></html>')
+    await writeFile(join(dist, 'create.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Create</title></head></html>')
     await writeFile(join(dist, 'static-csp.json'), JSON.stringify([
       { route: '/', policy: "default-src 'self'; script-src 'self'" },
       { route: '/auth/confirm', policy: "default-src 'self'; style-src 'self'" },
@@ -69,6 +71,8 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
       { route: '/recipe', policy: "default-src 'self'; img-src 'self'" },
       { route: '/cookbooks', policy: "default-src 'self'; script-src 'self'" },
       { route: '/cookbook', policy: "default-src 'self'; img-src 'self'" },
+      { route: '/discover', policy: "default-src 'self'; script-src 'self'; style-src 'self'" },
+      { route: '/create', policy: "default-src 'self'; script-src 'self'; style-src 'self'" },
     ]))
     await writeFile(join(temp, 'secret.txt'), 'outside static root')
     child = spawn(process.execPath, [join(root, 'coobook_front-end/scripts/static-host.mjs')], {
@@ -112,6 +116,22 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
         assert.equal(response.status, 200, alias)
         assert.match(await response.text(), page.title)
         assert.equal(response.headers.get('cache-control'), 'no-store')
+        assert.equal(response.headers.get('content-security-policy'), page.policy)
+      }
+    }
+    for (const page of [
+      { path: '/discover', title: /Discover/, policy: "default-src 'self'; script-src 'self'; style-src 'self'" },
+      { path: '/create', title: /Create/, policy: "default-src 'self'; script-src 'self'; style-src 'self'" },
+    ]) {
+      for (const alias of [page.path, `${page.path}.html`]) {
+        const response = await fetch(`${base}${alias}?type=courses&keep=query`)
+        assert.equal(response.status, 200, alias)
+        assert.equal(new URL(response.url).search, '?type=courses&keep=query')
+        const html = await response.text()
+        assert.match(html, page.title)
+        assert.match(html, /noindex,nofollow/)
+        assert.equal(response.headers.get('cache-control'), 'no-store')
+        assert.equal(response.headers.get('referrer-policy'), 'no-referrer')
         assert.equal(response.headers.get('content-security-policy'), page.policy)
       }
     }

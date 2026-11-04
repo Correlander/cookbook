@@ -264,6 +264,64 @@ test('serves direct account and admin route aliases with private CSP and anonymo
   }
 })
 
+test('serves Discover aliases with private headers and route-backed type filters', async ({ page }) => {
+  const policies = JSON.parse(await readFile(`${process.env.PLAYWRIGHT_DIST}/static-csp.json`, 'utf8')) as Array<{ route: string; policy: string }>
+  const policy = policies.find((item) => item.route === '/discover')?.policy
+  expect(policy).toBeTruthy()
+  await page.route('**/api/auth/me', (route) => route.fulfill({ status: 401, contentType: 'application/json', body: '{"error":"unauthorized"}' }))
+  await page.route('**/api/public/config', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '{"courses_enabled":true,"public_instance":true}' }))
+
+  for (const path of ['/discover', '/discover.html']) {
+    const response = await page.goto(`${path}?type=cookbooks&keep=query`)
+    expect(response?.status()).toBe(200)
+    expect(response?.headers()['cache-control']).toBe('no-store')
+    expect(response?.headers()['referrer-policy']).toBe('no-referrer')
+    expect(response?.headers()['content-security-policy']).toBe(policy)
+    await expect(page).toHaveTitle(/Discover/)
+    await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', 'noindex,nofollow')
+    await expect(page.getByRole('heading', { name: 'Discover', level: 1 })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Cookbooks' })).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.getByRole('button', { name: 'Courses' })).toBeVisible()
+    await expect(page.getByRole('button', { name: /create/i })).toHaveCount(0)
+    await expect(page.getByRole('link', { name: 'Administration' })).toHaveCount(0)
+    await page.getByRole('button', { name: 'Recipes' }).click()
+    await expect(page).toHaveURL(/\/discover\?type=recipes(?:&|$)/)
+    await expect(page.getByRole('button', { name: 'Recipes' })).toHaveAttribute('aria-pressed', 'true')
+  }
+})
+
+test('serves Create aliases with private headers and gates creation on sign-in', async ({ page }) => {
+  const policies = JSON.parse(await readFile(`${process.env.PLAYWRIGHT_DIST}/static-csp.json`, 'utf8')) as Array<{ route: string; policy: string }>
+  const policy = policies.find((item) => item.route === '/create')?.policy
+  expect(policy).toBeTruthy()
+  await page.route('**/api/auth/me', (route) => route.fulfill({ status: 401, contentType: 'application/json', body: '{"error":"unauthorized"}' }))
+  for (const path of ['/create', '/create.html']) {
+    const response = await page.goto(`${path}?source=direct`)
+    expect(response?.status()).toBe(200)
+    expect(response?.headers()['cache-control']).toBe('no-store')
+    expect(response?.headers()['referrer-policy']).toBe('no-referrer')
+    expect(response?.headers()['content-security-policy']).toBe(policy)
+    await expect(page).toHaveTitle(/Create/)
+    await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', 'noindex,nofollow')
+    await expect(page.getByRole('heading', { name: 'Create', level: 1 })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Sign in to create' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Recipe' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Cookbook' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Course' })).toHaveCount(0)
+  }
+})
+
+test('shows course creation only when the public configuration enables the feature', async ({ page, request }) => {
+  await signInWithSyntheticEmail(page, request, 'course-feature@example.test', 'Course Feature')
+  await page.route('**/api/public/config', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '{"courses_enabled":true}' }))
+  await page.goto('/create')
+  const courseButton = page.getByRole('button', { name: 'Course' })
+  await expect(courseButton).toBeVisible()
+  await courseButton.click()
+  await expect(page.getByRole('heading', { name: 'Create a course' })).toBeVisible()
+  await expect(page.getByLabel('Visibility')).toHaveValue('private')
+})
+
 test('signed-in account users can open Account Security and cannot open instance settings', async ({ page, request }) => {
   const user = await signInWithSyntheticEmail(page, request, 'route-user@example.test', 'Route User')
   expect(user.is_admin).toBe(false)

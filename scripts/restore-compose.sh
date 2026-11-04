@@ -61,6 +61,14 @@ image_ref_count=$(printf '%s\n' "$image_refs" | sed '/^[[:space:]]*$/d' | wc -l 
 image_ref=$(printf '%s\n' "$image_refs" | sed '/^[[:space:]]*$/d')
 verifier_image=$("$compose_engine" image inspect --format '{{.Id}}' "$image_ref")
 printf '%s\n' "$verifier_image" | grep -Eq '^(sha256:)?[0-9a-f]{64}$' || { echo "service image did not resolve to one immutable local image ID" >&2; exit 1; }
+snapshot_uid=
+snapshot_gid=
+if [ "$compose_engine" = docker ]; then
+	snapshot_uid=$(id -u) || { echo "could not determine the restore caller UID" >&2; exit 1; }
+	snapshot_gid=$(id -g) || { echo "could not determine the restore caller GID" >&2; exit 1; }
+	case "$snapshot_uid" in ''|*[!0-9]*) echo "restore caller UID is invalid" >&2; exit 1 ;; esac
+	case "$snapshot_gid" in ''|*[!0-9]*) echo "restore caller GID is invalid" >&2; exit 1 ;; esac
+fi
 cd "$repo_root"
 archive_format=$(python3 "$script_dir/validate_backup.py" --allow-legacy --engine "$compose_engine" --image "$verifier_image" --print-format "$archive_path")
 if [ "$archive_format" = legacy ] && [ "$accept_key_loss" != yes ]; then
@@ -105,6 +113,22 @@ compose run -T --rm --no-deps --user 0:0 \
 	-ec '
 	archive=$1
 	archive_format=$2
+	snapshot_uid=$3
+	snapshot_gid=$4
+	if [ -n "$snapshot_uid" ] || [ -n "$snapshot_gid" ]; then
+		case "$snapshot_uid" in ''|*[!0-9]*) echo "restore snapshot UID is invalid" >&2; exit 1 ;; esac
+		case "$snapshot_gid" in ''|*[!0-9]*) echo "restore snapshot GID is invalid" >&2; exit 1 ;; esac
+	fi
+
+	set_snapshot_copy_owner() {
+		case "$1" in
+			/snapshot/cookbook.db|/snapshot/cookbook.db-wal|/snapshot/cookbook.db-journal) ;;
+			*) echo "unexpected restore snapshot path" >&2; exit 1 ;;
+		esac
+		[ -f "$1" ] && [ ! -L "$1" ] || { echo "restore snapshot copy is not a regular file" >&2; exit 1; }
+		if [ -n "$snapshot_uid" ]; then chown "$snapshot_uid:$snapshot_gid" "$1"; fi
+		chmod 600 "$1"
+	}
 	rm -rf /data/media
 	rm -rf /data/secrets
 	rm -f /data/cookbook.db /data/cookbook.db-wal /data/cookbook.db-shm /data/cookbook.db-journal
@@ -132,11 +156,14 @@ compose run -T --rm --no-deps --user 0:0 \
 		[ ! -e /data/secrets/federation-ed25519.pending.pk8.pem ] || chmod 600 /data/secrets/federation-ed25519.pending.pk8.pem
 	fi
 	for sidecar in cookbook.db-wal cookbook.db-journal; do
-		if [ -e "/data/$sidecar" ]; then cp -- "/data/$sidecar" "/snapshot/$sidecar"; chmod 600 "/snapshot/$sidecar"; fi
+		if [ -e "/data/$sidecar" ]; then
+			cp -- "/data/$sidecar" "/snapshot/$sidecar"
+			set_snapshot_copy_owner "/snapshot/$sidecar"
+		fi
 	done
 	cp -- /data/cookbook.db /snapshot/cookbook.db
-	chmod 600 /snapshot/cookbook.db
-	' sh "$archive_name" "$archive_format"
+	set_snapshot_copy_owner /snapshot/cookbook.db
+	' sh "$archive_name" "$archive_format" "$snapshot_uid" "$snapshot_gid"
 
 python3 "$script_dir/validate_backup.py" --allow-legacy --engine "$compose_engine" --image "$verifier_image" --verify-restored-snapshot "$staging_dir" "$archive_path"
 restore_succeeded=yes

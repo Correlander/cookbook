@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import os
 import sqlite3
 import sys
@@ -153,6 +154,24 @@ elif command == "run":
     count = int(counter.read_text() if counter.exists() else "0") + 1
     counter.write_text(str(count))
     if int(os.environ.get("MOCK_FAIL_RUN_AT", "0")) == count: fail(42)
+    restore_script = next((value for value in rest if "snapshot_uid=$3" in value), None)
+    if restore_script is not None:
+        if ("/snapshot/cookbook.db|/snapshot/cookbook.db-wal|/snapshot/cookbook.db-journal" not in restore_script
+                or 'chown "$snapshot_uid:$snapshot_gid" "$1"' not in restore_script
+                or '[ -f "$1" ] && [ ! -L "$1" ]' not in restore_script
+                or 'if [ -n "$snapshot_uid" ]; then' not in restore_script
+                or 'set_snapshot_copy_owner "/snapshot/$sidecar"' not in restore_script
+                or 'set_snapshot_copy_owner /snapshot/cookbook.db' not in restore_script
+                or 'chown -R "$snapshot_uid:$snapshot_gid" /snapshot' in restore_script): fail(92)
+        snapshot_uid, snapshot_gid = rest[-2:]
+        if pathlib.Path(sys.argv[0]).name == "podman":
+            if snapshot_uid or snapshot_gid: fail(93)
+        elif (snapshot_uid, snapshot_gid) != (str(os.getuid()), str(os.getgid())):
+            fail(94)
+        pathlib.Path(os.environ["MOCK_STAGE_LOG"]).write_text(json.dumps({"uid": snapshot_uid, "gid": snapshot_gid}))
+        if os.environ.get("MOCK_STAGE_CHOWN_FAIL") == "yes":
+            print("injected snapshot ownership normalization failure", file=sys.stderr)
+            fail(44)
     if count == 1 and os.environ.get("MOCK_ARCHIVE"):
         volume = snapshot = None
         for index, value in enumerate(rest[:-1]):
@@ -169,7 +188,8 @@ else: fail(91)
 """)
         docker.chmod(0o755)
 
-    def _run(self, script, *args, fail_run_at=0, running="yes", image_fail="no", actor_fail=""):
+    def _run(self, script, *args, fail_run_at=0, running="yes", image_fail="no", actor_fail="",
+             stage_chown_fail="no", compose_engine="docker", fake_identity=None):
         env = os.environ.copy()
         env.update(
             {
@@ -180,12 +200,25 @@ else: fail(91)
                 "MOCK_IMAGE_FAIL": image_fail,
                 "MOCK_ACTOR_FAIL": actor_fail,
                 "MOCK_ACTOR_LOG": str(self.root / "actor.log"),
+                "MOCK_STAGE_LOG": str(self.root / "stage-owner.json"),
+                "MOCK_STAGE_CHOWN_FAIL": stage_chown_fail,
                 "MOCK_RUNNING": running,
                 "COOKBOOK_BACKUP_DIR": str(self.backup_dir),
                 "MOCK_ARCHIVE": str(self.raw_archive),
-                "COOKBOOK_COMPOSE_ENGINE": "docker",
+                "COOKBOOK_COMPOSE_ENGINE": compose_engine,
             }
         )
+        if fake_identity is not None:
+            uid, gid = fake_identity
+            fake_id = self.bin_dir / "id"
+            fake_id.write_text(f'''#!/bin/sh
+case "$1" in
+  -u) printf '%s\\n' '{uid}';;
+  -g) printf '%s\\n' '{gid}';;
+  *) exit 90;;
+esac
+''', encoding="utf-8")
+            fake_id.chmod(0o755)
         return subprocess.run([str(ROOT / "scripts" / script), *map(str, args)], cwd=ROOT, env=env, text=True, capture_output=True)
 
     def _events(self):
@@ -251,6 +284,29 @@ else: fail(91)
         result = self._run("restore-compose.sh", self.archive)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self._events(), ["ps", "stop", "run", "start"])
+        self.assertEqual(json.loads((self.root / "stage-owner.json").read_text()),
+                         {"uid": str(os.getuid()), "gid": str(os.getgid())})
+
+    def test_restore_stage_ownership_failure_keeps_service_stopped(self):
+        result = self._run("restore-compose.sh", self.archive, stage_chown_fail="yes")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("left stopped", result.stderr)
+        self.assertEqual(self._events(), ["ps", "stop", "run"])
+
+    def test_restore_rejects_non_numeric_snapshot_owner_before_stopping(self):
+        result = self._run("restore-compose.sh", self.archive,
+                           fake_identity=("1001;touch /tmp/cookbook-stage-owner-injection", "1001"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("restore caller UID is invalid", result.stderr)
+        self.assertEqual(self._events(), [])
+
+    def test_podman_restore_keeps_snapshot_copy_ownership_unchanged(self):
+        podman = self.bin_dir / "podman"
+        podman.symlink_to(self.bin_dir / "docker")
+        result = self._run("restore-compose.sh", self.archive, compose_engine="podman")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._events(), ["ps", "stop", "run", "start"])
+        self.assertEqual(json.loads((self.root / "stage-owner.json").read_text()), {"uid": "", "gid": ""})
 
     def test_restore_rejects_a_writable_archive_before_touching_the_service(self):
         self.archive.chmod(0o666)

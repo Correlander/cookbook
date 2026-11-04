@@ -1,65 +1,30 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
 	"strings"
 	"time"
-	"unicode/utf8"
+
+	"Cookbook_Database_Backend/internal/federation/exchangev1"
 )
 
 const (
-	federationEventSnapshot  = "recipe.snapshot"
-	federationEventUpdate    = "recipe.update"
-	federationEventTombstone = "recipe.tombstone"
-	maxFederationEventBytes  = 2 << 20
+	federationEventSnapshot  = exchangev1.EventSnapshot
+	federationEventUpdate    = exchangev1.EventUpdate
+	federationEventTombstone = exchangev1.EventTombstone
+	maxFederationEventBytes  = exchangev1.MaxEventBytes
 )
 
-type federationEvent struct {
-	Protocol      string                      `json:"protocol"`
-	SchemaVersion int                         `json:"schema_version"`
-	EventID       string                      `json:"event_id"`
-	EventType     string                      `json:"event_type"`
-	SourceOrigin  string                      `json:"source_origin"`
-	ObjectID      string                      `json:"object_id"`
-	Sequence      int64                       `json:"sequence"`
-	OccurredAt    string                      `json:"occurred_at"`
-	Attribution   *federationEventAttribution `json:"attribution,omitempty"`
-	Recipe        *federationEventRecipe      `json:"recipe,omitempty"`
-}
-
-type federationEventAttribution struct {
-	CreatorName string `json:"creator_name"`
-}
-
-type federationEventRecipe struct {
-	Title       string       `json:"title"`
-	Description string       `json:"description"`
-	Ingredients []ingredient `json:"ingredients"`
-	Steps       []recipeStep `json:"steps"`
-	Servings    int          `json:"servings"`
-	PrepTime    int          `json:"prep_time_minutes"`
-	CookTime    int          `json:"cook_time_minutes"`
-	Tags        []string     `json:"tags"`
-}
+type federationEvent = exchangev1.Event
+type federationEventAttribution = exchangev1.Attribution
+type federationEventRecipe = exchangev1.Recipe
 
 func decodeFederationEvent(body []byte) (federationEvent, []byte, error) {
-	var event federationEvent
-	if len(body) == 0 || int64(len(body)) > maxFederationEventBytes || !utf8.Valid(body) {
-		return event, nil, errors.New("invalid event body")
-	}
-	if err := rejectDuplicateJSONKeys(body); err != nil {
-		return event, nil, err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&event); err != nil {
-		return event, nil, err
-	}
-	if err := ensureJSONEOF(decoder); err != nil {
-		return event, nil, err
+	event, err := exchangev1.Decode(body)
+	if err != nil {
+		return federationEvent{}, nil, err
 	}
 	if err := validateFederationEvent(&event); err != nil {
 		return event, nil, err
@@ -81,105 +46,6 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 		return errors.New("trailing JSON value")
 	}
 	return nil
-}
-
-func rejectDuplicateJSONKeys(body []byte) error {
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	if err := consumeUniqueJSONValue(decoder, "event"); err != nil {
-		return err
-	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return errors.New("trailing JSON value")
-	}
-	return nil
-}
-
-func consumeUniqueJSONValue(decoder *json.Decoder, objectKind string) error {
-	token, err := decoder.Token()
-	if err != nil {
-		return err
-	}
-	delimiter, ok := token.(json.Delim)
-	if !ok {
-		return nil
-	}
-	switch delimiter {
-	case '{':
-		seen := make(map[string]struct{})
-		allowed := federationJSONAllowedKeys(objectKind)
-		for decoder.More() {
-			keyToken, err := decoder.Token()
-			if err != nil {
-				return err
-			}
-			key, ok := keyToken.(string)
-			if !ok {
-				return errors.New("invalid JSON object key")
-			}
-			if !allowed[key] {
-				return errors.New("unknown or incorrectly cased JSON field")
-			}
-			if _, duplicate := seen[key]; duplicate {
-				return errors.New("duplicate JSON object key")
-			}
-			seen[key] = struct{}{}
-			if err := consumeUniqueJSONValue(decoder, federationJSONChildKind(objectKind, key)); err != nil {
-				return err
-			}
-		}
-		_, err := decoder.Token()
-		return err
-	case '[':
-		for decoder.More() {
-			if err := consumeUniqueJSONValue(decoder, objectKind); err != nil {
-				return err
-			}
-		}
-		_, err := decoder.Token()
-		return err
-	default:
-		return errors.New("invalid JSON delimiter")
-	}
-}
-
-func federationJSONAllowedKeys(objectKind string) map[string]bool {
-	var keys []string
-	switch objectKind {
-	case "event":
-		keys = []string{"protocol", "schema_version", "event_id", "event_type", "source_origin", "object_id", "sequence", "occurred_at", "attribution", "recipe"}
-	case "attribution":
-		keys = []string{"creator_name"}
-	case "recipe":
-		keys = []string{"title", "description", "ingredients", "steps", "servings", "prep_time_minutes", "cook_time_minutes", "tags"}
-	case "ingredient":
-		keys = []string{"name", "quantity", "notes"}
-	case "step":
-		keys = []string{"text"}
-	}
-	allowed := make(map[string]bool, len(keys))
-	for _, key := range keys {
-		allowed[key] = true
-	}
-	return allowed
-}
-
-func federationJSONChildKind(parent, key string) string {
-	switch parent {
-	case "event":
-		if key == "attribution" || key == "recipe" {
-			return key
-		}
-	case "recipe":
-		if key == "ingredients" {
-			return "ingredient"
-		}
-		if key == "steps" {
-			return "step"
-		}
-	}
-	return ""
 }
 
 func validateFederationEvent(event *federationEvent) error {
@@ -206,9 +72,17 @@ func validateFederationEvent(event *federationEvent) error {
 		if event.Recipe == nil || event.Attribution == nil || len(strings.TrimSpace(event.Attribution.CreatorName)) == 0 || len(event.Attribution.CreatorName) > 200 {
 			return errors.New("missing recipe attribution")
 		}
+		ingredients := make([]ingredient, len(event.Recipe.Ingredients))
+		for i, value := range event.Recipe.Ingredients {
+			ingredients[i] = ingredient(value)
+		}
+		steps := make([]recipeStep, len(event.Recipe.Steps))
+		for i, value := range event.Recipe.Steps {
+			steps[i] = recipeStep(value)
+		}
 		input := recipeInput{
 			Title: event.Recipe.Title, Description: event.Recipe.Description,
-			Ingredients: event.Recipe.Ingredients, Steps: event.Recipe.Steps,
+			Ingredients: ingredients, Steps: steps,
 			Servings: event.Recipe.Servings, PrepTime: event.Recipe.PrepTime,
 			CookTime: event.Recipe.CookTime, Tags: event.Recipe.Tags,
 			Visibility: visibilityPublic, EditPolicy: "owner_only",
@@ -222,7 +96,15 @@ func validateFederationEvent(event *federationEvent) error {
 		if input.Steps == nil {
 			input.Steps = []recipeStep{}
 		}
-		event.Recipe = &federationEventRecipe{Title: input.Title, Description: input.Description, Ingredients: input.Ingredients, Steps: input.Steps, Servings: input.Servings, PrepTime: input.PrepTime, CookTime: input.CookTime, Tags: input.Tags}
+		wireIngredients := make([]exchangev1.Ingredient, len(input.Ingredients))
+		for i, value := range input.Ingredients {
+			wireIngredients[i] = exchangev1.Ingredient(value)
+		}
+		wireSteps := make([]exchangev1.Step, len(input.Steps))
+		for i, value := range input.Steps {
+			wireSteps[i] = exchangev1.Step(value)
+		}
+		event.Recipe = &federationEventRecipe{Title: input.Title, Description: input.Description, Ingredients: wireIngredients, Steps: wireSteps, Servings: input.Servings, PrepTime: input.PrepTime, CookTime: input.CookTime, Tags: input.Tags}
 		event.Attribution.CreatorName = strings.TrimSpace(event.Attribution.CreatorName)
 	case federationEventTombstone:
 		if event.Recipe != nil || event.Attribution != nil {
@@ -276,23 +158,24 @@ func serializeFederationEvent(origin, eventID, eventType string, sequence int64,
 			input.Steps = []recipeStep{}
 		}
 		event.Attribution = &federationEventAttribution{CreatorName: creator}
+		wireIngredients := make([]exchangev1.Ingredient, len(input.Ingredients))
+		for i, value := range input.Ingredients {
+			wireIngredients[i] = exchangev1.Ingredient(value)
+		}
+		wireSteps := make([]exchangev1.Step, len(input.Steps))
+		for i, value := range input.Steps {
+			wireSteps[i] = exchangev1.Step(value)
+		}
 		event.Recipe = &federationEventRecipe{
-			Title: input.Title, Description: input.Description, Ingredients: input.Ingredients,
-			Steps: input.Steps, Servings: input.Servings, PrepTime: input.PrepTime,
+			Title: input.Title, Description: input.Description, Ingredients: wireIngredients,
+			Steps: wireSteps, Servings: input.Servings, PrepTime: input.PrepTime,
 			CookTime: input.CookTime, Tags: input.Tags,
 		}
 	case federationEventTombstone:
 	default:
 		return nil, errors.New("unsupported federation event type")
 	}
-	body, err := json.Marshal(event)
-	if err != nil {
-		return nil, err
-	}
-	if len(body) > maxFederationEventBytes {
-		return nil, errors.New("federation event is too large")
-	}
-	return body, nil
+	return exchangev1.Encode(event)
 }
 
 func isFederationID(value string) bool {

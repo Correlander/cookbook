@@ -328,13 +328,13 @@ func acceptFederationEvent(ctx context.Context, db *sql.DB, keyOrigin string, bo
 	acceptedStatus := 0
 	acceptedResponse := []byte(nil)
 	err = withImmediateSQLiteWriteTx(ctx, db, func(tx sqliteExecutor) error {
-		var peerEnabled int
-		var profile string
-		var keyStatus, keyOriginStored string
-		if err := tx.QueryRowContext(ctx, `SELECT enabled,exchange_profile FROM federation_peers WHERE origin=?`, keyOrigin).Scan(&peerEnabled, &profile); err != nil || peerEnabled != 1 {
-			return errors.New("federation peer is disabled")
-		}
 		if v2 {
+			var peerEnabled int
+			var profile string
+			var keyStatus, keyOriginStored string
+			if err := tx.QueryRowContext(ctx, `SELECT enabled,exchange_profile FROM federation_peers WHERE origin=?`, keyOrigin).Scan(&peerEnabled, &profile); err != nil || peerEnabled != 1 {
+				return errors.New("federation peer is disabled")
+			}
 			if profile != federationExchangeV2Retention {
 				return errors.New("federation v2 profile is disabled")
 			}
@@ -360,6 +360,15 @@ func acceptFederationEvent(ctx context.Context, db *sql.DB, keyOrigin string, bo
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
+		}
+		// V1 acceptance historically returns an exact duplicate receipt even after local peer removal.
+		// New V1 events still require an enabled peer, while authenticated v2 requests recheck
+		// peer/key/profile before duplicate lookup above.
+		if !v2 {
+			var peerEnabled int
+			if err := tx.QueryRowContext(ctx, `SELECT enabled FROM federation_peers WHERE origin=?`, keyOrigin).Scan(&peerEnabled); err != nil || peerEnabled != 1 {
+				return errors.New("federation peer is disabled")
+			}
 		}
 		var latestSequence int64
 		var priorDeleted int

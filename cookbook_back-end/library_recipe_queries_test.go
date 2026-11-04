@@ -134,7 +134,7 @@ func TestLibraryRecipesUsesCanonicalRemoteAvailabilityBeforeSearchAndCount(t *te
 	fixtures := []malformedCache{
 		{"3123456789abcdef0123456789abcdef", "Byte marker " + byteTitle, fmt.Sprintf(baseBody, "Byte marker "+byteTitle), "2026-11-03T12:00:00Z"},
 		{"4123456789abcdef0123456789abcdef", "Timestamp marker", fmt.Sprintf(baseBody, "Timestamp marker"), "2026-11-03"},
-		{"5123456789abcdef0123456789abcdef", "Oversize marker", fmt.Sprintf(baseBody, "Oversize marker") + strings.Repeat(" ", (1<<20)+1), "2026-11-03T12:00:00Z"},
+		{"5123456789abcdef0123456789abcdef", "Oversize marker", fmt.Sprintf(baseBody, "Oversize marker") + strings.Repeat(" ", 1_500_001), "2026-11-03T12:00:00Z"},
 	}
 	for i, fixture := range fixtures {
 		uri := testFederationOrigin + "/federation/recipes/" + fixture.id

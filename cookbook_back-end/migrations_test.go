@@ -323,7 +323,7 @@ func TestMigrationV1ToV9ChecksumsRemainImmutable(t *testing.T) {
 	}
 }
 
-func TestV8DatabaseUpgradePreservesRemoteSnapshotsAndLeavesProjectionEmpty(t *testing.T) {
+func TestV8DatabaseUpgradeDefersProjectionUntilResourceMigrationAndPreservesSnapshots(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v8-library-projection-upgrade.db")
 	db := rawMigrationDB(t, path)
 	ctx := context.Background()
@@ -359,6 +359,20 @@ func TestV8DatabaseUpgradePreservesRemoteSnapshotsAndLeavesProjectionEmpty(t *te
 	if len(before) != 8 {
 		t.Fatalf("pre-upgrade ledger rows=%d, want 8", len(before))
 	}
+	if err := runSchemaMigrations(ctx, db, migrations[:9]); err != nil {
+		t.Fatal(err)
+	}
+	if got := migrationVersion(t, db); got != 9 {
+		t.Fatalf("after v9 upgrade version=%d, want 9", got)
+	}
+	var projections int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_remote_recipe_search`).Scan(&projections); err != nil || projections != 0 {
+		t.Fatalf("v9 migration populated deferred projection rows=%d err=%v, want zero", projections, err)
+	}
+	var cachedBody string
+	if err := db.QueryRow(`SELECT recipe_json FROM federation_remote_recipes WHERE object_id='https://remote.example/federation/recipes/recipe-one'`).Scan(&cachedBody); err != nil || cachedBody != `{"title":"Legacy snapshot"}` {
+		t.Fatalf("v9 migration changed cached remote snapshot: body=%q err=%v", cachedBody, err)
+	}
 	if err := runSchemaMigrations(ctx, db, migrations); err != nil {
 		t.Fatal(err)
 	}
@@ -371,13 +385,13 @@ func TestV8DatabaseUpgradePreservesRemoteSnapshotsAndLeavesProjectionEmpty(t *te
 			t.Fatalf("migration v%d changed: name=%q checksum=%q err=%v", item.version, name, checksum, err)
 		}
 	}
-	var cachedBody string
+	cachedBody = ""
 	if err := db.QueryRow(`SELECT recipe_json FROM federation_remote_recipes WHERE object_id='https://remote.example/federation/recipes/recipe-one'`).Scan(&cachedBody); err != nil || cachedBody != `{"title":"Legacy snapshot"}` {
 		t.Fatalf("cached remote snapshot changed: body=%q err=%v", cachedBody, err)
 	}
-	var projections int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_remote_recipe_search`).Scan(&projections); err != nil || projections != 0 {
-		t.Fatalf("v8 upgrade populated projection rows=%d err=%v, want zero", projections, err)
+	var available int
+	if err := db.QueryRow(`SELECT COUNT(*),COALESCE(MAX(available),-1) FROM federation_remote_recipe_search`).Scan(&projections, &available); err != nil || projections != 1 || available != 0 {
+		t.Fatalf("v11 migration did not backfill unavailable projection: rows=%d available=%d err=%v", projections, available, err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
@@ -390,8 +404,8 @@ func TestV8DatabaseUpgradePreservesRemoteSnapshotsAndLeavesProjectionEmpty(t *te
 	if got := migrationVersion(t, db); got != 11 {
 		t.Fatalf("restarted version=%d, want 11", got)
 	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_remote_recipe_search`).Scan(&projections); err != nil || projections != 0 {
-		t.Fatalf("restart populated projection rows=%d err=%v, want zero", projections, err)
+	if err := db.QueryRow(`SELECT COUNT(*),COALESCE(MAX(available),-1) FROM federation_remote_recipe_search`).Scan(&projections, &available); err != nil || projections != 1 || available != 0 {
+		t.Fatalf("restart lost latest-v11 projection: rows=%d available=%d err=%v", projections, available, err)
 	}
 }
 

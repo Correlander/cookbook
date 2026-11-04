@@ -185,7 +185,7 @@ export default function AccountSecurity() {
       <div className="account-portability">
         <h3>Your recipes, cookbooks, and saved references</h3>
         <p>
-          Exports include owned recipes and cookbooks plus saved reference identities. Course lessons and course content are not exported. Imports create private copies and do not include revision history; saved course references remain references and are not mapped to copied courses.
+          Exports include owned recipes, cookbooks, courses, and lesson text, plus saved reference identities. A lesson recipe link is included only when that recipe is in the same export; other links are omitted and can be relinked after import. Imports create private copies and do not include revision history. Saved course references remain references and are not mapped to copied courses.
         </p>
         <a className="button button--green" href="/api/export">
           Download export
@@ -219,9 +219,12 @@ export default function AccountSecurity() {
                 recipes: number;
                 cookbooks: number;
                 course_bookmarks?: number;
+                courses?: number;
+                course_lessons?: number;
+                omitted_course_recipe_links?: number;
               };
               window.alert(
-                `Imported ${result.recipes} recipes and ${result.cookbooks} cookbooks as private copies${typeof result.course_bookmarks === "number" ? `, plus ${result.course_bookmarks} saved course references` : ""}.`,
+                `Imported ${result.recipes} recipes and ${result.cookbooks} cookbooks as private copies${typeof result.courses === "number" ? `, ${result.courses} courses and ${result.course_lessons ?? 0} lessons` : ""}${typeof result.omitted_course_recipe_links === "number" && result.omitted_course_recipe_links > 0 ? `; ${result.omitted_course_recipe_links} course recipe links were omitted and need relinking` : ""}${typeof result.course_bookmarks === "number" ? `, plus ${result.course_bookmarks} saved course references` : ""}.`,
               );
             } catch (err: unknown) {
               setError(errorMessage(err, "This export could not be imported."));

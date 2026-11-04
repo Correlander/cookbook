@@ -24,7 +24,7 @@ func TestPortableV6CourseBookmarksPreserveOnlyReferenceIdentity(t *testing.T) {
 	}
 	h := apiHandler{db: db}
 	manifest, bundle := exportPortableBookmarkManifest(t, h, "source")
-	if bundle.Format != portableFormatV6 {
+	if bundle.Format != portableFormatV7 {
 		t.Fatalf("format=%q", bundle.Format)
 	}
 	items, err := portableCourseBookmarksFromBundle(bundle)
@@ -51,11 +51,11 @@ func TestPortableV6CourseBookmarksPreserveOnlyReferenceIdentity(t *testing.T) {
 			t.Fatalf("course bookmark carries extra fields: %v", item)
 		}
 	}
-	if strings.Contains(string(manifest), "Private course") || strings.Contains(string(manifest), "must-not-export") {
-		t.Fatal("export included course data or another account reference")
+	if !strings.Contains(string(manifest), "Private course") || strings.Contains(string(manifest), "must-not-export") {
+		t.Fatal("export omitted owned course data or included another account reference")
 	}
 	response := importPortableBookmarkArchive(t, h, "destination", portableBookmarkArchive(t, bundle, nil))
-	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"course_bookmarks":2`) {
+	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"course_bookmarks":2`) || !strings.Contains(response.Body.String(), `"courses":1`) {
 		t.Fatalf("import response=%d %s", response.Code, response.Body)
 	}
 	var id, namespace, created string
@@ -63,7 +63,7 @@ func TestPortableV6CourseBookmarksPreserveOnlyReferenceIdentity(t *testing.T) {
 		t.Fatalf("imported identity=%q/%q/%q err=%v", id, namespace, created, err)
 	}
 	reimport := importPortableBookmarkArchive(t, h, "destination", portableBookmarkArchive(t, bundle, nil))
-	if reimport.Code != http.StatusCreated || !strings.Contains(reimport.Body.String(), `"course_bookmarks":0`) {
+	if reimport.Code != http.StatusCreated || !strings.Contains(reimport.Body.String(), `"course_bookmarks":0`) || !strings.Contains(reimport.Body.String(), `"courses":1`) {
 		t.Fatalf("reimport did not dedupe saved identities: %d %s", reimport.Code, reimport.Body)
 	}
 	var importedRefs int
@@ -71,8 +71,8 @@ func TestPortableV6CourseBookmarksPreserveOnlyReferenceIdentity(t *testing.T) {
 		t.Fatalf("reimport bookmark count=%d err=%v", importedRefs, err)
 	}
 	var copiedCourses int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM courses WHERE owner_id='destination' AND title='Private course'`).Scan(&copiedCourses); err != nil || copiedCourses != 0 {
-		t.Fatalf("course content unexpectedly included in export/import: count=%d err=%v", copiedCourses, err)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM courses WHERE owner_id='destination' AND title='Private course'`).Scan(&copiedCourses); err != nil || copiedCourses != 2 {
+		t.Fatalf("repeat content import did not create independent copies: count=%d err=%v", copiedCourses, err)
 	}
 	pageResponse := callCreatorProfileAPI(t, h, http.MethodGet, "/api/library/courses", "destination", nil)
 	var page LibraryCoursePage

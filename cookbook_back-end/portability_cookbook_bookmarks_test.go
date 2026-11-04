@@ -32,7 +32,7 @@ func TestPortableV5ExportImportPreservesCookbookReferenceIdentityOnly(t *testing
 	}
 	h := apiHandler{db: db}
 	manifest, bundle := exportPortableBookmarkManifest(t, h, "reader")
-	if bundle.Format != portableFormatV6 || len(bundle.Cookbooks) != 1 {
+	if bundle.Format != portableFormatV7 || len(bundle.Cookbooks) != 1 {
 		t.Fatalf("v5 export format/cookbooks=%q/%d", bundle.Format, len(bundle.Cookbooks))
 	}
 	bookmarks, err := portableCookbookBookmarksFromBundle(bundle)

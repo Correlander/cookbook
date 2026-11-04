@@ -301,15 +301,23 @@ test("private snapshots use signed captures, stay actor-bound, and import only b
     const referenceSummary = await importArchive(referenceImporter, archive, false);
     expect(referenceSummary).toContain("0 private saved copies preserved as unverified");
     await referenceImporter.page.goto("/library");
-    await expect(referenceImporter.page.getByText("Saved reference", { exact: true })).toBeVisible();
+    await saveReference(referenceImporter.page, ids.reference);
+    await referenceImporter.page.goto("/library");
+    const unrelatedReference = referenceImporter.page.getByRole("link", { name: `Open ${titles.reference}` });
+    const importedReference = referenceImporter.page.getByRole("link", { name: `Open ${titles.conditional}` });
+    const importedReferenceCard = referenceImporter.page.getByRole("article").filter({ has: importedReference });
+    await expect(unrelatedReference).toBeVisible();
+    await expect(importedReference).toBeVisible();
+    await expect(importedReferenceCard.getByText("Saved reference", { exact: true })).toBeVisible();
 
     copyImporter = await openContext(browser);
     await signIn(copyImporter, "snapshot-copy-import@example.test", "Copy Importer");
     const copySummary = await importArchive(copyImporter, archive, true);
     expect(copySummary).toContain("1 private saved copy preserved as unverified");
     await copyImporter.page.goto("/library");
-    await expect(copyImporter.page.getByText("Imported copy · source not verified. This label does not verify authorship. Source changes do not update this copy.")).toBeVisible();
     const importedLink = copyImporter.page.getByRole("link", { name: `Open ${titles.conditional}` });
+    const importedCopyCard = copyImporter.page.getByRole("article").filter({ has: importedLink });
+    await expect(importedCopyCard.getByText("Imported copy · source not verified. This label does not verify authorship. Source changes do not update this copy.")).toBeVisible();
     await importedLink.click();
     await expect(copyImporter.page.getByText(titles.conditional, { exact: true })).toBeVisible();
   } finally {

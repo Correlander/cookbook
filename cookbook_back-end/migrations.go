@@ -99,6 +99,11 @@ func registeredSchemaMigrations() []schemaMigration {
 		name:     "private-remote-recipe-snapshots",
 		checksum: migrationChecksum("private-remote-recipe-snapshots", libraryRemoteSnapshotsDDL),
 		apply:    applyLibraryRemoteSnapshotsMigration,
+	}, {
+		version:  14,
+		name:     "course-creator-attribution",
+		checksum: migrationChecksum("course-creator-attribution", courseAttributionSchemaDDL+"\x00"+courseAttributionIndexesDDL),
+		apply:    applyCourseAttributionSchemaMigration,
 	}}
 }
 

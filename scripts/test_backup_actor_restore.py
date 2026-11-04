@@ -595,6 +595,9 @@ volumes:
                     self.assertEqual(persisted[index], expected, state + " capture evidence or moderation data changed")
 
                 imported = persisted[1]
+                # The synthetic imported-unverified row above deliberately seeds
+                # these absent facts as SQL NULL; Core preserves absence and does
+                # not invent source sequence/event identity during import.
                 self.assertEqual(
                     {key: imported[key] for key in ("id", "state", "removed_version_id", "moderated_by", "moderated_at",
                                                     "moderation_reason", "moderation_outcome", "provenance_state", "object_uri",
@@ -606,7 +609,7 @@ volumes:
                      "object_uri": "https://peer.example.org/federation/recipes/imported",
                      "source_origin": "https://peer.example.org", "source_recipe_id": "imported",
                      "creator_name": "Recovery fixture", "received_at": "2026-11-04T00:00:00Z",
-                     "sequence": 17, "event_id": "fixture-event-17", "event_type": "recipe.snapshot",
+                     "sequence": None, "event_id": None, "event_type": None,
                      "payload_json": snapshot_payload, "payload_sha256": snapshot_payload_hash, "untrusted_claim": snapshot_claim},
                 )
                 for key in verified_evidence:

@@ -228,6 +228,8 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.creatorProfileRecipes(w, r, parts[1])
 	case len(parts) == 3 && parts[0] == "creator-profiles" && parts[2] == "cookbooks":
 		h.creatorProfileCookbooks(w, r, parts[1])
+	case len(parts) == 3 && parts[0] == "creator-profiles" && parts[2] == "courses":
+		h.creatorProfileCourses(w, r, parts[1])
 	case len(parts) == 1 && parts[0] == "export":
 		h.exportData(w, r)
 	case len(parts) == 1 && parts[0] == "import":

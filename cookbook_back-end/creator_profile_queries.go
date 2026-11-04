@@ -43,6 +43,25 @@ type creatorProfileCookbookList struct {
 	Offset  int                          `json:"offset"`
 }
 
+type creatorProfileCourse struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+type creatorProfileCourseItem struct {
+	Course     creatorProfileCourse `json:"course"`
+	Role       string               `json:"role"`
+	Provenance string               `json:"provenance"`
+}
+
+type creatorProfileCourseList struct {
+	Profile creatorProfile             `json:"profile"`
+	Items   []creatorProfileCourseItem `json:"items"`
+	Total   int                        `json:"total"`
+	Limit   int                        `json:"limit"`
+	Offset  int                        `json:"offset"`
+}
+
 func recipeCookbookIDsForActor(ctx context.Context, tx *sql.Tx, actorID string, recipeIDs []string) (map[string][]string, error) {
 	if len(recipeIDs) == 0 {
 		return map[string][]string{}, nil
@@ -271,6 +290,93 @@ func (h apiHandler) creatorProfileCookbooks(w http.ResponseWriter, r *http.Reque
 	}
 	if !visible {
 		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h apiHandler) creatorProfileCourses(w http.ResponseWriter, r *http.Request, creatorID string) {
+	w.Header().Set("Cache-Control", "private, no-store")
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	uid := authenticatedUser(r)
+	if uid == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	limit, offset, err := listPage(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_pagination")
+		return
+	}
+	tx, err := h.db.BeginTx(r.Context(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	defer tx.Rollback()
+	query := `WITH visible_profile AS (
+		SELECT p.creator_id,p.user_id,p.public_name,p.bio,p.visibility,p.created_at,p.updated_at
+		FROM creator_profiles p JOIN instance_settings s ON s.id=1 AND s.courses_enabled=1
+		WHERE p.creator_id=? AND (p.user_id=? OR p.visibility='instance')
+	), readable AS (
+		SELECT c.id,c.title,c.updated_at,a.role,a.provenance
+		FROM visible_profile p JOIN content_attributions a ON a.creator_id=p.creator_id AND a.subject_kind='local'
+		JOIN courses c ON c.id=a.course_id JOIN instance_settings s ON s.id=1
+		WHERE c.owner_id=? OR (s.public_instance=1 AND c.visibility='public')
+	), page AS (
+		SELECT id,title,updated_at,role,provenance FROM readable
+		ORDER BY updated_at DESC,id,role LIMIT ? OFFSET ?
+	), total AS (SELECT COUNT(*) AS count FROM readable)
+	SELECT p.creator_id,p.public_name,p.bio,p.visibility,p.created_at,p.updated_at,total.count,
+		page.id,page.title,page.role,page.provenance
+	FROM visible_profile p CROSS JOIN total LEFT JOIN page ON 1=1
+	ORDER BY page.updated_at DESC,page.id,page.role`
+	rows, err := tx.QueryContext(r.Context(), query, creatorID, uid, uid, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	result := creatorProfileCourseList{Items: []creatorProfileCourseItem{}, Limit: limit, Offset: offset}
+	var visible bool
+	for rows.Next() {
+		visible = true
+		var id, publicName, bio, profileVisibility, createdAt, updatedAt string
+		var total sql.NullInt64
+		var courseID, courseTitle, roleValue, provenance sql.NullString
+		if err := rows.Scan(&id, &publicName, &bio, &profileVisibility, &createdAt, &updatedAt, &total,
+			&courseID, &courseTitle, &roleValue, &provenance); err != nil {
+			rows.Close()
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		result.Profile = creatorProfile{ID: id, PublicName: publicName, Bio: bio, Visibility: profileVisibility, CreatedAt: createdAt, UpdatedAt: updatedAt}
+		result.Total = int(total.Int64)
+		if !courseID.Valid {
+			continue
+		}
+		result.Items = append(result.Items, creatorProfileCourseItem{
+			Course: creatorProfileCourse{ID: courseID.String, Title: courseTitle.String},
+			Role:   roleValue.String, Provenance: provenance.String,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	if err := rows.Close(); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	if !visible {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
 	writeJSON(w, http.StatusOK, result)

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -92,5 +93,170 @@ func TestVisibleCreatorProfileCanReturnNoReadableResources(t *testing.T) {
 	response := callCreatorProfileAPI(t, apiHandler{db: db}, http.MethodGet, "/api/creator-profiles/"+creatorID+"/recipes", "reader", nil)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"items":[]`) {
 		t.Fatalf("visible profile without resource access status=%d body=%s", response.Code, response.Body)
+	}
+}
+
+func TestCreatorProfileCoursesRequireLocalCreditAndCurrentCourseAccess(t *testing.T) {
+	db := testDatabase(t)
+	profileID := strings.Repeat("a", 32)
+	privateProfileID := strings.Repeat("b", 32)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,is_admin,created_at) VALUES
+		('profile-owner','profile@example.test','Profile Owner',0,'now'),
+		('course-owner','course@example.test','Course Owner',0,'now'),
+		('reader','reader@example.test','Reader',0,'now'),
+		('private-profile-owner','private@example.test','Private Owner',0,'now');
+		UPDATE instance_settings SET public_instance=1,courses_enabled=1 WHERE id=1;
+		INSERT INTO courses(id,owner_id,title,description,creator_name,visibility,created_at,updated_at) VALUES
+		('course-own-private','profile-owner','Own private','private details','Byline','private','now','2026-11-01'),
+		('course-public-a','course-owner','Public A','private details','Byline','public','now','2026-11-01'),
+		('course-public-b','course-owner','Public B','private details','Byline','public','now','2026-11-01'),
+		('course-other-private','course-owner','Other private','private details','Byline','private','now','2026-11-01'),
+		('course-legacy','course-owner','Legacy','private details','Legacy byline','public','now','2026-11-01'),
+		('course-imported','course-owner','Imported','private details','Imported byline','public','now','2026-11-01'),
+		('course-private-profile','course-owner','Private profile course','private details','Private byline','public','now','2026-11-01')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO creator_profiles(creator_id,user_id,public_name,visibility,created_at,updated_at) VALUES
+		(?, 'profile-owner','Instance Profile','instance','now','now'),
+		(?, 'private-profile-owner','Private Profile','private','now','now')`, profileID, privateProfileID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO content_attributions(id,course_id,subject_kind,creator_id,role,provenance,created_at) VALUES
+		('11111111111111111111111111111111','course-own-private','local',?,'creator','self_asserted_at_creation','now'),
+		('22222222222222222222222222222222','course-public-a','local',?,'creator','self_asserted_at_creation','now'),
+		('33333333333333333333333333333333','course-public-b','local',?,'creator','self_asserted_at_creation','now'),
+		('44444444444444444444444444444444','course-other-private','local',?,'creator','self_asserted_at_creation','now'),
+		('55555555555555555555555555555555','course-private-profile','local',?,'creator','self_asserted_at_creation','now')`, profileID, profileID, profileID, profileID, privateProfileID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO content_attributions(id,course_id,subject_kind,claim_source_instance_id,claim_creator_id,claim_name,role,provenance,created_at)
+		VALUES('66666666666666666666666666666666','course-imported','external_claim',?,?,'Imported Identity Secret','creator','portable_claim','now')`, strings.Repeat("c", 32), strings.Repeat("d", 32)); err != nil {
+		t.Fatal(err)
+	}
+	var privateCourseCreatorID string
+	if err := db.QueryRow(`SELECT creator_id FROM content_attributions WHERE course_id='course-private-profile'`).Scan(&privateCourseCreatorID); err != nil || privateCourseCreatorID != privateProfileID {
+		t.Fatalf("private profile fixture attribution=%q err=%v, want %q", privateCourseCreatorID, err, privateProfileID)
+	}
+	h := apiHandler{db: db}
+	profilePath := "/api/creator-profiles/" + profileID + "/courses"
+	ownerPage := callCreatorProfileAPI(t, h, http.MethodGet, profilePath+"?limit=2", "profile-owner", nil)
+	if ownerPage.Code != http.StatusOK {
+		t.Fatalf("profile owner status=%d body=%s", ownerPage.Code, ownerPage.Body)
+	}
+	if tooMany := callCreatorProfileAPI(t, h, http.MethodGet, profilePath+"?limit=101", "profile-owner", nil); tooMany.Code != http.StatusBadRequest {
+		t.Fatalf("profile course list exceeded server page bound: status=%d body=%s", tooMany.Code, tooMany.Body)
+	}
+	var first creatorProfileCourseList
+	if err := json.Unmarshal(ownerPage.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	if first.Profile.ID != profileID || first.Total != 3 || first.Limit != 2 || first.Offset != 0 || len(first.Items) != 2 {
+		t.Fatalf("first page metadata=%+v", first)
+	}
+	if first.Items[0].Course.ID != "course-own-private" || first.Items[1].Course.ID != "course-public-a" {
+		t.Fatalf("first page ordering or ACL=%+v", first.Items)
+	}
+	for _, forbidden := range []string{"owner_id", "owner_name", "creator_name", "description", "lesson_count", "Imported Identity Secret", "Legacy byline", "course-other-private", "course-legacy", "course-imported"} {
+		if strings.Contains(ownerPage.Body.String(), forbidden) {
+			t.Fatalf("minimal profile DTO exposed %q: %s", forbidden, ownerPage.Body)
+		}
+	}
+	lastPage := callCreatorProfileAPI(t, h, http.MethodGet, profilePath+"?limit=2&offset=2", "profile-owner", nil)
+	var last creatorProfileCourseList
+	if lastPage.Code != http.StatusOK || json.Unmarshal(lastPage.Body.Bytes(), &last) != nil || last.Total != 3 || len(last.Items) != 1 || last.Items[0].Course.ID != "course-public-b" {
+		t.Fatalf("last page status=%d body=%s result=%+v", lastPage.Code, lastPage.Body, last)
+	}
+	readerPage := callCreatorProfileAPI(t, h, http.MethodGet, profilePath, "reader", nil)
+	var reader creatorProfileCourseList
+	if readerPage.Code != http.StatusOK || json.Unmarshal(readerPage.Body.Bytes(), &reader) != nil || reader.Total != 2 || len(reader.Items) != 2 || reader.Items[0].Course.ID != "course-public-a" {
+		t.Fatalf("cross-owner reader did not get only independently readable public courses: status=%d body=%s result=%+v", readerPage.Code, readerPage.Body, reader)
+	}
+	privateProfilePath := "/api/creator-profiles/" + privateProfileID + "/courses"
+	if got := callCreatorProfileAPI(t, h, http.MethodGet, privateProfilePath, "reader", nil); got.Code != http.StatusNotFound || got.Body.String() != "{\"error\":\"not_found\"}\n" {
+		t.Fatalf("private profile was disclosed: status=%d body=%s", got.Code, got.Body)
+	}
+	missingProfile := callCreatorProfileAPI(t, h, http.MethodGet, "/api/creator-profiles/"+strings.Repeat("f", 32)+"/courses", "reader", nil)
+	if missingProfile.Code != http.StatusNotFound || missingProfile.Body.String() != "{\"error\":\"not_found\"}\n" {
+		t.Fatalf("missing profile response differed from unavailable profile: status=%d body=%s", missingProfile.Code, missingProfile.Body)
+	}
+	privateOwnerPage := callCreatorProfileAPI(t, h, http.MethodGet, privateProfilePath, "private-profile-owner", nil)
+	var privateOwner creatorProfileCourseList
+	if privateOwnerPage.Code != http.StatusOK || json.Unmarshal(privateOwnerPage.Body.Bytes(), &privateOwner) != nil || len(privateOwner.Items) != 1 || privateOwner.Items[0].Course.ID != "course-private-profile" {
+		t.Fatalf("profile owner could not read their private profile's attributed public course: status=%d body=%s result=%+v", privateOwnerPage.Code, privateOwnerPage.Body, privateOwner)
+	}
+	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=0 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	privateInstancePage := callCreatorProfileAPI(t, h, http.MethodGet, profilePath, "reader", nil)
+	var privateInstance creatorProfileCourseList
+	if privateInstancePage.Code != http.StatusOK || json.Unmarshal(privateInstancePage.Body.Bytes(), &privateInstance) != nil || privateInstance.Total != 0 || len(privateInstance.Items) != 0 {
+		t.Fatalf("course ACL ignored private-instance policy: status=%d body=%s result=%+v", privateInstancePage.Code, privateInstancePage.Body, privateInstance)
+	}
+	profileOwnerPrivateInstance := callCreatorProfileAPI(t, h, http.MethodGet, profilePath, "profile-owner", nil)
+	var ownPrivate creatorProfileCourseList
+	if profileOwnerPrivateInstance.Code != http.StatusOK || json.Unmarshal(profileOwnerPrivateInstance.Body.Bytes(), &ownPrivate) != nil || ownPrivate.Total != 1 || len(ownPrivate.Items) != 1 || ownPrivate.Items[0].Course.ID != "course-own-private" {
+		t.Fatalf("private-instance owner ACL status=%d body=%s result=%+v", profileOwnerPrivateInstance.Code, profileOwnerPrivateInstance.Body, ownPrivate)
+	}
+	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE courses SET visibility='private' WHERE id='course-public-a'`); err != nil {
+		t.Fatal(err)
+	}
+	staleVisibility := callCreatorProfileAPI(t, h, http.MethodGet, profilePath, "reader", nil)
+	var stale creatorProfileCourseList
+	if staleVisibility.Code != http.StatusOK || json.Unmarshal(staleVisibility.Body.Bytes(), &stale) != nil || stale.Total != 1 || len(stale.Items) != 1 || stale.Items[0].Course.ID != "course-public-b" {
+		t.Fatalf("stale/unreadable course relation remained visible: status=%d body=%s result=%+v", staleVisibility.Code, staleVisibility.Body, stale)
+	}
+	if _, err := db.Exec(`UPDATE instance_settings SET courses_enabled=0 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	disabled := callCreatorProfileAPI(t, h, http.MethodGet, profilePath, "profile-owner", nil)
+	if disabled.Code != http.StatusNotFound || disabled.Body.String() != "{\"error\":\"not_found\"}\n" {
+		t.Fatalf("disabled course profile route did not fail closed: status=%d body=%s", disabled.Code, disabled.Body)
+	}
+}
+
+func TestCreatorProfileCoursesUseComposedMuxAuthenticationAndCanonicalPath(t *testing.T) {
+	db := testDatabase(t)
+	profileID := strings.Repeat("e", 32)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('creator','creator@example.test','Creator','now');
+		UPDATE instance_settings SET courses_enabled=1 WHERE id=1;
+		INSERT INTO creator_profiles(creator_id,user_id,public_name,visibility,created_at,updated_at) VALUES(?,'creator','Creator','instance','now','now')`, profileID); err != nil {
+		t.Fatal(err)
+	}
+	auth := testAuth(db)
+	handler := handlerWithAuthConfig(db, auth, config{mediaDir: t.TempDir(), federationKeyDir: t.TempDir()})
+	token, _, err := issueSession(db, "creator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(path, session string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		if session != "" {
+			req.AddCookie(&http.Cookie{Name: sessionCookie, Value: session})
+		}
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, req)
+		return recorder
+	}
+	canonical := request("/api/creator-profiles/"+profileID+"/courses", token)
+	if canonical.Code != http.StatusOK || canonical.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("canonical composed route status=%d cache=%q body=%s", canonical.Code, canonical.Header().Get("Cache-Control"), canonical.Body)
+	}
+	unauthenticated := request("/api/creator-profiles/"+profileID+"/courses", "")
+	if unauthenticated.Code != http.StatusUnauthorized {
+		t.Fatalf("composed route did not require session: status=%d body=%s", unauthenticated.Code, unauthenticated.Body)
+	}
+	for _, path := range []string{
+		"/api/creator-profiles/" + profileID + "/courses/",
+		"/api/creator-profiles/" + profileID + "%2fcourses",
+		"/api//creator-profiles/" + profileID + "/courses",
+	} {
+		response := request(path, token)
+		if response.Code != http.StatusNotFound || response.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("noncanonical route %q reached profile handler: status=%d cache=%q body=%s", path, response.Code, response.Header().Get("Cache-Control"), response.Body)
+		}
 	}
 }

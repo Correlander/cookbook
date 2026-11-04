@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import type { Browser, BrowserContext, Page, Request, Response as PlaywrightResponse } from "@playwright/test";
+import type { APIResponse, Browser, BrowserContext, Page, Request, Response as PlaywrightResponse } from "@playwright/test";
 import { signInWithSyntheticEmail } from "./auth";
 
 const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:4178";
@@ -21,11 +21,15 @@ const ids = {
 
 type Session = { context: BrowserContext; page: Page };
 
-async function apiResponseContext(response: PlaywrightResponse, stage: string, endpoint: string): Promise<string> {
+async function responseErrorCode(response: { json: () => Promise<unknown> }): Promise<string> {
   const body: unknown = await response.json().catch(() => null);
-  const error = typeof body === "object" && body !== null && "error" in body && typeof body.error === "string"
+  return typeof body === "object" && body !== null && "error" in body && typeof body.error === "string"
     ? body.error
     : "unavailable";
+}
+
+async function apiResponseContext(response: PlaywrightResponse, stage: string, endpoint: string): Promise<string> {
+  const error = await responseErrorCode(response);
   const headers = await response.request().allHeaders();
   const refererOrigin = headers.referer ? new URL(headers.referer).origin : "unavailable";
   return JSON.stringify({
@@ -38,6 +42,19 @@ async function apiResponseContext(response: PlaywrightResponse, stage: string, e
     requestHost: new URL(response.url()).host,
     refererOrigin,
   });
+}
+
+async function expectAPIRequestStatus(
+  response: APIResponse,
+  expectedStatus: number,
+  stage: string,
+  method: string,
+  endpoint: string,
+): Promise<void> {
+  const status = response.status();
+  const error = status === expectedStatus ? "none" : await responseErrorCode(response);
+  const context = JSON.stringify({ stage, method, endpoint, status, error });
+  expect(status, `${stage} response: ${context}`).toBe(expectedStatus);
 }
 
 async function openContext(browser: Browser): Promise<Session> {
@@ -54,7 +71,7 @@ async function saveReference(page: Page, recipeID: string): Promise<string> {
     headers: { Origin: baseURL },
     data: { target: { remote_object_uri: objectURI(recipeID) } },
   });
-  expect(response.status()).toBe(201);
+  await expectAPIRequestStatus(response, 201, "save-reference-fixture", "POST", "/api/library/bookmarks");
   const saved = (await response.json()) as { bookmark_id?: string; id?: string; save_state?: string };
   const bookmarkID = saved.bookmark_id ?? saved.id;
   expect(bookmarkID).toBeTruthy();
@@ -65,7 +82,7 @@ async function captureReference(page: Page, bookmarkID: string): Promise<void> {
   const response = await page.request.post(`/api/library/bookmarks/${bookmarkID}/capture`, {
     headers: { Origin: baseURL },
   });
-  expect(response.status()).toBe(200);
+  await expectAPIRequestStatus(response, 200, "capture-reference-fixture", "POST", "/api/library/bookmarks/:id/capture");
 }
 
 async function moderate(page: Page, bookmarkID: string, outcome: "restricted" | "removed"): Promise<void> {
@@ -73,7 +90,7 @@ async function moderate(page: Page, bookmarkID: string, outcome: "restricted" | 
     headers: { Origin: baseURL },
     data: { outcome, reason_category: outcome === "removed" ? "privacy" : "policy" },
   });
-  expect(response.status()).toBe(200);
+  await expectAPIRequestStatus(response, 200, "moderate-snapshot-fixture", "PATCH", "/api/admin/library/snapshots/:id");
 }
 
 async function signIn(session: Session, email: string, name: string): Promise<void> {
@@ -106,7 +123,8 @@ async function importArchive(session: Session, archive: Buffer, preserve: boolea
     buffer: archive,
   });
   const response = await importResponse;
-  expect(response.status()).toBe(201);
+  const importContext = await apiResponseContext(response, "explicit-snapshot-archive-import", "/api/import");
+  expect(response.status(), `archive import response: ${importContext}`).toBe(201);
   const headers = await response.request().allHeaders();
   if (preserve) expect(headers["x-cookbook-preserve-personal-snapshots"]).toBe("true");
   else expect(headers["x-cookbook-preserve-personal-snapshots"]).toBeUndefined();
@@ -240,8 +258,10 @@ test("private snapshots use signed captures, stay actor-bound, and import only b
     expect(removedRead.headers()["cache-control"]).toBe("private, no-store");
 
     for (const bookmarkID of [referenceBookmarkID, restrictedBookmarkID, removedBookmarkID]) {
-      const response = await owner.page.request.delete(`/api/library/bookmarks/${bookmarkID}`);
-      expect(response.status()).toBe(204);
+      const response = await owner.page.request.delete(`/api/library/bookmarks/${bookmarkID}`, {
+        headers: { Origin: baseURL },
+      });
+      await expectAPIRequestStatus(response, 204, "remove-reference-fixture", "DELETE", "/api/library/bookmarks/:id");
     }
 
     const exported = await owner.page.request.get("/api/export");

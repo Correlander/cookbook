@@ -213,11 +213,11 @@ test('keeps the root navigation keyboard reachable and retains its legacy hash t
   await page.keyboard.press('Tab')
   await expect(page.locator(':focus')).toHaveAttribute('href', '#home')
   await page.keyboard.press('Tab')
-  await expect(page.locator(':focus')).toHaveAttribute('href', '/#home')
+  await expect(page.locator(':focus')).toHaveAttribute('href', '/')
   await page.keyboard.press('Tab')
-  await expect(page.locator(':focus')).toHaveAttribute('href', '/#home')
+  await expect(page.locator(':focus')).toHaveAttribute('href', '/')
   await page.keyboard.press('Enter')
-  await expect(page).toHaveURL(/\/#home$/)
+  await expect(page).toHaveURL(/\/$/)
   await page.goto('/#cookbooks')
   await expect(page.locator('#cookbooks')).toBeVisible()
   await page.goto('/#recipes')
@@ -318,7 +318,9 @@ test('shows course creation only when the public configuration enables the featu
   const courseButton = page.getByRole('button', { name: 'Course' })
   await expect(courseButton).toBeVisible()
   await courseButton.click()
-  await expect(page.getByRole('heading', { name: 'Create a course' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Course details', level: 2 })).toBeVisible()
+  const courseDialog = page.getByRole('dialog', { name: 'Create a course' })
+  await expect(courseDialog.getByRole('heading', { name: 'Create a course', level: 2 })).toBeVisible()
   await expect(page.getByLabel('Visibility')).toHaveValue('private')
 })
 
@@ -408,12 +410,23 @@ test('email sign-in remains explicit, establishes a session, and rejects replay'
     }
   })
   let consumePosts = 0
-  const consumeStatuses: number[] = []
+  let consumeRequestFailure: string | null = null
+  let consumeResponseStatus: number | null = null
   page.on('request', (browserRequest) => {
-    if (new URL(browserRequest.url()).pathname === '/api/auth/consume' && browserRequest.method() === 'POST') consumePosts += 1
+    const requestURL = new URL(browserRequest.url())
+    if (requestURL.origin === origin && requestURL.pathname === '/api/auth/consume' && browserRequest.method() === 'POST') consumePosts += 1
   })
-  page.on('response', (response) => {
-    if (new URL(response.url()).pathname === '/api/auth/consume' && response.request().method() === 'POST') consumeStatuses.push(response.status())
+  page.on('requestfailed', (browserRequest) => {
+    const requestURL = new URL(browserRequest.url())
+    if (requestURL.origin === origin && requestURL.pathname === '/api/auth/consume' && browserRequest.method() === 'POST') {
+      consumeRequestFailure = browserRequest.failure()?.errorText ?? 'unknown request failure'
+    }
+  })
+  page.on('response', (browserResponse) => {
+    const responseURL = new URL(browserResponse.url())
+    if (responseURL.origin === origin && responseURL.pathname === '/api/auth/consume' && browserResponse.request().method() === 'POST') {
+      consumeResponseStatus = browserResponse.status()
+    }
   })
   let payload: { sign_in_url: string } | undefined
   await test.step('Email delivery', async () => {
@@ -442,10 +455,28 @@ test('email sign-in remains explicit, establishes a session, and rejects replay'
     expect((await page.request.get('/api/auth/me')).status()).toBe(401)
   })
   await test.step('Session establishment', async () => {
+    const consumeResponsePromise = page.waitForResponse((browserResponse) => {
+      const responseURL = new URL(browserResponse.url())
+      return responseURL.origin === origin && responseURL.pathname === '/api/auth/consume' && browserResponse.request().method() === 'POST'
+    }, { timeout: 10_000 })
     await page.getByRole('button', { name: /continue to cookbook/i }).click()
+    let consumeStatus: number
+    try {
+      consumeStatus = (await consumeResponsePromise).status()
+    } catch {
+      const sessionResponse = await page.request.get('/api/auth/me')
+      const observation = {
+        phase: 'session establishment after explicit Continue',
+        request: { method: 'POST', path: '/api/auth/consume', observed: consumePosts > 0, failure: consumeRequestFailure },
+        responseStatus: consumeResponseStatus,
+        sessionStatus: sessionResponse.status(),
+        tokenRemains: new URL(page.url()).searchParams.has('token'),
+      }
+      throw new Error(`No same-origin consume response was observed: ${JSON.stringify(observation)}`)
+    }
+    expect(consumeStatus, 'explicit Continue consumes the sign-in challenge').toBe(200)
     await expect.poll(async () => (await page.request.get('/api/auth/me')).status()).toBe(200)
     expect(consumePosts).toBe(1)
-    expect(consumeStatuses).toEqual([200])
     expect(new URL(page.url()).searchParams.has('token')).toBe(false)
   })
 

@@ -68,6 +68,8 @@ it("returns a newly created private-instance course to the owner's Home surface"
   fireEvent.click(await screen.findByRole("button", { name: "Course" }));
   const courseDialog = await screen.findByRole("dialog");
   expect(within(courseDialog).getByRole("heading", { name: "Create a course" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Course details", level: 2 })).toBeTruthy();
+  expect(screen.getAllByRole("heading", { name: "Create a course" })).toHaveLength(1);
   expect(screen.getByLabelText("Visibility")).toHaveProperty("value", "private");
   fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Private lessons" } });
   fireEvent.click(screen.getByRole("button", { name: "Save course" }));

@@ -55,7 +55,7 @@ function CreatePage({ navigate }: { navigate: (path: string) => void }) {
                     {courseEnabled && <button className="button button--green" onClick={() => setSelected("courses")}>Course</button>}
                   </div>
                   {courseEnabled === null && !configError && <p role="status">Checking enabled features…</p>}
-                </section> : <section className="cookbook-dashboard"><button className="text-link" onClick={() => setSelected(null)}>Choose another type</button><h2>Create {selected === "recipes" ? "a recipe" : selected === "cookbooks" ? "a cookbook" : "a course"}</h2></section>}
+                </section> : <section className="cookbook-dashboard"><button className="text-link" onClick={() => setSelected(null)}>Choose another type</button><h2>{selected === "courses" ? "Course details" : `Create ${selected === "recipes" ? "a recipe" : "a cookbook"}`}</h2></section>}
                 {selected === "recipes" && currentUser && <RecipeForm user={currentUser} recipe={null} onClose={() => leave("/library?type=recipes")} onSignedOut={() => { clearSession(); setSelected(null); }} onUpdated={() => {}} onCreated={(recipe: Recipe) => leave(`/recipe?id=${encodeURIComponent(recipe.id)}`)} />}
                 {selected === "cookbooks" && <CookbookForm onClose={() => leave("/library?type=cookbooks")} onSaved={(book) => leave(`/cookbook?id=${encodeURIComponent(book.id)}`)} />}
                 {selected === "courses" && courseEnabled && <CourseForm course={null} onClose={() => setSelected(null)} onSaved={async () => leave("/")} />}

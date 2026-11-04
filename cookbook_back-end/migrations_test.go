@@ -1132,7 +1132,9 @@ func TestFutureMigrationRunsOnceAndFailureRollsBackStepAndLedger(t *testing.T) {
 	defer db.Close()
 	fail := true
 	runs := 0
-	step := migrationTestStep(13, "test-marker", func(ctx context.Context, exec migrationExecutor) error {
+	migrations := registeredSchemaMigrations()
+	futureVersion := migrations[len(migrations)-1].version + 1
+	step := migrationTestStep(futureVersion, "test-marker", func(ctx context.Context, exec migrationExecutor) error {
 		runs++
 		if _, err := exec.ExecContext(ctx, `CREATE TABLE migration_marker(value TEXT NOT NULL); INSERT INTO migration_marker(value) VALUES('applied')`); err != nil {
 			return err
@@ -1142,18 +1144,18 @@ func TestFutureMigrationRunsOnceAndFailureRollsBackStepAndLedger(t *testing.T) {
 		}
 		return nil
 	})
-	migrations := append(registeredSchemaMigrations(), step)
+	migrations = append(migrations, step)
 	if err := runSchemaMigrations(context.Background(), db, migrations); err == nil || !strings.Contains(err.Error(), "injected migration failure") {
 		t.Fatalf("failed migration error=%v", err)
 	}
-	if migrationObjectExists(t, db, "table", "migration_marker") || migrationVersion(t, db) != 13 {
+	if migrationObjectExists(t, db, "table", "migration_marker") || migrationVersion(t, db) != futureVersion-1 {
 		t.Fatal("failed migration left partial DDL/data or advanced the ledger")
 	}
 	fail = false
 	if err := runSchemaMigrations(context.Background(), db, migrations); err != nil {
 		t.Fatal(err)
 	}
-	if migrationVersion(t, db) != 13 || !migrationObjectExists(t, db, "table", "migration_marker") {
+	if migrationVersion(t, db) != futureVersion || !migrationObjectExists(t, db, "table", "migration_marker") {
 		t.Fatal("pending migration did not apply")
 	}
 	if err := runSchemaMigrations(context.Background(), db, migrations); err != nil {

@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import CreatorProfileRoot from "./CreatorProfileRoot.tsx";
 
@@ -40,6 +40,7 @@ it("provides an independent authenticated editor root with shared navigation", a
       .getByRole("link", { name: "Creator profile" })
       .getAttribute("aria-current"),
   ).toBe("page");
+  fireEvent.click(screen.getByRole("button", { name: "Cook account menu" }));
   expect(
     screen.getByRole("link", { name: "Account" }).getAttribute("href"),
   ).toBe("/account/security");

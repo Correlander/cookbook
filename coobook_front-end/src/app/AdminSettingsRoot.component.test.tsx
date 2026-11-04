@@ -115,6 +115,7 @@ it("loads settings for an administrator and keeps server denials from exposing c
     await screen.findByRole("checkbox", { name: /Enable public browsing/ }),
   ).toBeTruthy();
   expect(fetchMock).toHaveBeenCalledWith("/api/admin/settings");
+  fireEvent.click(screen.getByRole("button", { name: "Admin account menu" }));
   expect(screen.getByRole("link", { name: "Instance" })).toBeTruthy();
   view.unmount();
 

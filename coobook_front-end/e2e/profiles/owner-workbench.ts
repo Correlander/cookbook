@@ -202,18 +202,21 @@ async function expectSettingsDenied(page: Page): Promise<void> {
 
 async function expectSettingsWriteDenied(page: Page, observerPage: Page): Promise<void> {
   const before = await readSettingsSnapshot(observerPage)
-  const response = await page.evaluate(async () => fetch('/api/admin/settings', {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      public_instance: false,
-      courses_enabled: false,
-      registration_policy: 'disabled',
-      revision_retention_days: 365,
-      federation_enabled: false,
-    }),
-  }))
-  expect(response.status).toBe(403)
+  const responseStatus = await page.evaluate(async () => {
+    const response = await fetch('/api/admin/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        public_instance: false,
+        courses_enabled: false,
+        registration_policy: 'disabled',
+        revision_retention_days: 365,
+        federation_enabled: false,
+      }),
+    })
+    return response.status
+  })
+  expect(responseStatus).toBe(403)
   expect(await readSettingsSnapshot(observerPage)).toEqual(before)
 }
 

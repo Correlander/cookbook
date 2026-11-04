@@ -9,9 +9,14 @@ import {
   RecipePublicationApiError,
   updateRecipePublication,
 } from "./recipePublicationApi";
+import {
+  queueRecipeRetention,
+  RecipeRetentionApiError,
+} from "./recipeRetentionApi";
 
 interface RecipePublicationPanelProps {
   recipeId: string;
+  recipeVersion: number;
   isOwner: boolean;
   isRemote: boolean;
   open: boolean;
@@ -63,8 +68,31 @@ function saveErrorMessage(error: unknown): string {
   return "Could not save these settings. Your changes were not committed.";
 }
 
+function retentionErrorMessage(error: unknown): string {
+  if (!(error instanceof RecipeRetentionApiError))
+    return "The request could not be confirmed. It may have been queued; refresh the recipe before retrying.";
+  if (error.code === "federation_assertion_conflict")
+    return "The recipe or federation eligibility changed. Close and reopen publication settings, then review eligibility before trying again. An enabled Exchange v2 peer is required.";
+  if (error.code === "reauthentication_required")
+    return "Sign in again; this action requires a recently issued session.";
+  if (error.status === 401)
+    return "Your session may have expired. Sign in again before trying this action.";
+  if (error.code === "federation_queue_unavailable")
+    return "The federation queue is unavailable. The permission was not queued; try again later.";
+  if (error.code === "invalid_recipe_version")
+    return "The recipe version is invalid. Close and reopen this recipe before trying again.";
+  if (error.code === "storage_error")
+    return "The server could not queue this permission because of a storage error.";
+  if (error.status === 404 || error.status === 405)
+    return "This server does not support personal retention requests yet.";
+  if (error.code === "invalid_response")
+    return "The server response could not be verified. The permission may have been queued; refresh the recipe before retrying.";
+  return "The request could not be confirmed. It may have been queued; refresh the recipe before retrying.";
+}
+
 export default function RecipePublicationPanel({
   recipeId,
+  recipeVersion,
   isOwner,
   isRemote,
   open,
@@ -76,6 +104,7 @@ export default function RecipePublicationPanel({
   const headingRef = useRef<HTMLHeadingElement>(null);
   const staleMessageRef = useRef<HTMLDivElement>(null);
   const activeController = useRef<AbortController | null>(null);
+  const activeRetentionController = useRef<AbortController | null>(null);
   const activeScopeKey = useRef<string | null>(scopeKey);
   const [view, setView] = useState<RecipePublicationView | null>(null);
   const [etag, setEtag] = useState<string | null>(null);
@@ -90,10 +119,16 @@ export default function RecipePublicationPanel({
   const [federationConfirmed, setFederationConfirmed] = useState(false);
   const [freshReviewRequired, setFreshReviewRequired] = useState(false);
   const [freshReviewConfirmed, setFreshReviewConfirmed] = useState(false);
+  const [retentionConfirmedVersion, setRetentionConfirmedVersion] = useState<number | null>(null);
+  const [retentionSaving, setRetentionSaving] = useState(false);
+  const [retentionStatus, setRetentionStatus] = useState("");
+  const [retentionError, setRetentionError] = useState("");
 
   useLayoutEffect(() => {
     activeController.current?.abort();
     activeController.current = null;
+    activeRetentionController.current?.abort();
+    activeRetentionController.current = null;
     activeScopeKey.current = scopeKey;
     setView(null);
     setEtag(null);
@@ -107,15 +142,30 @@ export default function RecipePublicationPanel({
     setFederationConfirmed(false);
     setFreshReviewRequired(false);
     setFreshReviewConfirmed(false);
+    setRetentionConfirmedVersion(null);
+    setRetentionSaving(false);
+    setRetentionStatus("");
+    setRetentionError("");
 
     return () => {
       if (activeScopeKey.current === scopeKey) {
         activeScopeKey.current = null;
         activeController.current?.abort();
         activeController.current = null;
+        activeRetentionController.current?.abort();
+        activeRetentionController.current = null;
       }
     };
   }, [scopeKey]);
+
+  useEffect(() => {
+    activeRetentionController.current?.abort();
+    activeRetentionController.current = null;
+    setRetentionConfirmedVersion(null);
+    setRetentionSaving(false);
+    setRetentionStatus("");
+    setRetentionError("");
+  }, [recipeVersion]);
 
   useEffect(() => {
     if (!open || !isOwner || isRemote) return;
@@ -142,6 +192,7 @@ export default function RecipePublicationPanel({
         setFederationConfirmed(false);
         setFreshReviewRequired(false);
         setFreshReviewConfirmed(false);
+        setRetentionConfirmedVersion(null);
         setStatus("Publication settings loaded.");
       })
       .catch((error: unknown) => {
@@ -196,11 +247,24 @@ export default function RecipePublicationPanel({
       view.federation_enabled &&
       view.federation_origin,
   );
+  const recipeVersionValid = Number.isSafeInteger(recipeVersion) && recipeVersion > 0;
+  const retentionEligibilityOpen = Boolean(
+    recipeVersionValid &&
+      view?.visibility === "public" &&
+      view.public_instance &&
+      view.publication_state === "published" &&
+      publicationState === "published" &&
+      view.federation_enabled &&
+      view.federation_origin &&
+      view.federation_mode === "followers" &&
+      federationMode === "followers",
+  );
   const saveBlocked =
     !scopeKey ||
     activeScopeKey.current !== scopeKey ||
     !changed ||
     saving ||
+    retentionSaving ||
     loading ||
     !etag ||
     (publicationState === "published" && view?.publication_state !== "published" && !canPublish) ||
@@ -213,6 +277,7 @@ export default function RecipePublicationPanel({
     setWithdrawConfirmed(false);
     setFederationConfirmed(false);
     setFreshReviewConfirmed(false);
+    setRetentionConfirmedVersion(null);
   }
 
   function requestIsCurrent(signal: AbortSignal, requestScopeKey: string | null) {
@@ -220,6 +285,18 @@ export default function RecipePublicationPanel({
       !signal.aborted &&
       requestScopeKey !== null &&
       activeScopeKey.current === requestScopeKey
+    );
+  }
+
+  function retentionRequestIsCurrent(
+    signal: AbortSignal,
+    requestScopeKey: string | null,
+    expectedVersion: number,
+  ) {
+    return (
+      requestIsCurrent(signal, requestScopeKey) &&
+      recipeVersion === expectedVersion &&
+      activeRetentionController.current?.signal === signal
     );
   }
 
@@ -274,6 +351,7 @@ export default function RecipePublicationPanel({
       setFreshReviewConfirmed(false);
       setWithdrawConfirmed(false);
       setFederationConfirmed(false);
+      setRetentionConfirmedVersion(null);
       setStatus("Publication settings loaded.");
     } catch (error) {
       if (
@@ -328,6 +406,7 @@ export default function RecipePublicationPanel({
       setFreshReviewConfirmed(false);
       setWithdrawConfirmed(false);
       setFederationConfirmed(false);
+      setRetentionConfirmedVersion(null);
       setStatus("Publication settings saved.");
       headingRef.current?.focus();
     } catch (error) {
@@ -345,9 +424,56 @@ export default function RecipePublicationPanel({
     }
   }
 
+  async function queueRetentionPermission() {
+    const requestScopeKey = scopeKey;
+    const expectedVersion = recipeVersion;
+    if (
+      requestScopeKey === null ||
+      activeScopeKey.current !== requestScopeKey ||
+      !retentionEligibilityOpen ||
+      retentionConfirmedVersion !== expectedVersion ||
+      retentionSaving
+    )
+      return;
+
+    const consent = `Allow enabled connected peers using Exchange v2 to keep a private personal copy of version ${expectedVersion}, including after ordinary withdrawal. This also permits export and import for your own personal-account migration. It does not authorize public redistribution or adaptation, retain media, or verify authorship.`;
+    if (!window.confirm(`${consent} Queue this permission for eligible peers now?`)) return;
+
+    const controller = new AbortController();
+    activeRetentionController.current?.abort();
+    activeRetentionController.current = controller;
+    setRetentionSaving(true);
+    setRetentionStatus("");
+    setRetentionError("");
+    try {
+      await queueRecipeRetention(recipeId, expectedVersion, controller.signal);
+      if (!retentionRequestIsCurrent(controller.signal, requestScopeKey, expectedVersion))
+        return;
+      setRetentionConfirmedVersion(null);
+      setRetentionStatus(
+        `Permission for version ${expectedVersion} was queued for eligible peers. This confirms queueing only; it does not confirm receipt or personal capture.`,
+      );
+    } catch (error: unknown) {
+      if (
+        !retentionRequestIsCurrent(controller.signal, requestScopeKey, expectedVersion) ||
+        (error instanceof DOMException && error.name === "AbortError")
+      )
+        return;
+      setRetentionConfirmedVersion(null);
+      setRetentionError(retentionErrorMessage(error));
+    } finally {
+      if (retentionRequestIsCurrent(controller.signal, requestScopeKey, expectedVersion)) {
+        activeRetentionController.current = null;
+        setRetentionSaving(false);
+      }
+    }
+  }
+
   function handleClose() {
     activeController.current?.abort();
     activeController.current = null;
+    activeRetentionController.current?.abort();
+    activeRetentionController.current = null;
     activeScopeKey.current = null;
     onClose();
   }
@@ -359,6 +485,7 @@ export default function RecipePublicationPanel({
   const withdrawAckId = `${id}-withdraw-ack`;
   const federationAckId = `${id}-federation-ack`;
   const freshAckId = `${id}-fresh-ack`;
+  const retentionAckId = `${id}-retention-ack`;
 
   return (
     <section aria-labelledby={`${id}-heading`} className="recipe-publication-panel">
@@ -447,7 +574,7 @@ export default function RecipePublicationPanel({
             </div>
           </dl>
 
-          <fieldset disabled={saving || loading}>
+          <fieldset disabled={saving || loading || retentionSaving}>
             <legend>Local publication</legend>
             <label htmlFor={publicationId}>Public browsing status</label>
             <select
@@ -494,7 +621,7 @@ export default function RecipePublicationPanel({
             )}
           </fieldset>
 
-          <fieldset disabled={saving || loading}>
+          <fieldset disabled={saving || loading || retentionSaving}>
             <legend>External distribution</legend>
             <label htmlFor={federationId}>
               <input
@@ -508,6 +635,7 @@ export default function RecipePublicationPanel({
                   setFederationMode(event.target.checked ? "followers" : "off");
                   setFederationConfirmed(false);
                   setFreshReviewConfirmed(false);
+                  setRetentionConfirmedVersion(null);
                 }}
               />{" "}
               Allow distribution to followers
@@ -532,6 +660,69 @@ export default function RecipePublicationPanel({
             )}
             <p className="dialog-note">Index submission is not available.</p>
           </fieldset>
+
+          <section aria-labelledby={`${id}-retention-heading`} className="admin-settings-note">
+            <h3 id={`${id}-retention-heading`}>Private personal retention</h3>
+            <p>
+              This separate permission applies only to the recipe version currently
+              open: version {recipeVersion}.
+            </p>
+            <p id={`${id}-retention-eligibility`} className="dialog-note">
+              Queueing requires a public, published recipe, follower distribution,
+              and instance federation configured. At least one enabled Exchange v2
+              peer is also required; the server checks current peer eligibility when
+              you submit.
+            </p>
+            <label htmlFor={retentionAckId}>
+              <input
+                id={retentionAckId}
+                type="checkbox"
+                aria-describedby={`${id}-retention-eligibility`}
+                disabled={!retentionEligibilityOpen || saving || loading || retentionSaving}
+                checked={retentionConfirmedVersion === recipeVersion}
+                onChange={(event) => {
+                  setRetentionConfirmedVersion(
+                    event.target.checked ? recipeVersion : null,
+                  );
+                  setRetentionStatus("");
+                  setRetentionError("");
+                }}
+              />{" "}
+              I permit eligible connected peers using Exchange v2 to keep a private
+              personal copy of version {recipeVersion}, including after ordinary
+              withdrawal. This also permits export and import for my own
+              personal-account migration. It does not authorize public redistribution
+              or adaptation, retain media, or verify authorship.
+            </label>
+            <p className="dialog-note">
+              This is your permission statement for this version. It does not verify
+              authorship or legal rights, and does not report what any peer received
+              or retained.
+            </p>
+            {retentionError && (
+              <p className="form-message" role="alert">{retentionError}</p>
+            )}
+            {retentionStatus && (
+              <p className="form-message" role="status">{retentionStatus}</p>
+            )}
+            <button
+              className="button button--green"
+              type="button"
+              aria-describedby={`${id}-retention-eligibility`}
+              disabled={
+                !retentionEligibilityOpen ||
+                retentionConfirmedVersion !== recipeVersion ||
+                retentionSaving ||
+                saving ||
+                loading
+              }
+              onClick={() => void queueRetentionPermission()}
+            >
+              {retentionSaving
+                ? "Queueing permission…"
+                : `Queue permission for version ${recipeVersion}`}
+            </button>
+          </section>
 
           <div className="section-heading">
             <button

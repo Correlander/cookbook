@@ -54,10 +54,11 @@ function errorResponse(status: number, code: string): Response {
   });
 }
 
-function renderOwnerPanel(onClose = vi.fn()) {
+function renderOwnerPanel(onClose = vi.fn(), recipeVersion = 7) {
   return render(
     <RecipePublicationPanel
       recipeId="recipe/one"
+      recipeVersion={recipeVersion}
       isOwner
       isRemote={false}
       open
@@ -160,6 +161,7 @@ describe("RecipePublicationPanel", () => {
     const { rerender } = render(
       <RecipePublicationPanel
         recipeId="recipe-a"
+        recipeVersion={1}
         isOwner
         isRemote={false}
         open
@@ -174,6 +176,7 @@ describe("RecipePublicationPanel", () => {
     rerender(
       <RecipePublicationPanel
         recipeId="recipe-b"
+        recipeVersion={1}
         isOwner
         isRemote={false}
         open
@@ -215,6 +218,7 @@ describe("RecipePublicationPanel", () => {
     const { rerender } = render(
       <RecipePublicationPanel
         recipeId="recipe-a"
+        recipeVersion={1}
         isOwner
         isRemote={false}
         open
@@ -226,6 +230,7 @@ describe("RecipePublicationPanel", () => {
     rerender(
       <RecipePublicationPanel
         recipeId="recipe-b"
+        recipeVersion={1}
         isOwner
         isRemote={false}
         open
@@ -256,6 +261,7 @@ describe("RecipePublicationPanel", () => {
     const { rerender, container } = render(
       <RecipePublicationPanel
         recipeId="recipe-1"
+        recipeVersion={1}
         isOwner={false}
         isRemote={false}
         open
@@ -268,6 +274,7 @@ describe("RecipePublicationPanel", () => {
     rerender(
       <RecipePublicationPanel
         recipeId="recipe-1"
+        recipeVersion={1}
         isOwner
         isRemote
         open
@@ -287,6 +294,122 @@ describe("RecipePublicationPanel", () => {
     expect(screen.queryByLabelText(/index/i)).toBeNull();
     expect(document.body.textContent).not.toContain("private-owner-id");
     expect(screen.getByRole("status").textContent).toBe("Publication settings loaded.");
+  });
+
+  it.each([
+    { name: "private recipe", view: makeView({ visibility: "private" }) },
+    { name: "unpublished recipe", view: makeView() },
+    {
+      name: "disabled follower distribution",
+      view: makeView({ publication_state: "published", federation_mode: "off" }),
+    },
+    {
+      name: "federation disabled on the instance",
+      view: makeView({ publication_state: "published", federation_mode: "followers", federation_enabled: false }),
+    },
+  ])("explains and disables retention permission for a $name", async ({ view }) => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(view));
+    vi.stubGlobal("fetch", fetchMock);
+    renderOwnerPanel();
+
+    expect(await screen.findByText(/At least one enabled Exchange v2 peer is also required/i)).toBeTruthy();
+    expect((screen.getByLabelText(/I permit eligible connected peers/) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Queue permission for version 7" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("federation-retention"))).toBe(false);
+  });
+
+  it("queues one explicit permission for the recipe version and reports only queued status", async () => {
+    const eligibleView = makeView({
+      publication_state: "published",
+      federation_mode: "followers",
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes("federation-retention"))
+        return Promise.resolve(new Response(JSON.stringify({ status: "queued" }), { status: 202 }));
+      return Promise.resolve(jsonResponse(eligibleView));
+    });
+    const confirmMock = vi.fn(() => true);
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", confirmMock);
+    renderOwnerPanel(vi.fn(), 7);
+
+    fireEvent.click(await screen.findByLabelText(/I permit eligible connected peers/));
+    const queueButton = screen.getByRole("button", { name: "Queue permission for version 7" });
+    expect((queueButton as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(queueButton);
+
+    expect(confirmMock).toHaveBeenCalledWith(expect.stringMatching(
+      /version 7.*ordinary withdrawal.*personal-account migration.*public redistribution.*adaptation.*retain media.*verify authorship/i,
+    ));
+    expect(await screen.findByText(/Permission for version 7 was queued for eligible peers/)).toBeTruthy();
+    expect(screen.getByText(/Permission for version 7 was queued for eligible peers/).textContent)
+      .toMatch(/does not confirm receipt or personal capture/);
+    expect(screen.queryByText(/received or retained this recipe/)).toBeNull();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/recipes/recipe%2Fone/federation-retention",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+        body: JSON.stringify({ expected_recipe_version: 7 }),
+      }),
+    );
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+  });
+
+  it.each([
+    [409, "federation_assertion_conflict", /eligibility changed.*Close and reopen.*enabled Exchange v2 peer/i],
+    [403, "reauthentication_required", /Sign in again.*recently issued session/i],
+    [503, "federation_queue_unavailable", /queue is unavailable.*not queued/i],
+    [400, "invalid_recipe_version", /version is invalid.*Close and reopen this recipe/i],
+    [404, "not_found", /server does not support personal retention/i],
+    [500, "storage_error", /storage error/i],
+    [502, "gateway_error", /could not be confirmed.*may have been queued/i],
+  ])("explains retention request failure %s %s", async (status, code, message) => {
+    const eligibleView = makeView({
+      publication_state: "published",
+      federation_mode: "followers",
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      String(input).includes("federation-retention")
+        ? Promise.resolve(errorResponse(status, code))
+        : Promise.resolve(jsonResponse(eligibleView)),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    renderOwnerPanel();
+    fireEvent.click(await screen.findByLabelText(/I permit eligible connected peers/));
+    fireEvent.click(screen.getByRole("button", { name: "Queue permission for version 7" }));
+
+    expect((await screen.findByRole("alert")).textContent).toMatch(message);
+    expect(screen.queryByText(/was queued for eligible peers/)).toBeNull();
+  });
+
+  it("clears version consent when the dialog switches to a newer recipe version", async () => {
+    const eligibleView = makeView({
+      publication_state: "published",
+      federation_mode: "followers",
+    });
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(eligibleView));
+    vi.stubGlobal("fetch", fetchMock);
+    const props = (recipeVersion: number) => (
+      <RecipePublicationPanel
+        recipeId="recipe/one"
+        recipeVersion={recipeVersion}
+        isOwner
+        isRemote={false}
+        open
+        onClose={vi.fn()}
+      />
+    );
+    const { rerender } = render(props(7));
+    fireEvent.click(await screen.findByLabelText(/I permit eligible connected peers.*version 7/));
+    rerender(props(8));
+
+    expect((screen.getByLabelText(/I permit eligible connected peers.*version 8/) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole("button", { name: "Queue permission for version 8" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Queue permission for version 8" }));
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("federation-retention"))).toBe(false);
   });
 
   it("keeps publication and follower distribution separate and saves with a fresh ETag", async () => {

@@ -383,6 +383,7 @@ function RecipeDialog({
               <FeatureIsland name="Recipe publication" loading="publication settings">
                 <RecipePublicationPanel
                   recipeId={recipe.id}
+                  recipeVersion={currentRecipe.version}
                   isOwner
                   isRemote={false}
                   open

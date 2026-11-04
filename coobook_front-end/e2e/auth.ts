@@ -1,6 +1,29 @@
 import { expect } from "@playwright/test";
 import type { APIRequestContext, APIResponse, Page } from "@playwright/test";
 import { readFile, stat, unlink } from "node:fs/promises";
+import type { AuthenticatedUser } from "../src/apiModels";
+
+function isAuthenticatedUser(value: unknown): value is AuthenticatedUser {
+  if (!value || typeof value !== "object") return false;
+  const user = value as Partial<AuthenticatedUser>;
+  return (
+    typeof user.id === "string" &&
+    typeof user.email === "string" &&
+    typeof user.display_name === "string" &&
+    typeof user.is_admin === "boolean"
+  );
+}
+
+async function readAuthenticatedUser(
+  request: APIRequestContext,
+): Promise<AuthenticatedUser> {
+  const response = await request.get("/api/auth/me");
+  expect(response.status()).toBe(200);
+  const value: unknown = await response.json();
+  if (!isAuthenticatedUser(value))
+    throw new Error("/api/auth/me returned an invalid authenticated-user response");
+  return value;
+}
 
 export async function signInWithSyntheticEmail(
   page: Page,
@@ -78,6 +101,9 @@ export async function signInWithSyntheticEmail(
     await expect
       .poll(async () => (await page.request.get("/api/auth/me")).status())
       .toBe(200);
+    const confirmedUser = await readAuthenticatedUser(page.request);
+    const expectedEmail = email.trim().toLowerCase();
+    expect(confirmedUser.email).toBe(expectedEmail);
 
     const passkeysResponse = await passkeyResponsePromise;
     let hasValidEmptyPasskeyList = false;
@@ -109,15 +135,17 @@ export async function signInWithSyntheticEmail(
     }
 
     await expect(page).toHaveURL(/\/$/);
+    const homeUser = await readAuthenticatedUser(page.request);
+    expect(homeUser.id).toBe(confirmedUser.id);
+    expect(homeUser.email).toBe(expectedEmail);
+    const expectedDisplayName = homeUser.display_name || "cook";
     await expect(
       page.getByRole("heading", {
-        name: `Welcome back, ${displayName}.`,
+        name: `Welcome back, ${expectedDisplayName}.`,
         level: 1,
       }),
     ).toBeVisible();
-    const userResponse = await page.request.get("/api/auth/me");
-    expect(userResponse.status()).toBe(200);
-    return (await userResponse.json()) as { is_admin: boolean };
+    return { is_admin: homeUser.is_admin };
   } finally {
     releasePasskeyCheck();
     await page.unroute("**/api/auth/passkeys");

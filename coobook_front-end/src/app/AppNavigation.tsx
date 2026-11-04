@@ -13,6 +13,7 @@ interface AppNavigationProps {
   onQueryChange?: (query: string) => void;
   actionLabel?: string;
   onAction?: () => void;
+  activeArea?: "home" | "discover" | "library" | "create";
 }
 
 function ChefMark() {
@@ -43,8 +44,14 @@ export default function AppNavigation({
   onQueryChange,
   actionLabel,
   onAction,
+  activeArea,
 }: AppNavigationProps) {
-  const home = pathname === "/" || pathname === "/auth/confirm";
+  const active = activeArea ?? (
+    pathname === "/" || pathname === "/auth/confirm" ? "home" :
+      pathname === "/discover" ? "discover" :
+        pathname === "/create" ? "create" :
+          pathname === "/library" || pathname === "/recipe" || pathname === "/cookbook" ? "library" : null
+  );
   const authenticated = sessionStatus === "authenticated" && Boolean(currentUser);
   const authority = useInstanceAuthority(
     authenticated ? currentUser?.id ?? null : null,
@@ -88,29 +95,27 @@ export default function AppNavigation({
   }
   return (
     <header className="topbar">
-      <a href="/#home" className="brand" aria-label="Cookbook home">
+      <a href="/" className="brand" aria-label="Cookbook home">
         <span className="brand-mark">
           <ChefMark />
         </span>
         <span>Cookbook</span>
       </a>
       <nav className="main-nav" aria-label="Main navigation">
-        <a className={home ? "main-nav__active" : undefined} href="/#home">
+        <a className={active === "home" ? "main-nav__active" : undefined} aria-current={active === "home" ? "page" : undefined} href="/">
+          Home
+        </a>
+        <a className={active === "discover" ? "main-nav__active" : undefined} aria-current={active === "discover" ? "page" : undefined} href="/discover">
           Discover
         </a>
         <a
-          className={pathname === "/library" || pathname === "/recipe" ? "main-nav__active" : undefined}
+          className={active === "library" ? "main-nav__active" : undefined}
+          aria-current={active === "library" ? "page" : undefined}
           href="/library"
         >
           Library
         </a>
-        <a
-          className={pathname === "/cookbooks" || pathname === "/cookbook" ? "main-nav__active" : undefined}
-          href="/cookbooks"
-        >
-          Cookbooks
-        </a>
-        <a href="/#recipes">Recipes</a>
+        {authenticated && <a className={active === "create" ? "main-nav__active" : undefined} aria-current={active === "create" ? "page" : undefined} href="/create">Create</a>}
         {currentUser && (
           <a
             className={pathname === "/account/security" || pathname === "/account/creator-profile" ? "main-nav__active" : undefined}

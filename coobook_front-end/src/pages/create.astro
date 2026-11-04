@@ -1,0 +1,11 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro'
+import CreateRoot from '../app/CreateRoot.tsx'
+
+const title = 'Create — Cookbook'
+const description = 'Create a recipe, cookbook, or enabled course.'
+---
+
+<BaseLayout title={title} description={description} robots="noindex,nofollow">
+  <CreateRoot client:load />
+</BaseLayout>

@@ -18,6 +18,7 @@ interface CookbookCollectionProps {
   initialQuery?: string;
   enabled?: boolean;
   pending?: boolean;
+  readOnly?: boolean;
   children?: ReactNode;
 }
 
@@ -34,6 +35,7 @@ export default function CookbookCollection({
   initialQuery = "",
   enabled = true,
   pending = false,
+  readOnly = false,
   children,
 }: CookbookCollectionProps) {
   const isPublic = mode === "public";
@@ -171,7 +173,7 @@ export default function CookbookCollection({
               placeholder="Search cookbooks…"
             />
           </label>
-        ) : (
+        ) : !readOnly ? (
           <button
             className="text-link"
             type="button"
@@ -179,7 +181,7 @@ export default function CookbookCollection({
           >
             Create cookbook <Icon name="arrow" size={15} />
           </button>
-        )}
+        ) : null}
       </div>
       {loading ? (
         <p className="cookbook-empty" role="status">
@@ -225,7 +227,7 @@ export default function CookbookCollection({
               >
                 Open cookbook
               </a>
-              {!isPublic &&
+              {!readOnly && !isPublic &&
                 "owner_id" in book &&
                 book.owner_id === user?.id && (
                   <>

@@ -148,8 +148,21 @@ it("keeps a signed-out navigation free of authority and transfer requests", () =
   renderNavigation({ user: null });
 
   expect(screen.getByRole("link", { name: "Sign in" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Home" }).getAttribute("href")).toBe("/");
+  expect(screen.getByRole("link", { name: "Discover" }).getAttribute("href")).toBe("/discover");
+  expect(screen.getByRole("link", { name: "Library" }).getAttribute("href")).toBe("/library");
+  expect(screen.queryByRole("link", { name: "Recipes" })).toBeNull();
+  expect(screen.queryByRole("link", { name: "Cookbooks" })).toBeNull();
+  expect(screen.queryByRole("link", { name: "Create" })).toBeNull();
   expect(screen.queryByRole("link", { name: "Instance" })).toBeNull();
   expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it("marks the independent Discover route active", () => {
+  vi.stubGlobal("fetch", vi.fn());
+  renderNavigation({ pathname: "/discover" });
+  expect(screen.getByRole("link", { name: "Discover" }).className).toContain("main-nav__active");
+  expect(screen.getByRole("link", { name: "Discover" }).getAttribute("href")).toBe("/discover");
 });
 
 it("offers a retry when authority or incoming-transfer discovery fails", async () => {

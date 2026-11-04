@@ -18,8 +18,8 @@ func TestCourseAttributionMigrationFromV13PreservesRowsAndConstraints(t *testing
 		t.Fatal(err)
 	}
 	migrations := registeredSchemaMigrations()
-	if len(migrations) != 14 || migrations[13].version != 14 || migrations[13].name != "course-creator-attribution" {
-		t.Fatalf("registered latest migration count=%d version/name=%d/%q, want 14 course-creator-attribution", len(migrations), migrations[13].version, migrations[13].name)
+	if len(migrations) < 14 || migrations[13].version != 14 || migrations[13].name != "course-creator-attribution" {
+		t.Fatalf("registered migration 14 count=%d version/name=%d/%q, want v14 course-creator-attribution", len(migrations), migrations[13].version, migrations[13].name)
 	}
 	if err := runSchemaMigrations(ctx, db, migrations[:13]); err != nil {
 		t.Fatalf("create genuine v13 database: %v", err)
@@ -61,8 +61,8 @@ func TestCourseAttributionMigrationFromV13PreservesRowsAndConstraints(t *testing
 	if err := db.QueryRow(`SELECT COUNT(*) FROM content_attributions WHERE course_id IS NOT NULL`).Scan(&legacyCourseTargets); err != nil || legacyCourseTargets != 0 {
 		t.Fatalf("migration assigned %d legacy course targets, err=%v", legacyCourseTargets, err)
 	}
-	if got := migrationVersion(t, db); got != 14 {
-		t.Fatalf("migration version=%d, want 14", got)
+	if got := migrationVersion(t, db); got != latestSchemaVersion() {
+		t.Fatalf("migration version=%d, want latest %d", got, latestSchemaVersion())
 	}
 	var rows int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM content_attributions`).Scan(&rows); err != nil || rows != 4 {
@@ -162,8 +162,8 @@ func TestCourseAttributionMigrationFromV13PreservesRowsAndConstraints(t *testing
 	if err := runSchemaMigrations(ctx, db, migrations); err != nil {
 		t.Fatalf("successful restart reran migration: %v", err)
 	}
-	if got := migrationVersion(t, db); got != 14 {
-		t.Fatalf("restart migration version=%d, want 14", got)
+	if got := migrationVersion(t, db); got != latestSchemaVersion() {
+		t.Fatalf("restart migration version=%d, want latest %d", got, latestSchemaVersion())
 	}
 	var emptyCount int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM content_attributions`).Scan(&emptyCount); err != nil || emptyCount != 4 {
@@ -177,8 +177,8 @@ func TestFreshDatabaseUsesCourseAttributionSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if got := migrationVersion(t, db); got != 14 {
-		t.Fatalf("fresh migration version=%d, want 14", got)
+	if got := migrationVersion(t, db); got != latestSchemaVersion() {
+		t.Fatalf("fresh migration version=%d, want latest %d", got, latestSchemaVersion())
 	}
 	var defaultName string
 	if err := db.QueryRow(`SELECT dflt_value FROM pragma_table_info('courses') WHERE name='creator_name'`).Scan(&defaultName); err != nil || defaultName != "''" {
@@ -186,6 +186,9 @@ func TestFreshDatabaseUsesCourseAttributionSchema(t *testing.T) {
 	}
 	if !migrationObjectExists(t, db, "index", "content_attributions_local_course_uq") || !migrationObjectExists(t, db, "index", "content_attributions_claim_course_uq") {
 		t.Fatal("fresh database omitted course attribution indexes")
+	}
+	if !migrationObjectExists(t, db, "table", "meal_menus") || !migrationObjectExists(t, db, "table", "meal_menu_entries") {
+		t.Fatal("fresh database omitted private meal menu schema")
 	}
 }
 
@@ -252,6 +255,7 @@ func assertCourseAttributionSchemaForeignKeys(t *testing.T, db *sql.DB) {
 		{table: "cookbooks", from: "cookbook_id", to: "id", onUpdate: "NO ACTION", onDelete: "CASCADE", match: "NONE"},
 		{table: "courses", from: "course_id", to: "id", onUpdate: "NO ACTION", onDelete: "CASCADE", match: "NONE"},
 		{table: "creator_profiles", from: "creator_id", to: "creator_id", onUpdate: "NO ACTION", onDelete: "RESTRICT", match: "NONE"},
+		{table: "meal_menus", from: "menu_id", to: "id", onUpdate: "NO ACTION", onDelete: "CASCADE", match: "NONE"},
 		{table: "recipes", from: "recipe_id", to: "id", onUpdate: "NO ACTION", onDelete: "CASCADE", match: "NONE"},
 	}
 	if got := readCourseAttributionForeignKeys(t, db); !reflect.DeepEqual(got, want) {

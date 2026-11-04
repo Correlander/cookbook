@@ -104,6 +104,11 @@ func registeredSchemaMigrations() []schemaMigration {
 		name:     "course-creator-attribution",
 		checksum: migrationChecksum("course-creator-attribution", courseAttributionSchemaDDL+"\x00"+courseAttributionIndexesDDL),
 		apply:    applyCourseAttributionSchemaMigration,
+	}, {
+		version:  15,
+		name:     "private-meal-menu-schema",
+		checksum: migrationChecksum("private-meal-menu-schema", mealMenuSchemaDDL+"\x00"+mealMenuAttributionSchemaDDL+"\x00"+mealMenuAttributionIndexesDDL),
+		apply:    applyMealMenuSchemaMigration,
 	}}
 }
 

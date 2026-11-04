@@ -68,8 +68,8 @@ func TestFreshDatabaseRecordsAllRegisteredMigrations(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if latestSchemaVersion() != 14 {
-		t.Fatalf("registered latest migration=%d, want v14 course attribution", latestSchemaVersion())
+	if latestSchemaVersion() != 15 {
+		t.Fatalf("registered latest migration=%d, want v15 private meal menus", latestSchemaVersion())
 	}
 	if got := migrationVersion(t, db); got != latestSchemaVersion() {
 		t.Fatalf("migration version=%d, want latest %d", got, latestSchemaVersion())
@@ -85,7 +85,7 @@ func TestFreshDatabaseRecordsAllRegisteredMigrations(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != latestSchemaVersion() {
 		t.Fatalf("migration ledger rows=%d err=%v, want latest %d", count, err, latestSchemaVersion())
 	}
-	for version, name := range map[int]string{1: "legacy-baseline", 2: "instance-owner-authority", 3: "recipe-publication-policy", 4: "offline-passkey-enrollment", 5: "person-actor-identity", 6: "personal-library-bookmarks", 7: "creator-profile-household-foundation", 8: "personal-library-cookbook-bookmarks", 9: "library-remote-search-projection", 10: "personal-library-course-bookmarks", 11: "federation-resource-limits", 12: "federation-retention-receipts", 13: "private-remote-recipe-snapshots", 14: "course-creator-attribution"} {
+	for version, name := range map[int]string{1: "legacy-baseline", 2: "instance-owner-authority", 3: "recipe-publication-policy", 4: "offline-passkey-enrollment", 5: "person-actor-identity", 6: "personal-library-bookmarks", 7: "creator-profile-household-foundation", 8: "personal-library-cookbook-bookmarks", 9: "library-remote-search-projection", 10: "personal-library-course-bookmarks", 11: "federation-resource-limits", 12: "federation-retention-receipts", 13: "private-remote-recipe-snapshots", 14: "course-creator-attribution", 15: "private-meal-menu-schema"} {
 		var got string
 		if err := db.QueryRow(`SELECT name FROM schema_migrations WHERE version=?`, version).Scan(&got); err != nil || got != name {
 			t.Fatalf("migration %d name=%q err=%v, want %q", version, got, err, name)
@@ -99,6 +99,9 @@ func TestFreshDatabaseRecordsAllRegisteredMigrations(t *testing.T) {
 	}
 	if !migrationObjectExists(t, db, "table", "library_remote_snapshot_versions") || !migrationObjectExists(t, db, "table", "library_remote_snapshot_pins") {
 		t.Fatal("fresh migration omitted private snapshot storage")
+	}
+	if !migrationObjectExists(t, db, "table", "meal_menus") || !migrationObjectExists(t, db, "table", "meal_menu_entries") {
+		t.Fatal("fresh migration omitted private meal menu tables")
 	}
 	var snapshotLimit int64
 	var snapshotPins int
@@ -908,14 +911,14 @@ func TestV6DatabaseUpgradesToV9WithoutBackfillAndSurvivesRestart(t *testing.T) {
 	if err := db.QueryRow(`SELECT creator_name FROM recipes WHERE id='recipe'`).Scan(&creatorName); err != nil || creatorName != "Legacy name" || profiles != 0 || attributions != 0 {
 		t.Fatalf("migration backfilled legacy identity: creator=%q profiles=%d attributions=%d err=%v", creatorName, profiles, attributions, err)
 	}
-	for _, index := range []string{"content_attributions_local_recipe_uq", "content_attributions_local_cookbook_uq", "content_attributions_claim_recipe_uq", "content_attributions_claim_cookbook_uq"} {
+	for _, index := range []string{"content_attributions_local_recipe_uq", "content_attributions_local_cookbook_uq", "content_attributions_claim_recipe_uq", "content_attributions_claim_cookbook_uq", "content_attributions_local_course_uq", "content_attributions_claim_course_uq", "content_attributions_local_menu_uq", "content_attributions_claim_menu_uq"} {
 		if !migrationObjectExists(t, db, "index", index) {
 			t.Errorf("partial unique index %q is missing", index)
 		}
 	}
 	wantForeignKeys := map[string]map[string]string{
 		"creator_profiles":     {"user_id": "users"},
-		"content_attributions": {"recipe_id": "recipes", "cookbook_id": "cookbooks", "course_id": "courses", "creator_id": "creator_profiles"},
+		"content_attributions": {"recipe_id": "recipes", "cookbook_id": "cookbooks", "course_id": "courses", "menu_id": "meal_menus", "creator_id": "creator_profiles"},
 	}
 	for table, want := range wantForeignKeys {
 		rows, err := db.Query(`PRAGMA foreign_key_list(` + table + `)`)

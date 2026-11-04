@@ -50,13 +50,18 @@ jobs:
       - run: npx tsc --noEmit
       - run: npm run build
       - run: npx playwright install --with-deps chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/playwright-browsers
       - run: npm run e2e
         env:
           E2E_SKIP_BUILD: "1"
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/playwright-browsers
       - run: cd .. && docker compose config --quiet
       - run: cd .. && docker compose build
       - name: Caddy and Go API browser integration
         run: node scripts/run-caddy-smoke.mjs --engine docker --frontend-image "${COMPOSE_PROJECT_NAME}-frontend" --backend-image "${COMPOSE_PROJECT_NAME}-cookbook" --browser
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/playwright-browsers
       - name: Backup actor cold and WAL restore proof
         run: cd .. && python3 -m unittest discover -s scripts -p 'test_backup_actor_restore.py' -v
         env:
@@ -66,7 +71,6 @@ jobs:
 
     env:
       COMPOSE_PROJECT_NAME: cookbook-ci-${{ github.run_id }}-${{ github.run_attempt }}
-      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/playwright-browsers
 
   operations:
     name: Backup tooling checks

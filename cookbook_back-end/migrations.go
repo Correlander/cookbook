@@ -79,6 +79,11 @@ func registeredSchemaMigrations() []schemaMigration {
 		name:     "library-remote-search-projection",
 		checksum: migrationChecksum("library-remote-search-projection", libraryRemoteRecipeSearchProjectionDDL+"\x00"+libraryRemoteRecipeSearchInvalidationTriggerDDL),
 		apply:    applyLibraryRemoteRecipeSearchProjectionMigration,
+	}, {
+		version:  10,
+		name:     "personal-library-course-bookmarks",
+		checksum: migrationChecksum("personal-library-course-bookmarks", courseBookmarkSchemaDDL+"\x00"+courseBookmarkLimitTriggerDDL),
+		apply:    ApplyCourseBookmarkMigration,
 	}}
 }
 

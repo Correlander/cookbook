@@ -4,6 +4,21 @@ import LibraryCollection from "./LibraryCollection.tsx";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it("renders course owner labels, canonical links, and removable redacted references", () => {
+  const remove = vi.fn();
+  render(<LibraryCollection type="courses" userID="owner-1" busyBookmarkID="" onBookmarkChange={vi.fn()} onMutationUncertain={vi.fn()} onRemoveUnavailable={remove} page={{
+    total: 2, limit: 24, offset: 0, items: [
+      { availability: "available", relationships: ["owned"], course: { id: "course-1", owner_id: "owner-1", owner_name: "Current Custodian", title: "Bread", description: "Starter", visibility: "public", lesson_count: 3, created_at: "now", updated_at: "now" } },
+      { availability: "unavailable", relationships: ["saved"], bookmark_id: "opaque-course", created_at: "then" },
+    ],
+  }} />);
+  expect(screen.getByRole("link", { name: "Open Bread" }).getAttribute("href")).toBe("/course?id=course-1");
+  expect(screen.getByText("Owner: Current Custodian")).toBeTruthy();
+  expect(document.body.textContent).not.toContain("opaque-course");
+  fireEvent.click(screen.getByRole("button", { name: "Remove unavailable course reference" }));
+  expect(remove).toHaveBeenCalledWith("opaque-course");
+});
+
 it("labels owner, creator, membership and saved facts separately", () => {
   const onBookmarkChange = vi.fn();
   const onRemoveUnavailable = vi.fn();

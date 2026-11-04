@@ -15,6 +15,44 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.history.replaceState(null, "", "/library"); });
 
+it("exposes disabled-course saved placeholders and removes them without requesting course content", async () => {
+  window.history.replaceState(null, "", "/library?type=courses");
+  const calls: string[] = [];
+  let coursePages = 0;
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input); calls.push(`${init?.method ?? "GET"} ${url}`);
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse(user));
+    if (url === "/api/public/config") return Promise.resolve(jsonResponse({ courses_enabled: false }));
+    if (url === "/api/library/courses?limit=24&offset=0") { coursePages += 1; return Promise.resolve(coursePages === 1 ? jsonResponse({ items: [{ availability: "unavailable", relationships: ["saved"], bookmark_id: "opaque-course", created_at: "then" }], total: 1, limit: 24, offset: 0 }) : jsonResponse({ items: [], total: 0, limit: 24, offset: 0 })); }
+    if (url === "/api/library/courses?limit=1&offset=0") return Promise.resolve(jsonResponse({ items: [{ availability: "unavailable", relationships: ["saved"], bookmark_id: "opaque-course", created_at: "then" }], total: 1, limit: 1, offset: 0 }));
+    if (url === "/api/library/course-bookmarks/opaque-course" && init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<LibraryRoot />);
+  expect(await screen.findByRole("button", { name: "Remove unavailable course reference" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Remove unavailable course reference" }));
+  await screen.findByRole("heading", { name: "Your courses" });
+  expect(calls.some((call) => call.includes("/api/courses/") || call.includes("/api/public/courses/"))).toBe(false);
+  expect(calls.some((call) => call === "GET /api/library/courses?limit=1&offset=0")).toBe(true);
+});
+
+it("reveals the Courses selector from the disabled-instance metadata probe", async () => {
+  window.history.replaceState(null, "", "/library?type=recipes");
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse(user));
+    if (url === "/api/public/config") return Promise.resolve(jsonResponse({ courses_enabled: false }));
+    if (url === "/api/library/recipes?limit=24&offset=0") return Promise.resolve(jsonResponse({ items: [], total: 0, limit: 24, offset: 0 }));
+    if (url === "/api/library/courses?limit=1&offset=0") return Promise.resolve(jsonResponse({ items: [{ availability: "unavailable", relationships: ["saved"], bookmark_id: "opaque", created_at: "then" }], total: 1, limit: 1, offset: 0 }));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<LibraryRoot />);
+  expect(await screen.findByRole("button", { name: "Courses" })).toBeTruthy();
+  expect(fetchMock).toHaveBeenCalledWith("/api/library/courses?limit=1&offset=0", { cache: "no-store", credentials: "same-origin" });
+});
+
 it("reads only the selected canonical recipes page and renders current relationships", async () => {
   window.history.replaceState(null, "", "/library?type=recipes");
   const calls: string[] = [];

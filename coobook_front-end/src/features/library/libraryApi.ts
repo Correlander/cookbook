@@ -2,10 +2,13 @@ import type {
   CookbookBookmarkPage,
   CookbookBookmarkStatus,
   CookbookBookmarkView,
+  Course,
+  CourseBookmarkStatus,
   Cookbook,
   LibraryRelationship,
   CreatorAttribution,
   LibraryCookbookItem,
+  LibraryCourseItem,
   LibraryPage,
   LibraryRecipeRelationship,
   LibraryRecipeItem,
@@ -20,6 +23,53 @@ import type {
 } from "../../apiModels";
 
 export const LIBRARY_PAGE_SIZE = 24;
+
+export async function fetchLibraryCourses(offset = 0, limit = LIBRARY_PAGE_SIZE): Promise<LibraryPage<LibraryCourseItem>> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const response = await fetch(`/api/library/courses?${params}`, { cache: "no-store", credentials: "same-origin" });
+  if (!response.ok) throw new Error("Could not load your courses Library.");
+  const value: unknown = await response.json();
+  if (!isRecord(value) || !Array.isArray(value.items) || !isNonnegativeInteger(value.total) || !isPositiveInteger(value.limit) || !isNonnegativeInteger(value.offset) || value.offset !== offset || value.limit > 100)
+    throw new Error("Could not load your courses Library.");
+  return { items: value.items.map(parseLibraryCourseItem), total: value.total, limit: value.limit, offset: value.offset };
+}
+
+export async function fetchCourseBookmarkStatus(courseID: string): Promise<CourseBookmarkStatus> {
+  if (!courseID) throw new Error("Could not check saved status.");
+  const params = new URLSearchParams({ local_course_id: courseID });
+  const response = await fetch(`/api/library/course-bookmarks/status?${params}`, { cache: "no-store", credentials: "same-origin" });
+  if (!response.ok) throw new Error("Could not check saved status.");
+  const value: unknown = await response.json();
+  if (!isRecord(value) || typeof value.saved !== "boolean") throw new Error("Could not check saved status.");
+  if (!value.saved) return { saved: false };
+  if (typeof value.bookmark_id !== "string" || !value.bookmark_id) throw new Error("Could not check saved status.");
+  return { saved: true, bookmark_id: value.bookmark_id };
+}
+
+export async function saveCourseBookmark(courseID: string): Promise<{ bookmarkID: string; created: boolean }> {
+  const response = await fetch("/api/library/course-bookmarks", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin", body: JSON.stringify({ local_course_id: courseID }) });
+  if (!response.ok) throw new Error("Could not save this course to your Library.");
+  if (response.status !== 200 && response.status !== 201) throw new Error("Could not save this course to your Library.");
+  const value: unknown = await response.json();
+  if (!isRecord(value) || typeof value.bookmark_id !== "string" || !value.bookmark_id) throw new Error("Could not save this course to your Library.");
+  return { bookmarkID: value.bookmark_id, created: response.status === 201 };
+}
+
+export async function removeCourseBookmark(bookmarkID: string): Promise<void> {
+  const response = await fetch(`/api/library/course-bookmarks/${encodeURIComponent(bookmarkID)}`, { method: "DELETE", credentials: "same-origin" });
+  if (response.status !== 204) throw new Error("Could not remove this saved course.");
+}
+
+function parseLibraryCourseItem(value: unknown): LibraryCourseItem {
+  if (!isRecord(value) || (value.availability !== "available" && value.availability !== "unavailable") || !Array.isArray(value.relationships)) throw new Error("Could not load your courses Library.");
+  if (value.availability === "unavailable") {
+    if (value.relationships.length !== 1 || value.relationships[0] !== "saved" || typeof value.bookmark_id !== "string" || typeof value.created_at !== "string" || "course" in value || "course_id" in value || "local_course_id" in value)
+      throw new Error("Could not load your courses Library.");
+    return { availability: "unavailable", relationships: ["saved"], bookmark_id: value.bookmark_id, created_at: value.created_at };
+  }
+  if (!value.relationships.length || value.relationships.some((item) => item !== "owned" && item !== "saved") || !isRecord(value.course) || typeof value.course.id !== "string" || typeof value.course.title !== "string" || typeof value.course.owner_name !== "string") throw new Error("Could not load your courses Library.");
+  return { availability: "available", relationships: value.relationships as ("owned" | "saved")[], ...(typeof value.bookmark_id === "string" ? { bookmark_id: value.bookmark_id } : {}), course: value.course as unknown as Course };
+}
 
 export function fetchLibraryPage(type: "recipes", offset?: number, query?: string): Promise<LibraryPage<LibraryRecipeItem>>;
 export function fetchLibraryPage(type: "cookbooks", offset?: number): Promise<LibraryPage<LibraryCookbookItem>>;

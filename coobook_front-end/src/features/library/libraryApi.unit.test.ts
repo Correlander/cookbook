@@ -4,6 +4,10 @@ import {
   fetchLibraryPage,
   fetchRecipeBookmarkStatus,
   fetchCookbookBookmarkStatus,
+  fetchLibraryCourses,
+  fetchCourseBookmarkStatus,
+  saveCourseBookmark,
+  removeCourseBookmark,
   fetchCookbookBookmarks,
   removeCookbookBookmark,
   saveCookbookBookmark,
@@ -17,6 +21,31 @@ function jsonResponse(value: unknown, status = 200): Response {
 }
 
 afterEach(() => vi.unstubAllGlobals());
+
+it("parses course Library unions and preserves unavailable-reference redaction", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [
+    { availability: "available", relationships: ["owned", "saved"], bookmark_id: "bm-1", course: { id: "course-1", owner_name: "Owner", owner_id: "actor", title: "Basics", description: "", visibility: "private", lesson_count: 2, created_at: "now", updated_at: "now" } },
+    { availability: "unavailable", relationships: ["saved"], bookmark_id: "bm-2", created_at: "then" },
+  ], total: 2, limit: 24, offset: 0 }));
+  vi.stubGlobal("fetch", fetchMock);
+  const page = await fetchLibraryCourses();
+  expect(fetchMock).toHaveBeenCalledWith("/api/library/courses?limit=24&offset=0", { cache: "no-store", credentials: "same-origin" });
+  expect(page.items[1]).toEqual({ availability: "unavailable", relationships: ["saved"], bookmark_id: "bm-2", created_at: "then" });
+});
+
+it("uses exact course saved-status, idempotent save and reference removal endpoints", async () => {
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(jsonResponse({ saved: true, bookmark_id: "bm-1" }))
+    .mockResolvedValueOnce(jsonResponse({ bookmark_id: "bm-1", course_id: "course-1", created_at: "now" }, 200))
+    .mockResolvedValueOnce(new Response(null, { status: 204 }));
+  vi.stubGlobal("fetch", fetchMock);
+  expect(await fetchCourseBookmarkStatus("course-1")).toEqual({ saved: true, bookmark_id: "bm-1" });
+  expect(await saveCourseBookmark("course-1")).toEqual({ bookmarkID: "bm-1", created: false });
+  await removeCourseBookmark("bm-1");
+  expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+    "/api/library/course-bookmarks/status?local_course_id=course-1", "/api/library/course-bookmarks", "/api/library/course-bookmarks/bm-1",
+  ]);
+});
 
 it("reads the matching canonical Library endpoint with server paging metadata", async () => {
   const recipe = {

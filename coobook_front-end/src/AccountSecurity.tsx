@@ -183,10 +183,9 @@ export default function AccountSecurity() {
       ))}
       {!items.length && !error && <p>No passkeys added yet.</p>}
       <div className="account-portability">
-        <h3>Your recipes and cookbooks</h3>
+        <h3>Your recipes, cookbooks, and saved references</h3>
         <p>
-          Export your owned recipes and cookbooks, or import a previous export.
-          Imports are private copies and do not include revision history.
+          Exports include owned recipes and cookbooks plus saved reference identities. Course lessons and course content are not exported. Imports create private copies and do not include revision history; saved course references remain references and are not mapped to copied courses.
         </p>
         <a className="button button--green" href="/api/export">
           Download export
@@ -219,9 +218,10 @@ export default function AccountSecurity() {
               const result = (await response.json()) as {
                 recipes: number;
                 cookbooks: number;
+                course_bookmarks?: number;
               };
               window.alert(
-                `Imported ${result.recipes} recipes and ${result.cookbooks} cookbooks as private copies.`,
+                `Imported ${result.recipes} recipes and ${result.cookbooks} cookbooks as private copies${typeof result.course_bookmarks === "number" ? `, plus ${result.course_bookmarks} saved course references` : ""}.`,
               );
             } catch (err: unknown) {
               setError(errorMessage(err, "This export could not be imported."));

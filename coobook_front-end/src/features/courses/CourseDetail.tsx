@@ -3,6 +3,7 @@ import useModalFocus from "../../useModalFocus.ts";
 import { moveStep } from "../../steps.ts";
 import type { Course, CourseLesson, PublicRecipe } from "../../apiModels";
 import { errorMessage } from "../../apiModels";
+import CourseBookmarkAction from "./CourseBookmarkAction.tsx";
 
 interface CourseDetailProps {
   course: Course;
@@ -10,6 +11,8 @@ interface CourseDetailProps {
   onEdit: () => void;
   onOpenRecipe?: (recipe: PublicRecipe) => void;
   onChanged: () => Promise<void>;
+  mode?: "modal" | "page";
+  currentUserID?: string | null;
 }
 
 export default function CourseDetail({
@@ -18,15 +21,19 @@ export default function CourseDetail({
   onEdit,
   onOpenRecipe,
   onChanged,
+  mode = "modal",
+  currentUserID = null,
 }: CourseDetailProps) {
   const dialogRef = useRef<HTMLElement>(null);
-  useModalFocus(dialogRef, onClose);
+  useModalFocus(dialogRef, onClose, mode === "modal");
   const [lessons, setLessons] = useState<CourseLesson[]>([]);
   const [error, setError] = useState("");
   const [lessonOpen, setLessonOpen] = useState<false | true | CourseLesson>(
     false,
   );
   const owner = Boolean(course.owner_id);
+  const Heading = mode === "modal" ? "h2" : "h1";
+  const LessonHeading = mode === "modal" ? "h3" : "h2";
   const lessonsEndpoint = owner
     ? `/api/courses/${course.id}/lessons`
     : `/api/public/courses/${course.id}/lessons`;
@@ -92,6 +99,19 @@ export default function CourseDetail({
     }
   }
 
+  const content = (
+    <>
+        <span className="eyebrow">{course.visibility} course · Owner: {course.owner_name}</span>
+        <Heading id="course-title-heading">{course.title}</Heading>
+        {course.description && <p>{course.description}</p>}
+        {currentUserID && <CourseBookmarkAction courseID={course.id} title={course.title} currentUserID={currentUserID} />}
+        <a className="text-link" href={`/course?id=${encodeURIComponent(course.id)}`}>Open course page</a>
+        {owner && mode === "modal" && <div className="course-actions"><button className="text-link" type="button" onClick={onEdit}>Edit course</button><button className="text-link" type="button" onClick={() => setLessonOpen(true)}>Add lesson</button><button className="text-link" type="button" onClick={async () => { if (!window.confirm(`Delete “${course.title}” and all its lessons?`)) return; const response = await fetch(`/api/courses/${course.id}`, { method: "DELETE" }); if (!response.ok) { setError("Could not delete this course."); return; } onClose(); await onChanged(); }}>Delete course</button></div>}
+        {error && <p className="form-message" role="alert">{error}</p>}
+        {lessons.length ? <ol className="course-lessons">{lessons.map((lesson, index) => <li key={lesson.id}><span className="eyebrow">Lesson {index + 1}</span><LessonHeading>{lesson.title}</LessonHeading>{lesson.content && <p>{lesson.content}</p>}{lesson.recipe_id && onOpenRecipe && <button className="text-link" type="button" onClick={async () => { const response = await fetch(`/api/recipes/${lesson.recipe_id}`); if (response.ok) onOpenRecipe?.(await response.json()); }}>Open linked recipe</button>}{owner && mode === "modal" && <div className="course-actions"><button className="text-link" type="button" disabled={index === 0} onClick={() => moveLesson(index, -1)}>Move up</button><button className="text-link" type="button" disabled={index === lessons.length - 1} onClick={() => moveLesson(index, 1)}>Move down</button><button className="text-link" type="button" onClick={() => setLessonOpen(lesson)}>Edit lesson</button><button className="text-link" type="button" onClick={() => void removeLesson(lesson)}>Remove lesson</button></div>}</li>)}</ol> : <p className="cookbook-empty">This course has no lessons yet.</p>}
+    </>
+  );
+  if (mode === "page") return <section className="cookbook-dashboard" aria-labelledby="course-title-heading">{content}</section>;
   return (
     <div
       className="dialog-backdrop"
@@ -114,114 +134,7 @@ export default function CourseDetail({
         >
           ×
         </button>
-        <span className="eyebrow">
-          {course.visibility} course · by {course.owner_name}
-        </span>
-        <h2 id="course-title-heading">{course.title}</h2>
-        {course.description && <p>{course.description}</p>}
-        {owner && (
-          <div className="course-actions">
-            <button className="text-link" type="button" onClick={onEdit}>
-              Edit course
-            </button>
-            <button
-              className="text-link"
-              type="button"
-              onClick={() => setLessonOpen(true)}
-            >
-              Add lesson
-            </button>
-            <button
-              className="text-link"
-              type="button"
-              onClick={async () => {
-                if (
-                  !window.confirm(
-                    `Delete “${course.title}” and all its lessons?`,
-                  )
-                )
-                  return;
-                const response = await fetch(`/api/courses/${course.id}`, {
-                  method: "DELETE",
-                });
-                if (!response.ok) {
-                  setError("Could not delete this course.");
-                  return;
-                }
-                onClose();
-                await onChanged();
-              }}
-            >
-              Delete course
-            </button>
-          </div>
-        )}
-        {error && (
-          <p className="form-message" role="alert">
-            {error}
-          </p>
-        )}
-        {lessons.length ? (
-          <ol className="course-lessons">
-            {lessons.map((lesson, index) => (
-              <li key={lesson.id}>
-                <span className="eyebrow">Lesson {index + 1}</span>
-                <h3>{lesson.title}</h3>
-                {lesson.content && <p>{lesson.content}</p>}
-                {lesson.recipe_id && onOpenRecipe && (
-                  <button
-                    className="text-link"
-                    type="button"
-                    onClick={async () => {
-                      const response = await fetch(
-                        `/api/recipes/${lesson.recipe_id}`,
-                      );
-                      if (response.ok) onOpenRecipe?.(await response.json());
-                    }}
-                  >
-                    Open linked recipe
-                  </button>
-                )}
-                {owner && (
-                  <div className="course-actions">
-                    <button
-                      className="text-link"
-                      type="button"
-                      disabled={index === 0}
-                      onClick={() => moveLesson(index, -1)}
-                    >
-                      Move up
-                    </button>
-                    <button
-                      className="text-link"
-                      type="button"
-                      disabled={index === lessons.length - 1}
-                      onClick={() => moveLesson(index, 1)}
-                    >
-                      Move down
-                    </button>
-                    <button
-                      className="text-link"
-                      type="button"
-                      onClick={() => setLessonOpen(lesson)}
-                    >
-                      Edit lesson
-                    </button>
-                    <button
-                      className="text-link"
-                      type="button"
-                      onClick={() => removeLesson(lesson)}
-                    >
-                      Remove lesson
-                    </button>
-                  </div>
-                )}
-              </li>
-            ))}
-          </ol>
-        ) : (
-          <p className="cookbook-empty">This course has no lessons yet.</p>
-        )}
+        {content}
         {lessonOpen && (
           <LessonForm
             course={course}

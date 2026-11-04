@@ -25,6 +25,10 @@ interface BookmarkActionProps {
   onMutationUncertain?: () => void;
 }
 
+export function BookmarkActionPresentation({ label, disabled, retryDisabled = disabled, error, onActivate, onRetry }: { label: string; disabled: boolean; retryDisabled?: boolean; error?: string; onActivate: () => void; onRetry?: () => void }) {
+  return <div className="library-action"><button className="text-link" type="button" disabled={disabled} onClick={onActivate}>{label}</button>{error && <span className="form-message" role="alert">{error}</span>}{error && onRetry && <button className="text-link" type="button" disabled={retryDisabled} onClick={onRetry}>Retry saved status</button>}</div>;
+}
+
 export default function BookmarkAction({
   currentUserID,
   target,
@@ -127,36 +131,6 @@ export default function BookmarkAction({
     }
   }
 
-  return (
-    <span className="library-action">
-      <button
-        className="text-link"
-        type="button"
-        disabled={saving || busy || !keyMatches || status !== "known" || (!saved && !target)}
-        onClick={() => void toggle()}
-      >
-        {!keyMatches || status === "checking"
-          ? "Checking saved status…"
-          : status === "unknown"
-            ? "Saved status unavailable"
-          : saving
-          ? saved
-            ? "Removing…"
-            : "Saving…"
-          : saved
-            ? "Remove from Library"
-            : "Save to Library"}
-      </button>
-      {keyMatches && error && (
-        <span className="form-message" role="alert">
-          {error}
-        </span>
-      )}
-      {keyMatches && status === "unknown" && (
-        <button className="text-link" type="button" disabled={busy || saving} onClick={() => setRetry((value) => value + 1)}>
-          Retry saved status
-        </button>
-      )}
-    </span>
-  );
+  const label = !keyMatches || status === "checking" ? "Checking saved status…" : status === "unknown" ? "Saved status unavailable" : saving ? (saved ? "Removing…" : "Saving…") : saved ? "Remove from Library" : "Save to Library";
+  return <BookmarkActionPresentation label={label} disabled={saving || busy || !keyMatches || status !== "known" || (!saved && !target)} retryDisabled={busy || saving} error={keyMatches ? error : undefined} onActivate={() => void toggle()} onRetry={keyMatches && status === "unknown" ? () => setRetry((value) => value + 1) : undefined} />;
 }

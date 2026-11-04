@@ -3,6 +3,7 @@ import type { Course, PublicRecipe } from "./apiModels";
 import { errorMessage } from "./apiModels";
 import CourseDetail from "./features/courses/CourseDetail.tsx";
 import CourseForm from "./features/courses/CourseForm.tsx";
+import { useAppSession } from "./app/AppSession.tsx";
 
 interface CoursesProps {
   onOpenRecipe?: (recipe: PublicRecipe) => void;
@@ -10,6 +11,7 @@ interface CoursesProps {
 type EditingCourse = Course | "new";
 
 export default function Courses({ onOpenRecipe }: CoursesProps) {
+  const { currentUser } = useAppSession();
   const [courses, setCourses] = useState<Course[]>([]);
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [error, setError] = useState("");
@@ -90,9 +92,9 @@ export default function Courses({ onOpenRecipe }: CoursesProps) {
               <span className="recipe-card__category">
                 {course.visibility} course · {course.lesson_count} lessons
               </span>
-              <h3>{course.title}</h3>
+              <h3><a href={`/course?id=${encodeURIComponent(course.id)}`}>{course.title}</a></h3>
               {course.description && <p>{course.description}</p>}
-              <p className="course-owner">By {course.owner_name}</p>
+              <p className="course-owner">Owner: {course.owner_name}</p>
               <button
                 type="button"
                 className="text-link"
@@ -130,6 +132,7 @@ export default function Courses({ onOpenRecipe }: CoursesProps) {
       {openCourse && (
         <CourseDetail
           course={openCourse}
+          currentUserID={currentUser?.id ?? null}
           onClose={() => setOpenCourse(null)}
           onEdit={() => {
             setEditing(openCourse);

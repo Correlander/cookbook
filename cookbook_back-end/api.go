@@ -250,6 +250,14 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.cookbookBookmarkStatus(w, r)
 	case len(parts) == 3 && parts[0] == "library" && parts[1] == "cookbook-bookmarks":
 		h.cookbookBookmarks(w, r, parts[2])
+	case len(parts) == 2 && parts[0] == "library" && parts[1] == "courses":
+		h.libraryCourses(w, r)
+	case len(parts) == 3 && parts[0] == "library" && parts[1] == "course-bookmarks" && parts[2] == "status":
+		h.courseBookmarkStatus(w, r)
+	case len(parts) == 2 && parts[0] == "library" && parts[1] == "course-bookmarks":
+		h.courseBookmarks(w, r, "")
+	case len(parts) == 3 && parts[0] == "library" && parts[1] == "course-bookmarks":
+		h.courseBookmarks(w, r, parts[2])
 	case len(parts) == 1 && parts[0] == "cookbooks":
 		h.cookbooks(w, r)
 	case len(parts) == 2 && parts[0] == "cookbooks":

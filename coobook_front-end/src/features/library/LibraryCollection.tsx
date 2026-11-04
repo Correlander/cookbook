@@ -1,5 +1,6 @@
 import type {
   LibraryCookbookItem,
+  LibraryCourseItem,
   LibraryPage,
   LibraryRecipeItem,
   LibraryType,
@@ -9,8 +10,9 @@ import RecipeCardContents from "../recipes/RecipeCardContents.tsx";
 import BookmarkAction from "./BookmarkAction.tsx";
 import CookbookBookmarkAction from "../cookbooks/CookbookBookmarkAction.tsx";
 import CreatorCredits from "../creator/CreatorCredits.tsx";
+import CourseBookmarkAction from "../courses/CourseBookmarkAction.tsx";
 
-type LibraryItem = LibraryRecipeItem | LibraryCookbookItem;
+type LibraryItem = LibraryRecipeItem | LibraryCookbookItem | LibraryCourseItem;
 
 export default function LibraryCollection({
   type,
@@ -29,7 +31,7 @@ export default function LibraryCollection({
   onMutationUncertain: () => void;
   onRemoveUnavailable: (bookmarkID: string) => void;
 }) {
-  const label = type === "recipes" ? "recipes" : "cookbooks";
+  const label = type;
   return (
     <section className="cookbook-dashboard" aria-labelledby="library-collection-title">
       <div className="section-heading">
@@ -45,7 +47,8 @@ export default function LibraryCollection({
         <div className="cookbook-grid">
           {page.items.map((item, index) => type === "recipes"
             ? "target_kind" in item ? <RecipeLibraryCard key={libraryKey(item, index)} item={item} userID={userID} busy={busyBookmarkID === item.bookmark_id} onChange={onBookmarkChange} onMutationUncertain={onMutationUncertain} onRemoveUnavailable={onRemoveUnavailable} /> : null
-            : !("target_kind" in item) ? <CookbookLibraryCard key={libraryKey(item, index)} item={item} userID={userID} onChange={onBookmarkChange} onMutationUncertain={onMutationUncertain} onRemoveUnavailable={onRemoveUnavailable} /> : null)}
+            : type === "cookbooks" ? ! ("target_kind" in item) && !("course" in item) ? <CookbookLibraryCard key={libraryKey(item, index)} item={item as LibraryCookbookItem} userID={userID} onChange={onBookmarkChange} onMutationUncertain={onMutationUncertain} onRemoveUnavailable={onRemoveUnavailable} /> : null
+            : "course" in item || item.availability === "unavailable" && "relationships" in item && Array.isArray(item.relationships) && item.relationships.includes("saved") ? <CourseLibraryCard key={libraryKey(item, index)} item={item as LibraryCourseItem} userID={userID} busy={busyBookmarkID === item.bookmark_id} onChange={onBookmarkChange} onMutationUncertain={onMutationUncertain} onRemoveUnavailable={onRemoveUnavailable} /> : null)}
         </div>
       )}
     </section>
@@ -114,7 +117,13 @@ function CookbookLibraryCard({ item, userID, onChange, onMutationUncertain, onRe
   );
 }
 
-function UnavailableCard({ kind, createdAt, bookmarkID, busy, onRemove }: { kind: "recipe" | "cookbook"; createdAt?: string; bookmarkID: string; busy: boolean; onRemove: (bookmarkID: string) => void }) {
+function CourseLibraryCard({ item, userID, busy, onChange, onMutationUncertain, onRemoveUnavailable }: { item: LibraryCourseItem; userID: string; busy: boolean; onChange: (id: string | null) => void; onMutationUncertain: () => void; onRemoveUnavailable: (bookmarkID: string) => void }) {
+  if (item.availability === "unavailable") return <UnavailableCard kind="course" createdAt={item.created_at} bookmarkID={item.bookmark_id} busy={busy} onRemove={onRemoveUnavailable} />;
+  const course = item.course;
+  return <article className="cookbook-card"><a href={`/course?id=${encodeURIComponent(course.id)}`} aria-label={`Open ${course.title}`}><span className="eyebrow">{course.visibility} course · {course.lesson_count} lessons</span><h3>{course.title}</h3>{course.description && <p>{course.description}</p>}</a><p>Owner: {course.owner_name}</p><RelationshipFacts relationships={item.relationships} ownedByCurrentUser={item.relationships.includes("owned")} /><CourseBookmarkAction courseID={course.id} title={course.title} currentUserID={userID} initialBookmarkID={item.relationships.includes("saved") ? item.bookmark_id ?? null : undefined} onMutation={() => onChange(null)} onMutationUncertain={onMutationUncertain} /></article>;
+}
+
+function UnavailableCard({ kind, createdAt, bookmarkID, busy, onRemove }: { kind: "recipe" | "cookbook" | "course"; createdAt?: string; bookmarkID: string; busy: boolean; onRemove: (bookmarkID: string) => void }) {
   return (
     <article className="cookbook-card">
       <span className="eyebrow">Saved reference</span>
@@ -142,6 +151,7 @@ function libraryKey(item: LibraryItem, index: number): string {
   if ("target_kind" in item && item.target_kind === "remote" && item.remote_recipe) return item.remote_recipe.object_uri;
   if ("recipe" in item && item.recipe) return `recipe:${item.recipe.id}`;
   if ("cookbook" in item && item.cookbook) return `cookbook:${item.cookbook.id}`;
+  if ("course" in item && item.course) return `course:${item.course.id}`;
   return `library:${index}`;
 }
 

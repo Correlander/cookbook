@@ -194,7 +194,7 @@ export interface CookbookBookmarkPage {
   offset: number;
 }
 
-export type LibraryType = "recipes" | "cookbooks";
+export type LibraryType = "recipes" | "cookbooks" | "courses";
 export type LibraryRelationship = "owned" | "shared" | "saved";
 export type LibraryRecipeRelationship = LibraryRelationship | "in_owned_cookbook";
 
@@ -225,6 +225,12 @@ export interface LibraryCookbookItem {
   created_at?: string;
 }
 
+export type LibraryCourseRelationship = "owned" | "saved";
+
+export type LibraryCourseItem =
+  | { availability: "available"; relationships: LibraryCourseRelationship[]; bookmark_id?: string; course: Course }
+  | { availability: "unavailable"; relationships: ["saved"]; bookmark_id: string; created_at: string };
+
 export interface LibraryPage<T> {
   items: T[];
   total: number;
@@ -238,6 +244,8 @@ export type RecipeBookmarkStatus =
 
 export type CookbookBookmarkStatus =
   { saved: false } | { saved: true; bookmark_id: string };
+
+export type CourseBookmarkStatus = { saved: false } | { saved: true; bookmark_id: string };
 
 export interface RemoteRecipeListItem {
   object_id: string;

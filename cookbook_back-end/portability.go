@@ -23,6 +23,8 @@ const maxPortableMediaCount = 50
 const maxPortableMediaBytes = 50 << 20
 const maxPortableRelationships = 100_000
 const maxPortableCookbookBookmarks = 10000
+const maxPortableCourseBookmarks = 10000
+const portableFormatV6 = "cookbook-export-v6"
 const portableFormatV5 = "cookbook-export-v5"
 const portableFormatV4 = "cookbook-export-v4"
 const portableFormatV3 = "cookbook-export-v3"
@@ -37,6 +39,7 @@ type portableBundle struct {
 	Bookmarks         []portableBookmark    `json:"bookmarks"`
 	Attributions      []portableAttribution `json:"attributions"`
 	CookbookBookmarks json.RawMessage       `json:"cookbook_bookmarks,omitempty"`
+	CourseBookmarks   json.RawMessage       `json:"course_bookmarks,omitempty"`
 }
 
 // portableBookmark contains only the saved source identity and creation time.
@@ -63,8 +66,17 @@ type portableCookbookBookmarkIdentity struct {
 	instanceID, cookbookID string
 }
 
+type portableCourseBookmark struct {
+	LocalInstanceID string `json:"local_instance_id"`
+	LocalCourseID   string `json:"local_course_id"`
+	CreatedAt       string `json:"created_at"`
+}
+
+type portableCourseBookmarkIdentity struct{ instanceID, courseID string }
+
 var errPortableBookmarkLimitReached = errors.New("portable bookmark limit reached")
 var errPortableCookbookBookmarkLimitReached = errors.New("portable cookbook bookmark limit reached")
+var errPortableCourseBookmarkLimitReached = errors.New("portable course bookmark limit reached")
 var errPortableExportTooLarge = errors.New("portable export too large")
 
 type portableCookbook struct {
@@ -101,7 +113,7 @@ func (h apiHandler) exportData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := authenticatedUser(r)
-	bundle := portableBundle{Format: portableFormatV5, Exported: time.Now().UTC().Format(time.RFC3339Nano), Cookbooks: []portableCookbook{}, Recipes: []portableRecipe{}, Bookmarks: []portableBookmark{}, Attributions: []portableAttribution{}, CookbookBookmarks: json.RawMessage("[]")}
+	bundle := portableBundle{Format: portableFormatV6, Exported: time.Now().UTC().Format(time.RFC3339Nano), Cookbooks: []portableCookbook{}, Recipes: []portableRecipe{}, Bookmarks: []portableBookmark{}, Attributions: []portableAttribution{}, CookbookBookmarks: json.RawMessage("[]"), CourseBookmarks: json.RawMessage("[]")}
 	manifestSize := 128
 	books, err := h.db.Query(`SELECT id,title,description,visibility FROM cookbooks WHERE owner_id=? ORDER BY id`, uid)
 	if err != nil {
@@ -364,6 +376,52 @@ func (h apiHandler) exportData(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
+	courseBookmarkRows, err := h.db.Query(`SELECT local_instance_id,local_course_id,created_at FROM course_bookmarks WHERE user_id=? ORDER BY created_at DESC,id`, uid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	courseBookmarks := make([]portableCourseBookmark, 0)
+	for courseBookmarkRows.Next() {
+		var bookmark portableCourseBookmark
+		if err := courseBookmarkRows.Scan(&bookmark.LocalInstanceID, &bookmark.LocalCourseID, &bookmark.CreatedAt); err != nil {
+			courseBookmarkRows.Close()
+			writeError(w, 500, "storage_error")
+			return
+		}
+		if len(courseBookmarks) >= maxPortableCourseBookmarks {
+			courseBookmarkRows.Close()
+			writeError(w, 413, "export_too_large")
+			return
+		}
+		if validatePortableCourseBookmark(bookmark) != nil {
+			courseBookmarkRows.Close()
+			writeError(w, 500, "storage_error")
+			return
+		}
+		encoded, err := json.Marshal(bookmark)
+		if err != nil || manifestSize+len(encoded)+1 > maxImportManifestBytes {
+			courseBookmarkRows.Close()
+			writeError(w, 413, "export_too_large")
+			return
+		}
+		manifestSize += len(encoded) + 1
+		courseBookmarks = append(courseBookmarks, bookmark)
+	}
+	if err := courseBookmarkRows.Err(); err != nil {
+		courseBookmarkRows.Close()
+		writeError(w, 500, "storage_error")
+		return
+	}
+	if err := courseBookmarkRows.Close(); err != nil {
+		writeError(w, 500, "storage_error")
+		return
+	}
+	bundle.CourseBookmarks, err = json.Marshal(courseBookmarks)
+	if err != nil {
+		writeError(w, 500, "storage_error")
+		return
+	}
 	mediaNames := map[string]bool{}
 	for _, recipe := range bundle.Recipes {
 		if recipe.ImageFile != "" {
@@ -511,6 +569,11 @@ func (h apiHandler) importData(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_import")
 		return
 	}
+	courseBookmarkItems, err := portableCourseBookmarksFromBundle(bundle)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_import")
+		return
+	}
 	for _, recipe := range bundle.Recipes {
 		if recipe.ImageFile != "" {
 			if _, ok := media[recipe.ImageFile]; !ok {
@@ -579,6 +642,15 @@ func (h apiHandler) importData(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
+	courseBookmarkPlan, err := planPortableCourseBookmarkImport(r.Context(), tx, uid, courseBookmarkItems)
+	if errors.Is(err, errPortableCourseBookmarkLimitReached) {
+		writeError(w, http.StatusConflict, "course_bookmark_limit_reached")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
 	bookIDs := map[string]string{}
 	for _, book := range bundle.Cookbooks {
 		id := newID()
@@ -641,6 +713,14 @@ func (h apiHandler) importData(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
+	if err := insertPortableCourseBookmarkImport(r.Context(), tx, uid, courseBookmarkPlan); err != nil {
+		if errors.Is(err, errPortableCourseBookmarkLimitReached) {
+			writeError(w, http.StatusConflict, "course_bookmark_limit_reached")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
 	if err := insertPortableAttributionImport(r.Context(), tx, bundle.Attributions, recipeIDs, bookIDs); err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
@@ -650,7 +730,7 @@ func (h apiHandler) importData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	committed = true
-	writeJSON(w, http.StatusCreated, map[string]int{"cookbooks": len(bundle.Cookbooks), "recipes": len(bundle.Recipes)})
+	writeJSON(w, http.StatusCreated, map[string]int{"cookbooks": len(bundle.Cookbooks), "recipes": len(bundle.Recipes), "course_bookmarks": len(courseBookmarkPlan)})
 }
 
 func insertPortableAttributionImport(ctx context.Context, tx *sql.Tx, attributions []portableAttribution, recipeIDs, bookIDs map[string]string) error {
@@ -857,30 +937,39 @@ func portableCookbookBookmarksFromBundle(bundle portableBundle) ([]portableCookb
 }
 
 func validatePortableBundle(bundle portableBundle) error {
-	if (bundle.Format != portableFormatV5 && bundle.Format != portableFormatV4 && bundle.Format != portableFormatV3 && bundle.Format != portableFormat && bundle.Format != legacyPortableFormat) ||
+	if (bundle.Format != portableFormatV6 && bundle.Format != portableFormatV5 && bundle.Format != portableFormatV4 && bundle.Format != portableFormatV3 && bundle.Format != portableFormat && bundle.Format != legacyPortableFormat) ||
 		len(bundle.Cookbooks) > 1000 || len(bundle.Recipes) > 10000 || len(bundle.Bookmarks) > maxRecipeBookmarksPerAccount {
 		return errors.New("unsupported or oversized import")
 	}
-	if (bundle.Format == portableFormatV3 || bundle.Format == portableFormatV4 || bundle.Format == portableFormatV5) && bundle.Bookmarks == nil {
+	if (bundle.Format == portableFormatV3 || bundle.Format == portableFormatV4 || bundle.Format == portableFormatV5 || bundle.Format == portableFormatV6) && bundle.Bookmarks == nil {
 		return errors.New("versioned archive is missing bookmarks")
 	}
-	if bundle.Format != portableFormatV3 && bundle.Format != portableFormatV4 && bundle.Format != portableFormatV5 && len(bundle.Bookmarks) != 0 {
+	if bundle.Format != portableFormatV3 && bundle.Format != portableFormatV4 && bundle.Format != portableFormatV5 && bundle.Format != portableFormatV6 && len(bundle.Bookmarks) != 0 {
 		return errors.New("legacy archives cannot carry bookmarks")
 	}
-	if (bundle.Format == portableFormatV4 || bundle.Format == portableFormatV5) && bundle.Attributions == nil {
+	if (bundle.Format == portableFormatV4 || bundle.Format == portableFormatV5 || bundle.Format == portableFormatV6) && bundle.Attributions == nil {
 		return errors.New("versioned archive is missing attributions")
 	}
-	if bundle.Format != portableFormatV4 && bundle.Format != portableFormatV5 && len(bundle.Attributions) != 0 {
+	if bundle.Format != portableFormatV4 && bundle.Format != portableFormatV5 && bundle.Format != portableFormatV6 && len(bundle.Attributions) != 0 {
 		return errors.New("legacy archives cannot carry attributions")
 	}
 	if _, err := portableCookbookBookmarksFromBundle(bundle); err != nil {
 		return err
 	}
-	if bundle.Format == portableFormatV5 && bundle.CookbookBookmarks == nil {
-		return errors.New("v5 archive is missing cookbook bookmarks")
+	if (bundle.Format == portableFormatV5 || bundle.Format == portableFormatV6) && bundle.CookbookBookmarks == nil {
+		return errors.New("versioned archive is missing cookbook bookmarks")
 	}
-	if bundle.Format != portableFormatV5 && bundle.CookbookBookmarks != nil {
-		return errors.New("cookbook bookmarks are only supported by v5 archives")
+	if bundle.Format != portableFormatV5 && bundle.Format != portableFormatV6 && bundle.CookbookBookmarks != nil {
+		return errors.New("cookbook bookmarks are only supported by v5 or v6 archives")
+	}
+	if bundle.Format == portableFormatV6 && bundle.CourseBookmarks == nil {
+		return errors.New("v6 archive is missing course bookmarks")
+	}
+	if bundle.Format != portableFormatV6 && bundle.CourseBookmarks != nil {
+		return errors.New("course bookmarks are only supported by v6 archives")
+	}
+	if _, err := portableCourseBookmarksFromBundle(bundle); err != nil {
+		return err
 	}
 	for _, bookmark := range bundle.Bookmarks {
 		if err := validatePortableBookmark(bookmark); err != nil {
@@ -964,7 +1053,7 @@ func validatePortableBundle(bundle portableBundle) error {
 		}
 		recipeIDsByBook[b.ID] = seenRecipes
 	}
-	if bundle.Format == portableFormat || bundle.Format == portableFormatV3 || bundle.Format == portableFormatV4 || bundle.Format == portableFormatV5 {
+	if bundle.Format == portableFormat || bundle.Format == portableFormatV3 || bundle.Format == portableFormatV4 || bundle.Format == portableFormatV5 || bundle.Format == portableFormatV6 {
 		if relationshipCount != recipeRelationshipCount {
 			return errors.New("inconsistent cookbook relationships")
 		}
@@ -976,7 +1065,7 @@ func validatePortableBundle(bundle portableBundle) error {
 			}
 		}
 	}
-	if bundle.Format == portableFormatV4 || bundle.Format == portableFormatV5 {
+	if bundle.Format == portableFormatV4 || bundle.Format == portableFormatV5 || bundle.Format == portableFormatV6 {
 		if len(bundle.Attributions) > maxPortableRelationships {
 			return errors.New("too many attributions")
 		}
@@ -1040,6 +1129,105 @@ func validatePortableCookbookBookmark(bookmark portableCookbookBookmark) error {
 	if !validLibraryInstanceID(bookmark.LocalInstanceID) || bookmark.LocalCookbookID == "" ||
 		bookmark.LocalCookbookID != strings.TrimSpace(bookmark.LocalCookbookID) || len(bookmark.LocalCookbookID) > 80 || strings.ContainsRune(bookmark.LocalCookbookID, '\x00') {
 		return errors.New("invalid cookbook bookmark identity")
+	}
+	return nil
+}
+
+func portableCourseBookmarkKey(bookmark portableCourseBookmark) portableCourseBookmarkIdentity {
+	return portableCourseBookmarkIdentity{instanceID: bookmark.LocalInstanceID, courseID: bookmark.LocalCourseID}
+}
+
+func planPortableCourseBookmarkImport(ctx context.Context, tx *sql.Tx, userID string, bookmarks []portableCourseBookmark) ([]portableCourseBookmark, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT local_instance_id,local_course_id FROM course_bookmarks WHERE user_id=?`, userID)
+	if err != nil {
+		return nil, err
+	}
+	existing := map[portableCourseBookmarkIdentity]struct{}{}
+	count := 0
+	for rows.Next() {
+		var b portableCourseBookmark
+		if err := rows.Scan(&b.LocalInstanceID, &b.LocalCourseID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		existing[portableCourseBookmarkKey(b)] = struct{}{}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if count > maxCourseBookmarksPerAccount {
+		return nil, errPortableCourseBookmarkLimitReached
+	}
+	planned := make([]portableCourseBookmark, 0, len(bookmarks))
+	for _, b := range bookmarks {
+		if err := validatePortableCourseBookmark(b); err != nil {
+			return nil, err
+		}
+		key := portableCourseBookmarkKey(b)
+		if _, ok := existing[key]; ok {
+			continue
+		}
+		existing[key] = struct{}{}
+		planned = append(planned, b)
+	}
+	if count+len(planned) > maxCourseBookmarksPerAccount {
+		return nil, errPortableCourseBookmarkLimitReached
+	}
+	return planned, nil
+}
+
+func insertPortableCourseBookmarkImport(ctx context.Context, tx *sql.Tx, userID string, bookmarks []portableCourseBookmark) error {
+	for _, b := range bookmarks {
+		_, err := tx.ExecContext(ctx, `INSERT INTO course_bookmarks(id,user_id,local_instance_id,local_course_id,created_at) VALUES(?,?,?,?,?)`, newID(), userID, b.LocalInstanceID, b.LocalCourseID, b.CreatedAt)
+		if err != nil {
+			if strings.Contains(err.Error(), "course bookmark limit reached") {
+				return errPortableCourseBookmarkLimitReached
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+func portableCourseBookmarksFromBundle(bundle portableBundle) ([]portableCourseBookmark, error) {
+	if len(bundle.CourseBookmarks) == 0 {
+		return nil, nil
+	}
+	if bytes.Equal(bytes.TrimSpace(bundle.CourseBookmarks), []byte("null")) {
+		return nil, errors.New("course bookmarks must be an array")
+	}
+	var bookmarks []portableCourseBookmark
+	decoder := json.NewDecoder(bytes.NewReader(bundle.CourseBookmarks))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&bookmarks); err != nil || bookmarks == nil {
+		return nil, errors.New("invalid course bookmarks")
+	}
+	var extra any
+	if !errors.Is(decoder.Decode(&extra), io.EOF) {
+		return nil, errors.New("trailing course bookmark data")
+	}
+	if len(bookmarks) > maxPortableCourseBookmarks {
+		return nil, errors.New("too many course bookmarks")
+	}
+	for _, b := range bookmarks {
+		if err := validatePortableCourseBookmark(b); err != nil {
+			return nil, err
+		}
+	}
+	return bookmarks, nil
+}
+
+func validatePortableCourseBookmark(bookmark portableCourseBookmark) error {
+	if _, err := time.Parse(time.RFC3339Nano, bookmark.CreatedAt); err != nil {
+		return errors.New("invalid course bookmark creation time")
+	}
+	if !validLibraryInstanceID(bookmark.LocalInstanceID) || !validCourseBookmarkID(bookmark.LocalCourseID) {
+		return errors.New("invalid course bookmark identity")
 	}
 	return nil
 }
@@ -1143,7 +1331,7 @@ func decodePortableArchive(data []byte) (portableBundle, map[string][]byte, erro
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		return portableBundle{}, nil, errors.New("trailing manifest data")
 	}
-	if bundle.Format != portableFormat && bundle.Format != portableFormatV3 && bundle.Format != portableFormatV4 && bundle.Format != portableFormatV5 {
+	if bundle.Format != portableFormat && bundle.Format != portableFormatV3 && bundle.Format != portableFormatV4 && bundle.Format != portableFormatV5 && bundle.Format != portableFormatV6 {
 		return portableBundle{}, nil, errors.New("unsupported archive version")
 	}
 	refs := map[string]bool{}

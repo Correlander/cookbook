@@ -1,10 +1,12 @@
 import { lazy, useEffect, useState } from "react";
 import type { Course } from "./apiModels";
 import FeatureIsland from "./components/FeatureIsland.tsx";
+import { useAppSession } from "./app/AppSession.tsx";
 
 const CourseDetail = lazy(() => import("./features/courses/CourseDetail.tsx"));
 
 export default function PublicCourses() {
+  const { currentUser } = useAppSession();
   const [courses, setCourses] = useState<Course[]>([]);
   const [selected, setSelected] = useState<Course | null>(null);
   useEffect(() => {
@@ -39,9 +41,9 @@ export default function PublicCourses() {
             <span className="recipe-card__category">
               {course.lesson_count} lessons
             </span>
-            <h3>{course.title}</h3>
+            <h3><a href={`/course?id=${encodeURIComponent(course.id)}`}>{course.title}</a></h3>
             {course.description && <p>{course.description}</p>}
-            <p className="course-owner">By {course.owner_name}</p>
+            <p className="course-owner">Owner: {course.owner_name}</p>
             <button
               className="text-link"
               type="button"
@@ -56,6 +58,7 @@ export default function PublicCourses() {
         <FeatureIsland name="Course details" loading="course details">
           <CourseDetail
             course={selected}
+            currentUserID={currentUser?.id ?? null}
             onClose={() => setSelected(null)}
             onEdit={() => {}}
             onChanged={async () => {}}

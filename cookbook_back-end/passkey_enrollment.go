@@ -141,7 +141,7 @@ func (h passkeyHandler) enrollmentBegin(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 400, "invalid_enrollment_grant")
 		return
 	}
-	if h.enrollmentSubjectLimit(w, input.Token, "passkey-enrollment-begin") {
+	if h.enrollmentSubjectLimit(w, r, input.Token, "passkey-enrollment-begin") {
 		return
 	}
 	var response any
@@ -213,7 +213,7 @@ func (h passkeyHandler) enrollmentFinish(w http.ResponseWriter, r *http.Request)
 		writeError(w, 400, "invalid_passkey_response")
 		return
 	}
-	if h.enrollmentSubjectLimit(w, input.Token, "passkey-enrollment-finish") {
+	if h.enrollmentSubjectLimit(w, r, input.Token, "passkey-enrollment-finish") {
 		return
 	}
 	name, err := normalizePasskeyName(r.Header.Get("X-Cookbook-Passkey-Name"))
@@ -312,9 +312,8 @@ func (h passkeyHandler) consumeBadEnrollmentAttempt(ctx context.Context, exec sq
 }
 
 func (h passkeyHandler) enrollmentRateLimit(w http.ResponseWriter, r *http.Request, action string, limit int) bool {
-	allowed, err := allowAuthRequest(h.db, r, action+"-ip", limit, time.Hour, h.trustedProxies)
-	if err != nil {
-		writeError(w, 500, "storage_error")
+	allowed, err := allowAuthRequestContext(r.Context(), h.db, r, action+"-ip", limit, time.Hour, h.trustedProxies)
+	if writeAuthRateLimitError(w, err) {
 		return true
 	}
 	if !allowed {
@@ -325,14 +324,13 @@ func (h passkeyHandler) enrollmentRateLimit(w http.ResponseWriter, r *http.Reque
 	return false
 }
 
-func (h passkeyHandler) enrollmentSubjectLimit(w http.ResponseWriter, token, action string) bool {
+func (h passkeyHandler) enrollmentSubjectLimit(w http.ResponseWriter, r *http.Request, token, action string) bool {
 	id, _, ok := parseEnrollmentToken(token)
 	if !ok {
 		return false
 	}
-	allowed, err := allowAuthSubject(h.db, action+"-grant", id, 10, time.Hour)
-	if err != nil {
-		writeError(w, 500, "storage_error")
+	allowed, err := allowAuthSubjectContext(r.Context(), h.db, action+"-grant", id, 10, time.Hour)
+	if writeAuthRateLimitError(w, err) {
 		return true
 	}
 	if !allowed {

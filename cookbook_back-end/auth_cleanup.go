@@ -1,13 +1,21 @@
 package main
 
 import (
+	"context"
 	"database/sql"
+	"log"
 	"time"
 )
 
 const authCleanupBatchSize = 500
 
+const authCleanupInterval = time.Hour
+
 func purgeExpiredAuthState(db *sql.DB, now time.Time) error {
+	return purgeExpiredAuthStateContext(context.Background(), db, now)
+}
+
+func purgeExpiredAuthStateContext(ctx context.Context, db *sql.DB, now time.Time) error {
 	nowText := now.UTC().Format(time.RFC3339Nano)
 	challengeCutoff := now.UTC().Add(-time.Hour).Format(time.RFC3339Nano)
 	queries := []struct {
@@ -27,18 +35,44 @@ func purgeExpiredAuthState(db *sql.DB, now time.Time) error {
 			args: []any{nowText, authCleanupBatchSize},
 		},
 		{
-			sql:  `DELETE FROM auth_rate_limits WHERE bucket_key IN (SELECT bucket_key FROM auth_rate_limits WHERE window_start<? ORDER BY window_start,bucket_key LIMIT ?)`,
-			args: []any{now.Add(-24 * time.Hour).Unix(), authCleanupBatchSize},
-		},
-		{
 			sql:  `DELETE FROM federation_nonces WHERE nonce_hash IN (SELECT nonce_hash FROM federation_nonces WHERE expires_at<? ORDER BY expires_at,nonce_hash LIMIT ?)`,
 			args: []any{now.Unix(), authCleanupBatchSize},
 		},
 	}
 	for _, query := range queries {
-		if _, err := db.Exec(query.sql, query.args...); err != nil {
+		if _, err := db.ExecContext(ctx, query.sql, query.args...); err != nil {
 			return err
 		}
 	}
-	return nil
+	return withImmediateSQLiteWriteTx(ctx, db, func(tx sqliteExecutor) error {
+		return purgeStaleAuthRateLimitBatch(ctx, tx, now)
+	})
+}
+
+func startAuthCleanup(ctx context.Context, db *sql.DB) <-chan struct{} {
+	return startAuthCleanupAtInterval(ctx, db, authCleanupInterval)
+}
+
+func startAuthCleanupAtInterval(ctx context.Context, db *sql.DB, interval time.Duration) <-chan struct{} {
+	done := make(chan struct{})
+	cleanup := func() {
+		if err := purgeExpiredAuthStateContext(ctx, db, time.Now()); err != nil {
+			log.Printf("authentication state cleanup failed")
+		}
+	}
+	cleanup()
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				cleanup()
+			}
+		}
+	}()
+	return done
 }

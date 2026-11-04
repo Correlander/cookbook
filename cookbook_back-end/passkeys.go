@@ -74,9 +74,8 @@ func (h passkeyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h passkeyHandler) beginRegistration(w http.ResponseWriter, r *http.Request) {
-	allowed, err := allowAuthRequest(h.db, r, "passkey-registration", 30, time.Hour, h.trustedProxies)
-	if err != nil {
-		writeError(w, 500, "storage_error")
+	allowed, err := allowAuthRequestContext(r.Context(), h.db, r, "passkey-registration", 30, time.Hour, h.trustedProxies)
+	if writeAuthRateLimitError(w, err) {
 		return
 	}
 	if !allowed {
@@ -142,9 +141,8 @@ func (h passkeyHandler) finishRegistration(w http.ResponseWriter, r *http.Reques
 }
 
 func (h passkeyHandler) beginLogin(w http.ResponseWriter, r *http.Request) {
-	allowed, err := allowAuthRequest(h.db, r, "passkey-login", 30, time.Hour, h.trustedProxies)
-	if err != nil {
-		writeError(w, 500, "storage_error")
+	allowed, err := allowAuthRequestContext(r.Context(), h.db, r, "passkey-login", 30, time.Hour, h.trustedProxies)
+	if writeAuthRateLimitError(w, err) {
 		return
 	}
 	if !allowed {
@@ -168,9 +166,8 @@ func (h passkeyHandler) beginLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h passkeyHandler) finishLogin(w http.ResponseWriter, r *http.Request) {
-	allowed, err := allowAuthRequest(h.db, r, "passkey-login-finish", 60, time.Hour, h.trustedProxies)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "storage_error")
+	allowed, err := allowAuthRequestContext(r.Context(), h.db, r, "passkey-login-finish", 60, time.Hour, h.trustedProxies)
+	if writeAuthRateLimitError(w, err) {
 		return
 	}
 	if !allowed {

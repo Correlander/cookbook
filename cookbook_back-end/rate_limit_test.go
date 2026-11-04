@@ -1,13 +1,121 @@
 package main
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestAuthRateLimitCapacityAllowsExistingBucketAtRowCap(t *testing.T) {
+	db := testDatabase(t)
+	now := time.Now().UTC().Truncate(time.Hour)
+	window := now.Unix()
+	target := sha256.Sum256([]byte("email\x00kept-subject"))
+	targetKey := hex.EncodeToString(target[:])
+	stmt, err := db.Prepare(`INSERT INTO auth_rate_limits(bucket_key,window_start,request_count) VALUES(?,?,1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stmt.Close()
+	if _, err := stmt.Exec(targetKey, window); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < authRateLimitMaxRows; i++ {
+		key := fmt.Sprintf("row-%05d", i)
+		if _, err := stmt.Exec(key, window); err != nil {
+			t.Fatal(err)
+		}
+	}
+	allowed, err := allowAuthBucketContext(context.Background(), db, "email", "kept-subject", 3, time.Hour, now)
+	if err != nil || !allowed {
+		t.Fatalf("existing bucket update at cap allowed=%v err=%v", allowed, err)
+	}
+	allowed, err = allowAuthBucketContext(context.Background(), db, "email", "new-subject", 3, time.Hour, now)
+	if allowed || !errors.Is(err, errAuthRateLimitCapacity) {
+		t.Fatalf("new bucket at cap allowed=%v err=%v; want typed capacity error", allowed, err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM auth_rate_limits`).Scan(&count); err != nil || count != authRateLimitMaxRows {
+		t.Fatalf("row count=%d err=%v; want exact row cap", count, err)
+	}
+}
+
+func TestAuthRateLimitCapacityLogicalByteCeiling(t *testing.T) {
+	db := testDatabase(t)
+	now := time.Now().UTC()
+	targetHash := sha256.Sum256([]byte("byte\x00existing"))
+	targetKey := hex.EncodeToString(targetHash[:])
+	filler := strings.Repeat("k", int(int64(authRateLimitMaxLogicalBytes)-authRateLimitLogicalBytes(targetKey)-16))
+	if _, err := db.Exec(`INSERT INTO auth_rate_limits(bucket_key,window_start,request_count) VALUES(?,?,1),(?,?,1)`, targetKey, now.Unix(), filler, now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	_, bytes, err := authRateLimitUsage(context.Background(), db)
+	if err != nil || bytes != authRateLimitMaxLogicalBytes {
+		t.Fatalf("logical bytes=%d err=%v; want exact %d-byte cap", bytes, err, authRateLimitMaxLogicalBytes)
+	}
+	allowed, err := allowAuthBucketContext(context.Background(), db, "byte", "existing", 3, time.Hour, now)
+	if err != nil || !allowed {
+		t.Fatalf("existing bucket update at byte cap allowed=%v err=%v", allowed, err)
+	}
+	allowed, err = allowAuthBucketContext(context.Background(), db, "byte", "new", 3, time.Hour, now)
+	if allowed || !errors.Is(err, errAuthRateLimitCapacity) {
+		t.Fatalf("new bucket at byte cap allowed=%v err=%v; want typed capacity error", allowed, err)
+	}
+}
+
+func TestConcurrentAuthRateLimitNewBucketsStayWithinRowCap(t *testing.T) {
+	db := testDatabase(t)
+	now := time.Now().UTC().Truncate(time.Hour)
+	stmt, err := db.Prepare(`INSERT INTO auth_rate_limits(bucket_key,window_start,request_count) VALUES(?,?,1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < authRateLimitMaxRows-10; i++ {
+		if _, err := stmt.Exec(fmt.Sprintf("seed-%05d", i), now.Unix()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stmt.Close()
+	const workers = 30
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	accepted := 0
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			allowed, err := allowAuthBucketContext(context.Background(), db, "race", fmt.Sprintf("subject-%d", i), 1, time.Hour, now)
+			if err != nil && !errors.Is(err, errAuthRateLimitCapacity) {
+				t.Errorf("bucket admission: %v", err)
+			}
+			if allowed {
+				mu.Lock()
+				accepted++
+				mu.Unlock()
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	var rows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM auth_rate_limits`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if accepted != 10 || rows != authRateLimitMaxRows {
+		t.Fatalf("accepted=%d rows=%d; want 10 admitted and exact cap", accepted, rows)
+	}
+}
 
 func TestAuthRequestLimiterBlocksAfterLimit(t *testing.T) {
 	db := testDatabase(t)

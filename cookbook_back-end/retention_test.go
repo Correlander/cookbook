@@ -1,11 +1,59 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"testing"
 	"time"
 )
+
+func TestAuthRateLimitCleanupCutoffAndLifecycle(t *testing.T) {
+	db := testDatabase(t)
+	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	cutoff := now.Add(-24 * time.Hour).Unix()
+	if _, err := db.Exec(`INSERT INTO auth_rate_limits(bucket_key,window_start,request_count) VALUES('boundary',?,1),('stale',?,1)`, cutoff, cutoff-1); err != nil {
+		t.Fatal(err)
+	}
+	if err := purgeStaleAuthRateLimitBatch(context.Background(), db, now); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM auth_rate_limits`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("cutoff rows=%d err=%v; exact boundary must remain", count, err)
+	}
+
+	if _, err := db.Exec(`UPDATE auth_rate_limits SET window_start=? WHERE bucket_key='boundary'`, cutoff-1); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := startAuthCleanupAtInterval(ctx, db, 10*time.Millisecond)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM auth_rate_limits`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("startup cleanup rows=%d err=%v; want stale row removed synchronously", count, err)
+	}
+	if _, err := db.Exec(`INSERT INTO auth_rate_limits(bucket_key,window_start,request_count) VALUES('periodic-stale',?,1)`, cutoff-1); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if err := db.QueryRow(`SELECT COUNT(*) FROM auth_rate_limits`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if count != 0 {
+		t.Fatal("startup auth cleanup did not remove stale bucket")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("auth cleanup lifecycle did not stop after cancellation")
+	}
+}
 
 func TestRevisionRetentionKeepsCurrentSnapshotAndDeletesHistoryInBatches(t *testing.T) {
 	db := testDatabase(t)

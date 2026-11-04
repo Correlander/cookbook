@@ -103,9 +103,8 @@ func federationSignatureMiddleware(db *sql.DB, origin string, trustedProxies []*
 			writeError(w, http.StatusRequestEntityTooLarge, "invalid_content_length")
 			return
 		}
-		allowed, err := allowAuthRequest(db, r, "federation-inbox", federationInboxPerHour, time.Hour, trustedProxies)
-		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, "rate_limit_unavailable")
+		allowed, err := allowAuthRequestContext(r.Context(), db, r, "federation-inbox", federationInboxPerHour, time.Hour, trustedProxies)
+		if writeAuthRateLimitError(w, err) {
 			return
 		}
 		if !allowed {

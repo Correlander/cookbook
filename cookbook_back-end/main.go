@@ -92,7 +92,10 @@ func run() error {
 	if err := configureFederationOrigin(db, cfg.federationOrigin); err != nil {
 		return fmt.Errorf("configure federation origin: %w", err)
 	}
-	startTrashCleanup(db, cfg.trashRetentionDays, cfg.mediaDir)
+	authCleanupDone := startAuthCleanup(ctx, db)
+	defer stopAndWaitForWorker(stop, authCleanupDone)
+	trashCleanupDone := startTrashCleanup(ctx, db, cfg.trashRetentionDays, cfg.mediaDir)
+	defer stopAndWaitForWorker(stop, trashCleanupDone)
 	if err := configureRegistrationPolicy(db); err != nil {
 		return fmt.Errorf("configure registration policy: %w", err)
 	}

@@ -92,9 +92,8 @@ func (h authHandler) requestEmail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "email_unavailable")
 		return
 	}
-	allowed, err := allowAuthRequest(h.db, r, "email-link", 30, time.Hour, h.trustedProxies)
-	if err != nil {
-		writeError(w, 500, "storage_error")
+	allowed, err := allowAuthRequestContext(r.Context(), h.db, r, "email-link", 30, time.Hour, h.trustedProxies)
+	if writeAuthRateLimitError(w, err) {
 		return
 	}
 	if !allowed {
@@ -159,9 +158,8 @@ func (h authHandler) requestEmail(w http.ResponseWriter, r *http.Request) {
 	if invitationValid {
 		registrationInvitation = invitationID
 	}
-	allowed, err = allowAuthSubject(h.db, "email-link-address", email, 5, time.Hour)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "storage_error")
+	allowed, err = allowAuthSubjectContext(r.Context(), h.db, "email-link-address", email, 5, time.Hour)
+	if writeAuthRateLimitError(w, err) {
 		return
 	}
 	if !allowed {

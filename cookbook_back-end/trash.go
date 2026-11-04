@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"log"
 	"os"
@@ -53,11 +54,9 @@ func purgeExpiredHistory(db *sql.DB) error {
 	return purgeExpiredAuditEvents(db, auditRetention, now)
 }
 
-func startTrashCleanup(db *sql.DB, retentionDays int, mediaDir string) {
+func startTrashCleanup(ctx context.Context, db *sql.DB, retentionDays int, mediaDir string) <-chan struct{} {
+	done := make(chan struct{})
 	cleanup := func() {
-		if err := purgeExpiredAuthState(db, time.Now()); err != nil {
-			log.Printf("authentication state cleanup failed: %v", err)
-		}
 		if err := purgeExpiredTrash(db, retentionDays); err != nil {
 			log.Printf("trash retention cleanup failed: %v", err)
 		}
@@ -70,12 +69,19 @@ func startTrashCleanup(db *sql.DB, retentionDays int, mediaDir string) {
 	}
 	cleanup()
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
-		for range ticker.C {
-			cleanup()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				cleanup()
+			}
 		}
 	}()
+	return done
 }
 
 func cleanupOrphanedMedia(db *sql.DB, mediaDir string) error {

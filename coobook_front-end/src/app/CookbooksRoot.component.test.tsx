@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import CookbooksRoot from "./CookbooksRoot.tsx";
 
@@ -110,6 +110,8 @@ it("keeps cookbook reads stopped after a session error and retries the session f
   vi.stubGlobal("fetch", fetchMock);
 
   render(<CookbooksRoot />);
+  expect(await screen.findByText("Checking your session…")).toBeTruthy();
+  expect(calls).toEqual(["/api/auth/me"]);
   await act(async () => {
     firstSession.resolve(jsonResponse({}, 503));
     await firstSession.promise;
@@ -118,7 +120,11 @@ it("keeps cookbook reads stopped after a session error and retries the session f
   expect(calls).toEqual(["/api/auth/me"]);
   fireEvent.click(screen.getByRole("button", { name: "Retry session check" }));
   expect(await screen.findByRole("heading", { name: "Browse public cookbooks" })).toBeTruthy();
-  expect(calls.filter((url) => url === "/api/auth/me")).toHaveLength(2);
-  expect(calls).toContain("/api/public/cookbooks?limit=24&offset=0");
+  await waitFor(() => expect(calls).toContain("/api/public/cookbooks?limit=24&offset=0"));
+  expect(calls).toEqual([
+    "/api/auth/me",
+    "/api/auth/me",
+    "/api/public/cookbooks?limit=24&offset=0",
+  ]);
   expect(calls.some((url) => url.startsWith("/api/cookbooks?"))).toBe(false);
 });

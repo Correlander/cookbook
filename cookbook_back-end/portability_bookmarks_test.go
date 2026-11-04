@@ -125,7 +125,7 @@ func TestPortableBookmarkExportImportRoundTripsIdentityOnly(t *testing.T) {
 	}
 	h := apiHandler{db: db}
 	manifest, bundle := exportPortableBookmarkManifest(t, h, "reader")
-	if bundle.Format != portableFormatV7 || bundle.Bookmarks == nil || len(bundle.Bookmarks) != 2 || len(bundle.Recipes) != 0 || len(bundle.Cookbooks) != 0 {
+	if bundle.Format != portableFormatV8 || bundle.Bookmarks == nil || len(bundle.Bookmarks) != 2 || len(bundle.Recipes) != 0 || len(bundle.Cookbooks) != 0 {
 		t.Fatalf("portable v5 export content: format=%q bookmarks=%+v recipes=%d books=%d", bundle.Format, bundle.Bookmarks, len(bundle.Recipes), len(bundle.Cookbooks))
 	}
 	archiveBytes := mustPortableArchive(t, h, "reader")

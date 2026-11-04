@@ -3,6 +3,7 @@
 
 import base64
 import io
+import hashlib
 import json
 import os
 import re
@@ -21,6 +22,107 @@ from validate_backup import finalize_backup, validate_backup
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "cookbook_back-end"
 RUN_GO = ROOT.parent / "engineering-local" / "tools" / "run-go"
+
+
+def seed_snapshot_recovery_fixtures(connection):
+    """Storage-only fixture; this does not exercise cryptographic ingestion."""
+    source = "https://peer.example.org"
+    claim = b"opaque-imported-claim-v1\x00fixture"
+    payload = b'{"fixture":"preserved snapshot payload"}'
+    payload_hash = hashlib.sha256(payload).digest()
+    event = b"synthetic signed event bytes"
+    event_hash = hashlib.sha256(event).digest()
+    base = {
+        "object_uri": source + "/federation/recipes/recovery",
+        "source_origin": source,
+        "source_recipe_id": "recovery",
+        "sequence": 17,
+        "payload_json": payload,
+        "payload_sha256": payload_hash,
+        "creator_name": "Recovery fixture",
+        "received_at": "2026-11-04T00:00:00Z",
+        "event_id": "fixture-event-17",
+        "event_type": "recipe.snapshot",
+        "provenance_state": "publisher_verified",
+        "trusted_receipt_id": b"fixture-receipt",
+        "grant_purpose": "personal_private_retention",
+        "grant_retention": "continues_after_ordinary_withdrawal",
+        "grant_portability": "same_person_personal_account_only",
+        "event_body": event,
+        "event_body_sha256": event_hash,
+        "signature_input": "fixture signature input",
+        "signature_value": "fixture signature",
+        "request_method": "POST",
+        "request_target": "/api/federation/inbox",
+        "covered_components": "@method @target-uri",
+        "covered_values": "fixture covered values",
+        "content_digest": "sha-256=:fixture:",
+        "authenticated_origin": source,
+        "key_id": "fixture-key",
+        "public_key": bytes(range(32)),
+        "key_status_at_receipt": "active",
+        "key_created_at": "2026-11-01T00:00:00Z",
+        "profile_at_receipt": "exchange-v2-retention",
+        "accepted_at": "2026-11-04T00:00:00Z",
+        "evidence_bytes": len(event) + 128,
+        "encoded_capture_bytes": len(payload) + len(event) + 256,
+        "title": "Preserved snapshot",
+        "description": "Recovery fixture",
+        "tags_json": "[]",
+        "untrusted_claim": None,
+    }
+    columns = tuple(base)
+    sql = ("INSERT INTO library_remote_snapshot_versions(version_id," + ",".join(columns) + ") VALUES(" +
+           ",".join("?" for _ in range(len(columns) + 1)) + ")")
+    states = ("active", "restricted", "removed", "imported")
+    for state in states:
+        bookmark = "snapshot-" + state
+        uri = source + "/federation/recipes/" + state
+        connection.execute(
+            "INSERT INTO recipe_bookmarks(id,user_id,target_kind,remote_object_uri,created_at) VALUES(?,?,'remote',?,?)",
+            (bookmark, "fixture-user", uri, "2026-11-04T00:00:00Z"),
+        )
+        if state == "removed":
+            connection.execute(
+                "INSERT INTO library_remote_snapshot_pins(bookmark_id,version_id,state,created_at,removed_version_id,moderated_by,moderated_at,moderation_reason,moderation_outcome) VALUES(?,NULL,'removed',?,'removed-version','fixture-admin','2026-11-04T00:00:00Z','privacy','removed')",
+                (bookmark, "2026-11-04T00:00:00Z"),
+            )
+            continue
+        version_id = "version-" + state
+        row = dict(base, object_uri=uri, source_recipe_id=state)
+        if state == "imported":
+            row.update(sequence=None, event_id=None, event_type=None, provenance_state="user_imported_unverified",
+                       untrusted_claim=claim)
+            for name in ("trusted_receipt_id", "grant_purpose", "grant_retention", "grant_portability",
+                         "event_body", "event_body_sha256", "signature_input", "signature_value", "request_method",
+                         "request_target", "covered_components", "covered_values", "content_digest", "authenticated_origin",
+                         "key_id", "public_key", "key_status_at_receipt", "key_created_at", "profile_at_receipt", "accepted_at", "evidence_bytes"):
+                row[name] = None
+        connection.execute(sql, (version_id, *(row[name] for name in columns)))
+        if state == "restricted":
+            connection.execute(
+                "INSERT INTO library_remote_snapshot_pins(bookmark_id,version_id,state,created_at,moderated_by,moderated_at,moderation_reason,moderation_outcome) VALUES(?,?,'restricted',?,'fixture-admin','2026-11-04T00:00:00Z','policy','restricted')",
+                (bookmark, version_id, "2026-11-04T00:00:00Z"),
+            )
+        else:
+            connection.execute(
+                "INSERT INTO library_remote_snapshot_pins(bookmark_id,version_id,state,created_at) VALUES(?,?,'active',?)",
+                (bookmark, version_id, "2026-11-04T00:00:00Z"),
+            )
+    connection.execute(
+        "INSERT INTO federation_peers(origin,enabled,created_at,updated_at) VALUES(?,1,'created','updated')",
+        (source,),
+    )
+    connection.execute(
+        "INSERT INTO federation_peer_keys(key_id,origin,public_key,status,created_at) VALUES('fixture-key',?,?, 'active','created')",
+        (source, bytes(range(32))),
+    )
+    # Snapshot evidence is self-contained after its independent peer/key records are removed.
+    if connection.execute("DELETE FROM federation_peer_keys WHERE origin=?", (source,)).rowcount != 1:
+        raise AssertionError("synthetic peer key was not present for removal")
+    if connection.execute("DELETE FROM federation_peers WHERE origin=?", (source,)).rowcount != 1:
+        raise AssertionError("synthetic peer was not present for removal")
+    return claim, payload, event, payload_hash, event_hash
 
 
 def cleanup_owned_images(image_tag, image_id, layer_label, run_command, *, engine="podman"):
@@ -329,6 +431,7 @@ func TestBackupActorFixture(t *testing.T) {
                  "foreign-saved-book", "fixture-user", library_foreign_instance,
                  "foreign-source-book", saved_foreign_time),
             )
+            snapshot_claim, snapshot_payload, snapshot_event, snapshot_payload_hash, snapshot_event_hash = seed_snapshot_recovery_fixtures(connection)
             connection.commit()
             if not Path(str(database) + "-wal").is_file():
                 self.fail("fixture did not produce the required SQLite WAL")
@@ -434,6 +537,94 @@ volumes:
                     ("local-saved-book", "fixture-user", library_local_instance,
                      "local-source-book", saved_local_time),
                 ])
+                snapshots = restored_db.execute(
+                    """SELECT b.id,p.state,p.removed_version_id,p.moderated_by,p.moderated_at,
+                              p.moderation_reason,p.moderation_outcome,v.provenance_state,
+                              v.object_uri,v.source_origin,v.source_recipe_id,v.creator_name,v.received_at,
+                              v.sequence,v.event_id,v.event_type,v.payload_json,v.payload_sha256,
+                              v.trusted_receipt_id,v.grant_purpose,v.grant_retention,v.grant_portability,
+                              v.event_body,v.event_body_sha256,v.signature_input,v.signature_value,
+                              v.request_method,v.request_target,v.covered_components,v.covered_values,
+                              v.content_digest,v.authenticated_origin,v.key_id,v.public_key,
+                              v.key_status_at_receipt,v.key_created_at,v.profile_at_receipt,v.accepted_at,
+                              v.evidence_bytes,v.encoded_capture_bytes,v.title,v.description,v.tags_json,v.untrusted_claim
+                       FROM recipe_bookmarks b JOIN library_remote_snapshot_pins p ON p.bookmark_id=b.id
+                       LEFT JOIN library_remote_snapshot_versions v ON v.version_id=p.version_id
+                       WHERE b.id LIKE 'snapshot-%' ORDER BY b.id"""
+                ).fetchall()
+                columns = ("id", "state", "removed_version_id", "moderated_by", "moderated_at", "moderation_reason",
+                           "moderation_outcome", "provenance_state", "object_uri", "source_origin", "source_recipe_id",
+                           "creator_name", "received_at", "sequence", "event_id", "event_type", "payload_json",
+                           "payload_sha256", "trusted_receipt_id", "grant_purpose", "grant_retention", "grant_portability",
+                           "event_body", "event_body_sha256", "signature_input", "signature_value", "request_method",
+                           "request_target", "covered_components", "covered_values", "content_digest", "authenticated_origin",
+                           "key_id", "public_key", "key_status_at_receipt", "key_created_at", "profile_at_receipt",
+                           "accepted_at", "evidence_bytes", "encoded_capture_bytes", "title", "description", "tags_json",
+                           "untrusted_claim")
+                persisted = [dict(zip(columns, row)) for row in snapshots]
+                verified_evidence = {
+                    "trusted_receipt_id": b"fixture-receipt", "grant_purpose": "personal_private_retention",
+                    "grant_retention": "continues_after_ordinary_withdrawal", "grant_portability": "same_person_personal_account_only",
+                    "event_body": snapshot_event, "event_body_sha256": snapshot_event_hash,
+                    "signature_input": "fixture signature input", "signature_value": "fixture signature",
+                    "request_method": "POST", "request_target": "/api/federation/inbox",
+                    "covered_components": "@method @target-uri", "covered_values": "fixture covered values",
+                    "content_digest": "sha-256=:fixture:", "authenticated_origin": "https://peer.example.org",
+                    "key_id": "fixture-key", "public_key": bytes(range(32)), "key_status_at_receipt": "active",
+                    "key_created_at": "2026-11-01T00:00:00Z", "profile_at_receipt": "exchange-v2-retention",
+                    "accepted_at": "2026-11-04T00:00:00Z", "evidence_bytes": len(snapshot_event) + 128,
+                }
+                for index, state in ((0, "active"), (3, "restricted")):
+                    expected = {
+                        "id": "snapshot-" + state, "state": state, "removed_version_id": None,
+                        "moderated_by": "fixture-admin" if state == "restricted" else None,
+                        "moderated_at": "2026-11-04T00:00:00Z" if state == "restricted" else None,
+                        "moderation_reason": "policy" if state == "restricted" else None,
+                        "moderation_outcome": "restricted" if state == "restricted" else None,
+                        "provenance_state": "publisher_verified",
+                        "object_uri": "https://peer.example.org/federation/recipes/" + state,
+                        "source_origin": "https://peer.example.org", "source_recipe_id": state,
+                        "creator_name": "Recovery fixture", "received_at": "2026-11-04T00:00:00Z",
+                        "sequence": 17, "event_id": "fixture-event-17", "event_type": "recipe.snapshot",
+                        "payload_json": snapshot_payload, "payload_sha256": snapshot_payload_hash,
+                        "title": "Preserved snapshot", "description": "Recovery fixture", "tags_json": "[]",
+                        "encoded_capture_bytes": len(snapshot_payload) + len(snapshot_event) + 256,
+                        "untrusted_claim": None,
+                    }
+                    expected.update(verified_evidence)
+                    self.assertEqual(persisted[index], expected, state + " capture evidence or moderation data changed")
+
+                imported = persisted[1]
+                self.assertEqual(
+                    {key: imported[key] for key in ("id", "state", "removed_version_id", "moderated_by", "moderated_at",
+                                                    "moderation_reason", "moderation_outcome", "provenance_state", "object_uri",
+                                                    "source_origin", "source_recipe_id", "creator_name", "received_at", "sequence",
+                                                    "event_id", "event_type", "payload_json", "payload_sha256", "untrusted_claim")},
+                    {"id": "snapshot-imported", "state": "active", "removed_version_id": None, "moderated_by": None,
+                     "moderated_at": None, "moderation_reason": None, "moderation_outcome": None,
+                     "provenance_state": "user_imported_unverified",
+                     "object_uri": "https://peer.example.org/federation/recipes/imported",
+                     "source_origin": "https://peer.example.org", "source_recipe_id": "imported",
+                     "creator_name": "Recovery fixture", "received_at": "2026-11-04T00:00:00Z",
+                     "sequence": 17, "event_id": "fixture-event-17", "event_type": "recipe.snapshot",
+                     "payload_json": snapshot_payload, "payload_sha256": snapshot_payload_hash, "untrusted_claim": snapshot_claim},
+                )
+                for key in verified_evidence:
+                    self.assertIsNone(imported[key], "unverified import retained trusted field " + key)
+                self.assertEqual(imported["encoded_capture_bytes"], len(snapshot_payload) + len(snapshot_event) + 256)
+
+                removed = persisted[2]
+                self.assertEqual(
+                    {key: removed[key] for key in ("id", "state", "removed_version_id", "moderated_by", "moderated_at",
+                                                    "moderation_reason", "moderation_outcome", "provenance_state", "object_uri",
+                                                    "payload_json", "event_body", "untrusted_claim")},
+                    {"id": "snapshot-removed", "state": "removed", "removed_version_id": "removed-version",
+                     "moderated_by": "fixture-admin", "moderated_at": "2026-11-04T00:00:00Z",
+                     "moderation_reason": "privacy", "moderation_outcome": "removed", "provenance_state": None,
+                     "object_uri": None, "payload_json": None, "event_body": None, "untrusted_claim": None},
+                )
+                self.assertEqual(restored_db.execute("SELECT COUNT(*) FROM federation_peers WHERE origin='https://peer.example.org'").fetchone(), (0,))
+                self.assertEqual(restored_db.execute("SELECT COUNT(*) FROM federation_peer_keys WHERE origin='https://peer.example.org'").fetchone(), (0,))
                 tables = {row[0] for row in restored_db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 self.assertTrue({"creator_profiles", "content_attributions"}.issubset(tables))
                 profile = restored_db.execute(

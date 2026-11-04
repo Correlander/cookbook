@@ -504,7 +504,7 @@ it("keeps identity visible and offers sign-in guidance when rotation needs recen
   expect(await screen.findByText("instance-key-1")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Stage signing-key rotation" }));
 
-  expect(await screen.findByText(/Reauthenticate with a passkey/)).toBeTruthy();
+  expect(await screen.findByText(/Sign in again; this action requires a recently issued session/)).toBeTruthy();
   expect(screen.getByRole("link", { name: "Sign in again" }).getAttribute("href")).toBe("/?signin=1");
   expect(screen.getByText("instance-key-1")).toBeTruthy();
   expect(refreshAuthority).not.toHaveBeenCalled();
@@ -513,6 +513,279 @@ it("keeps identity visible and offers sign-in guidance when rotation needs recen
     method: "POST",
     body: JSON.stringify({ action: "stage" }),
   });
+});
+
+it("saves an explicit peer profile with compare-and-set and separate owner permission copy", async () => {
+  const peer = {
+    origin: "https://profile-peer.example.test",
+    enabled: false,
+    exchange_profile: "v1",
+    created_at: "2026-11-01T10:00:00Z",
+    updated_at: "2026-11-02T10:00:00Z",
+    keys: [],
+  };
+  let currentPeer = peer;
+  const calls: Array<{ url: string; method?: string; body?: string }> = [];
+  const confirmMock = vi.fn(() => true);
+  vi.stubGlobal("confirm", confirmMock);
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.startsWith("/api/admin/federation/"))
+      calls.push({ url, method: init?.method, body: String(init?.body ?? "") });
+    if (url === "/api/admin/federation/identity") return Promise.resolve(response(identity));
+    if (url === "/api/admin/federation/peers" && init?.method === "PATCH") {
+      currentPeer = { ...peer, exchange_profile: "exchange-v2-retention" };
+      return Promise.resolve(response(currentPeer));
+    }
+    if (url === "/api/admin/federation/peers") return Promise.resolve(response([currentPeer]));
+    if (url === "/api/admin/federation/outbox") return Promise.resolve(response([]));
+    return Promise.resolve(response({}, 404));
+  }));
+
+  render(
+    <FederationAdmin
+      actorID="profile-admin"
+      authorityState={ready("profile-admin", adminAuthority)}
+      onRefreshAuthority={vi.fn()}
+    />,
+  );
+  const profile = await screen.findByLabelText("Profile for https://profile-peer.example.test");
+  fireEvent.change(profile, { target: { value: "exchange-v2-retention" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save exchange profile" }));
+  expect(confirmMock).toHaveBeenCalledWith(expect.stringMatching(/protocol capability only.*recipe owner must separately permit personal retention/i));
+  expect(await screen.findByText("Peer exchange profile saved.")).toBeTruthy();
+  expect(calls).toContainEqual({
+    url: "/api/admin/federation/peers",
+    method: "PATCH",
+    body: JSON.stringify({
+      origin: peer.origin,
+      expected_exchange_profile: "v1",
+      exchange_profile: "exchange-v2-retention",
+    }),
+  });
+  expect(calls.find(({ method }) => method === "PATCH")?.body).not.toMatch(/owner|grant|permission/i);
+  expect(await screen.findByText("Current exchange profile: Exchange v2 with retention")).toBeTruthy();
+});
+
+it.each([true, false])("explains the downgrade effects before saving v1 for enabled=%s peer", async (enabled) => {
+  const peer = {
+    origin: "https://retained-peer.example.test",
+    enabled,
+    exchange_profile: "exchange-v2-retention",
+    created_at: "2026-11-01T10:00:00Z",
+    updated_at: "2026-11-02T10:00:00Z",
+    keys: [],
+  };
+  const confirmMock = vi.fn(() => false);
+  const calls: string[] = [];
+  vi.stubGlobal("confirm", confirmMock);
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    calls.push(`${init?.method ?? "GET"} ${url}`);
+    if (url === "/api/admin/federation/identity") return Promise.resolve(response(identity));
+    if (url === "/api/admin/federation/peers") return Promise.resolve(response([peer]));
+    if (url === "/api/admin/federation/outbox") return Promise.resolve(response([]));
+    return Promise.resolve(response({}, 404));
+  }));
+
+  render(
+    <FederationAdmin
+      actorID="profile-admin"
+      authorityState={ready("profile-admin", adminAuthority)}
+      onRefreshAuthority={vi.fn()}
+    />,
+  );
+  fireEvent.change(await screen.findByLabelText("Profile for https://retained-peer.example.test"), {
+    target: { value: "v1" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save exchange profile" }));
+  expect(confirmMock).toHaveBeenCalledWith(expect.stringMatching(
+    enabled
+      ? /New private snapshot capture eligibility.*queued v2 deliveries.*Private copies already retained remain.*in flight.*10 seconds.*peer is enabled.*queued for reconciliation as v1/i
+      : /New private snapshot capture eligibility.*queued v2 deliveries.*Private copies already retained remain.*in flight.*10 seconds.*peer is disabled.*no reconciliation delivery will be queued now/i,
+  ));
+  expect(calls.some((call) => call.startsWith("PATCH "))).toBe(false);
+});
+
+it("does not offer a stale profile retry when conflict refresh fails", async () => {
+  let peer = {
+    origin: "https://conflict-refresh-peer.example.test",
+    enabled: false,
+    exchange_profile: "v1",
+    created_at: "2026-11-01T10:00:00Z",
+    updated_at: "2026-11-02T10:00:00Z",
+    keys: [],
+  };
+  let getCount = 0;
+  vi.stubGlobal("confirm", vi.fn(() => true));
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/admin/federation/identity") return Promise.resolve(response(identity));
+    if (url === "/api/admin/federation/outbox") return Promise.resolve(response([]));
+    if (url === "/api/admin/federation/peers" && init?.method === "PATCH") {
+      peer = { ...peer, exchange_profile: "exchange-v2-retention" };
+      return Promise.resolve(response({ error: "exchange_profile_conflict" }, 409));
+    }
+    if (url === "/api/admin/federation/peers") {
+      getCount += 1;
+      if (getCount === 2)
+        return Promise.resolve(response({ error: "storage_error" }, 500));
+      return Promise.resolve(response([peer]));
+    }
+    return Promise.resolve(response({}, 404));
+  }));
+  render(
+    <FederationAdmin
+      actorID="profile-admin"
+      authorityState={ready("profile-admin", adminAuthority)}
+      onRefreshAuthority={vi.fn()}
+    />,
+  );
+  const profileLabel = "Profile for https://conflict-refresh-peer.example.test";
+  fireEvent.change(await screen.findByLabelText(profileLabel), {
+    target: { value: "exchange-v2-retention" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save exchange profile" }));
+
+  expect((await screen.findByRole("alert")).textContent).toMatch(/Could not load trusted peers/i);
+  expect(screen.queryByLabelText(profileLabel)).toBeNull();
+  expect(screen.queryByText(/current peer list was refreshed/i)).toBeNull();
+  expect(getCount).toBe(2);
+
+  fireEvent.click(screen.getByRole("button", { name: "Retry peers" }));
+  await waitFor(() => expect((screen.getByLabelText(profileLabel) as HTMLSelectElement).value).toBe("exchange-v2-retention"));
+  expect(getCount).toBe(3);
+});
+
+it("reports an accepted profile change without a current projection until manual refresh succeeds", async () => {
+  let peer = {
+    origin: "https://post-save-refresh-peer.example.test",
+    enabled: false,
+    exchange_profile: "v1",
+    created_at: "2026-11-01T10:00:00Z",
+    updated_at: "2026-11-02T10:00:00Z",
+    keys: [],
+  };
+  let getCount = 0;
+  vi.stubGlobal("confirm", vi.fn(() => true));
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/admin/federation/identity") return Promise.resolve(response(identity));
+    if (url === "/api/admin/federation/outbox") return Promise.resolve(response([]));
+    if (url === "/api/admin/federation/peers" && init?.method === "PATCH") {
+      peer = { ...peer, exchange_profile: "exchange-v2-retention" };
+      return Promise.resolve(response(peer));
+    }
+    if (url === "/api/admin/federation/peers") {
+      getCount += 1;
+      if (getCount === 2) return Promise.resolve(response({ error: "storage_error" }, 500));
+      return Promise.resolve(response([peer]));
+    }
+    return Promise.resolve(response({}, 404));
+  }));
+  render(
+    <FederationAdmin
+      actorID="profile-admin"
+      authorityState={ready("profile-admin", adminAuthority)}
+      onRefreshAuthority={vi.fn()}
+    />,
+  );
+  const profileLabel = "Profile for https://post-save-refresh-peer.example.test";
+  fireEvent.change(await screen.findByLabelText(profileLabel), {
+    target: { value: "exchange-v2-retention" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save exchange profile" }));
+
+  expect((await screen.findByRole("alert")).textContent).toMatch(/Could not load trusted peers/i);
+  expect(await screen.findByText(/profile change was accepted, but the current peer list could not be loaded/i)).toBeTruthy();
+  expect(screen.queryByLabelText(profileLabel)).toBeNull();
+  expect(screen.queryByText("Peer exchange profile saved.")).toBeNull();
+  expect(getCount).toBe(2);
+
+  fireEvent.click(screen.getByRole("button", { name: "Retry peers" }));
+  await screen.findByLabelText(profileLabel);
+  expect((screen.getByLabelText(profileLabel) as HTMLSelectElement).value).toBe("exchange-v2-retention");
+  expect(getCount).toBe(3);
+  expect(screen.queryByText(/profile change was accepted, but the current peer list could not be loaded/i)).toBeNull();
+});
+
+it("shows old-server v1 metadata without mutation and fails closed for malformed profiles", async () => {
+  const base = {
+    origin: "https://profile-peer.example.test",
+    enabled: false,
+    created_at: "2026-11-01T10:00:00Z",
+    updated_at: "2026-11-02T10:00:00Z",
+    keys: [],
+  };
+  let peers: unknown[] = [base];
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/admin/federation/identity") return Promise.resolve(response(identity));
+    if (url === "/api/admin/federation/peers") return Promise.resolve(response(peers));
+    if (url === "/api/admin/federation/outbox") return Promise.resolve(response([]));
+    return Promise.resolve(response({}, 404));
+  }));
+  const view = render(
+    <FederationAdmin
+      actorID="profile-admin"
+      authorityState={ready("profile-admin", adminAuthority)}
+      onRefreshAuthority={vi.fn()}
+    />,
+  );
+  expect(await screen.findByText(/v1 \(legacy server metadata\)/)).toBeTruthy();
+  expect(screen.queryByLabelText("Profile for https://profile-peer.example.test")).toBeNull();
+  peers = [{ ...base, exchange_profile: "future-profile" }];
+  view.rerender(
+    <FederationAdmin
+      actorID="profile-admin"
+      authorityState={ready("profile-admin", { ...adminAuthority })}
+      onRefreshAuthority={vi.fn()}
+    />,
+  );
+  expect((await screen.findByRole("alert")).textContent).toContain("Unrecognized exchange profile");
+  expect(screen.queryByLabelText("Profile for https://profile-peer.example.test")).toBeNull();
+});
+
+it("reloads the current peer list after a compare conflict and requires a fresh profile choice", async () => {
+  let peer = {
+    origin: "https://conflict-peer.example.test",
+    enabled: false,
+    exchange_profile: "v1",
+    created_at: "2026-11-01T10:00:00Z",
+    updated_at: "2026-11-02T10:00:00Z",
+    keys: [],
+  };
+  let getCount = 0;
+  vi.stubGlobal("confirm", vi.fn(() => true));
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/admin/federation/identity") return Promise.resolve(response(identity));
+    if (url === "/api/admin/federation/outbox") return Promise.resolve(response([]));
+    if (url === "/api/admin/federation/peers" && init?.method === "PATCH") {
+      peer = { ...peer, exchange_profile: "exchange-v2-retention" };
+      return Promise.resolve(response({ error: "exchange_profile_conflict" }, 409));
+    }
+    if (url === "/api/admin/federation/peers") {
+      getCount += 1;
+      return Promise.resolve(response([peer]));
+    }
+    return Promise.resolve(response({}, 404));
+  }));
+  render(
+    <FederationAdmin
+      actorID="profile-admin"
+      authorityState={ready("profile-admin", adminAuthority)}
+      onRefreshAuthority={vi.fn()}
+    />,
+  );
+  fireEvent.change(await screen.findByLabelText("Profile for https://conflict-peer.example.test"), {
+    target: { value: "exchange-v2-retention" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save exchange profile" }));
+  expect(await screen.findByText(/The peer profile changed/)).toBeTruthy();
+  await waitFor(() => expect(getCount).toBeGreaterThanOrEqual(2));
+  expect((screen.getByLabelText("Profile for https://conflict-peer.example.test") as HTMLSelectElement).value).toBe("exchange-v2-retention");
+  expect(screen.queryByText("Peer exchange profile saved.")).toBeNull();
 });
 
 it("does not render a previous actor identity after an actor switch", async () => {

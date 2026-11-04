@@ -48,6 +48,11 @@ interface BusyState {
   section: SectionName;
 }
 
+interface AcceptedMutationWithoutProjection {
+  kind: "accepted_without_projection";
+  message: string;
+}
+
 interface FederationAdminProps {
   actorID: string;
   authorityState: InstanceAuthorityState;
@@ -105,12 +110,17 @@ function requestMessage(error: unknown): string {
   if (!(error instanceof FederationRequestError))
     return error instanceof Error ? error.message : "Federation request failed.";
   if (error.code === "reauthentication_required")
-    return "Reauthenticate with a passkey before changing this federation setting. Sign in again to continue.";
+    return "Sign in again; this action requires a recently issued session.";
   if (error.status === 401)
     return "Your session may have expired. Sign in again before retrying federation controls.";
+  if (error.status === 404)
+    return "This peer no longer exists. Refresh the peer list before retrying.";
   if (error.status === 403)
     return "Your access may have changed. Refresh permissions before retrying.";
   const messages: Record<string, string> = {
+    invalid_exchange_profile: "Choose one of the supported exchange profiles.",
+    federation_queue_unavailable: "The federation queue is unavailable. Retry after it recovers.",
+    storage_error: "The peer profile could not be saved. Retry after checking the current profile.",
     active_peer_key_required:
       "Add an active public key before enabling this peer.",
     peer_not_found: "Create the peer before adding its key.",
@@ -166,6 +176,7 @@ export default function FederationAdmin({
   const [originState, setOriginState] = useState({ actorID: "", value: "" });
   const [keyIDState, setKeyIDState] = useState({ actorID: "", value: "" });
   const [publicKeyState, setPublicKeyState] = useState({ actorID: "", value: "" });
+  const [peerProfileDrafts, setPeerProfileDrafts] = useState<Record<string, string>>({});
   const [busyState, setBusyState] = useState<BusyState | null>(null);
   const [noticeState, setNoticeState] = useState<NoticeState | null>(null);
   const identityStateRef = useRef(identityState);
@@ -213,10 +224,10 @@ export default function FederationAdmin({
       requestCounter: RequestCounter,
       setSection: Dispatch<SetStateAction<SectionState<T>>>,
       fallbackMessage: string,
-    ): Promise<void> => {
+    ): Promise<boolean> => {
       const requestActorID = actorID;
       const version = authorityRef.current;
-      if (!hasPermission(section, requestActorID)) return;
+      if (!hasPermission(section, requestActorID)) return false;
       const requestID = ++requestCounter.current;
       const isCurrent = () =>
         requestCounter.current === requestID &&
@@ -237,7 +248,7 @@ export default function FederationAdmin({
       }));
       try {
         const data = await federationRequest<T>(path);
-        if (!isCurrent()) return;
+        if (!isCurrent()) return false;
         setSection({
           actorID: requestActorID,
           authorityVersion: version,
@@ -246,24 +257,25 @@ export default function FederationAdmin({
           error: "",
           retryRequired: false,
         });
+        return true;
       } catch (loadError: unknown) {
-        if (!isCurrent()) return;
+        if (!isCurrent()) return false;
         const forbidden =
           loadError instanceof FederationRequestError &&
           loadError.status === 403;
-        setSection((current) => ({
+        setSection({
           actorID: requestActorID,
           authorityVersion: version,
           loading: false,
-          data: forbidden
-            ? null
-            : current.actorID === requestActorID
-              ? current.data
-              : null,
-          error: requestMessage(loadError) || fallbackMessage,
+          data: null,
+          error:
+            loadError instanceof FederationRequestError && loadError.code === "storage_error"
+              ? fallbackMessage
+              : requestMessage(loadError) || fallbackMessage,
           retryRequired: forbidden,
-        }));
+        });
         if (forbidden) refreshAuthorityRef.current();
+        return false;
       }
     },
     [actorID, hasPermission],
@@ -291,6 +303,11 @@ export default function FederationAdmin({
       ),
     [loadSection],
   );
+  const retryPeers = useCallback(async () => {
+    const refreshed = await loadPeers();
+    if (refreshed)
+      setNoticeState((current) => current?.section === "peers" ? null : current);
+  }, [loadPeers]);
   const loadOutbox = useCallback(async () => {
     const requestActorID = actorID;
     const version = authorityRef.current;
@@ -455,7 +472,7 @@ export default function FederationAdmin({
 
   async function runMutation(
     section: SectionName,
-    action: (request: Requester) => Promise<void>,
+    action: (request: Requester) => Promise<void | AcceptedMutationWithoutProjection>,
     successMessage: string,
   ) {
     const version = authorityState;
@@ -487,13 +504,34 @@ export default function FederationAdmin({
     else setOutboxState((current) => ({ ...current, error: "" }));
 
     try {
-      await action(requester);
+      const outcome = await action(requester);
       if (!isCurrent()) return;
+      if (outcome?.kind === "accepted_without_projection") {
+        setNoticeState({ actorID: requestActorID, section, message: outcome.message });
+        refreshAuthorityRef.current();
+        return;
+      }
       setNoticeState({ actorID: requestActorID, section, message: successMessage });
       refreshAuthorityRef.current();
     } catch (actionError: unknown) {
       if (actionError === staleRequest || actorRef.current !== requestActorID)
         return;
+      if (
+        section === "peers" &&
+        actionError instanceof FederationRequestError &&
+        actionError.code === "exchange_profile_conflict"
+      ) {
+        const refreshed = await loadPeers();
+        if (!isCurrent()) return;
+        setPeerProfileDrafts({});
+        if (!refreshed) return;
+        setPeerState((current) => ({
+          ...current,
+          loading: false,
+          error: "The peer profile changed. The current peer list was refreshed; choose a profile again before saving.",
+        }));
+        return;
+      }
       if (section === "identity")
         setFailure(setIdentityState, actionError, version);
       else if (section === "peers")
@@ -502,6 +540,44 @@ export default function FederationAdmin({
     } finally {
       if (actorRef.current === requestActorID) setBusyState(null);
     }
+  }
+
+  function savePeerProfile(peer: FederationPeerAdmin, currentProfile: string, nextProfile: string) {
+    if (
+      (currentProfile !== "v1" && currentProfile !== "exchange-v2-retention") ||
+      (nextProfile !== "v1" && nextProfile !== "exchange-v2-retention") ||
+      currentProfile === nextProfile
+    ) return;
+    const confirmation = nextProfile === "exchange-v2-retention"
+      ? `Enable exchange v2 retention protocol for ${peer.origin}? This enables protocol capability only. Each recipe owner must separately permit personal retention; this does not grant permission or private access.`
+      : `Downgrade ${peer.origin} to v1? New private snapshot capture eligibility from this peer will stop and queued v2 deliveries will be removed. Private copies already retained remain available; one delivery already in flight may complete within 10 seconds. ${peer.enabled ? "Because this peer is enabled, its current public state will be queued for reconciliation as v1." : "This peer is disabled, so no reconciliation delivery will be queued now; public state can be reconciled as v1 if you enable it later."}`;
+    if (!window.confirm(confirmation)) return;
+    void runMutation(
+      "peers",
+      async (request) => {
+        await request("/api/admin/federation/peers", {
+          method: "PATCH",
+          body: JSON.stringify({
+            origin: peer.origin,
+            expected_exchange_profile: currentProfile,
+            exchange_profile: nextProfile,
+          }),
+        });
+        setPeerProfileDrafts((drafts) => {
+          const nextDrafts = { ...drafts };
+          delete nextDrafts[peer.origin];
+          return nextDrafts;
+        });
+        const refreshed = await loadPeers();
+        if (!refreshed) {
+          return {
+            kind: "accepted_without_projection",
+            message: "The profile change was accepted, but the current peer list could not be loaded. Retry peers before changing a profile.",
+          };
+        }
+      },
+      "Peer exchange profile saved.",
+    );
   }
 
   async function viewDelivery(delivery: FederationDelivery) {
@@ -586,7 +662,7 @@ export default function FederationAdmin({
                   Refresh permissions and retry peers
                 </button>
               ) : (
-                <button className="text-link" type="button" onClick={() => void loadPeers()}>
+                  <button className="text-link" type="button" onClick={() => void retryPeers()}>
                   Retry peers
                 </button>
               )}
@@ -667,6 +743,45 @@ export default function FederationAdmin({
               <summary>
                 {peer.origin} · {peer.enabled ? "enabled" : "disabled"}
               </summary>
+              {(() => {
+                const profile = (peer as { exchange_profile?: unknown }).exchange_profile;
+                if (profile === undefined) return (
+                  <p>Exchange profile: v1 (legacy server metadata). Profile changes are unavailable until the server supports them.</p>
+                );
+                if (profile !== "v1" && profile !== "exchange-v2-retention") return (
+                  <p role="alert">Unrecognized exchange profile; profile changes are unavailable.</p>
+                );
+                const draft = peerProfileDrafts[peer.origin];
+                const selected = draft === "v1" || draft === "exchange-v2-retention" ? draft : profile;
+                return (
+                  <div aria-label={`Exchange profile for ${peer.origin}`}>
+                    <p>Current exchange profile: {profile === "v1" ? "v1" : "Exchange v2 with retention"}</p>
+                    <label>
+                      Profile for {peer.origin}
+                      <select
+                        value={selected}
+                        disabled={peerBusy}
+                        onChange={(event) => setPeerProfileDrafts((drafts) => ({
+                          ...drafts,
+                          [peer.origin]: event.target.value,
+                        }))}
+                      >
+                        <option value="v1">v1</option>
+                        <option value="exchange-v2-retention">Exchange v2 with retention</option>
+                      </select>
+                    </label>
+                    <button
+                      className="text-link"
+                      type="button"
+                      disabled={peerBusy || selected === profile}
+                      onClick={() => savePeerProfile(peer, profile, selected)}
+                    >
+                      Save exchange profile
+                    </button>
+                    <p>Exchange v2 is protocol capability only. Each recipe owner must separately permit personal retention.</p>
+                  </div>
+                );
+              })()}
               {peer.keys.map((key) => (
                 <div key={key.key_id}>
                   <p><code>{key.key_id}</code> · {key.status}</p>

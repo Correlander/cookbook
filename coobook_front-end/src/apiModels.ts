@@ -345,6 +345,7 @@ export interface FederationPeerKey {
 export interface FederationPeerAdmin {
   origin: string;
   enabled: boolean;
+  exchange_profile?: "v1" | "exchange-v2-retention";
   created_at: string;
   updated_at: string;
   keys: FederationPeerKey[];

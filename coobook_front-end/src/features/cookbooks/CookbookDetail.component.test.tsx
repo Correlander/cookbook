@@ -131,7 +131,7 @@ it("separates collection creator from recipe credits and keeps recipe cards non-
   });
   expect(
     within(collectionCredits).getByText(
-      "Collection creator · Recorded at cookbook creation",
+      "Collection creator · Recorded when the cookbook was created",
     ),
   ).toBeTruthy();
   expect(

@@ -84,7 +84,7 @@ it("keeps legacy text separate while linking only explicit local typed attributi
   expect(within(credits).getByRole("link", { name: "Avery Cook" }).getAttribute("href"))
     .toBe("/creator?id=profile-1");
   expect(within(credits).getByText("Unverified creator claim: Avery Cook")).toBeTruthy();
-  expect(within(credits).getByText("Creator · Self-asserted at creation")).toBeTruthy();
+  expect(within(credits).getByText("Creator · Self-reported when added")).toBeTruthy();
   expect(within(credits).getByText("Contributor · Imported claim")).toBeTruthy();
   expect(within(credits).getAllByRole("link")).toHaveLength(1);
 });

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import type { Browser, BrowserContext, Page, Request } from "@playwright/test";
+import type { Browser, BrowserContext, Page, Request, Response as PlaywrightResponse } from "@playwright/test";
 import { signInWithSyntheticEmail } from "./auth";
 
 const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:4178";
@@ -20,6 +20,25 @@ const ids = {
 };
 
 type Session = { context: BrowserContext; page: Page };
+
+async function apiResponseContext(response: PlaywrightResponse, stage: string, endpoint: string): Promise<string> {
+  const body: unknown = await response.json().catch(() => null);
+  const error = typeof body === "object" && body !== null && "error" in body && typeof body.error === "string"
+    ? body.error
+    : "unavailable";
+  const headers = await response.request().allHeaders();
+  const refererOrigin = headers.referer ? new URL(headers.referer).origin : "unavailable";
+  return JSON.stringify({
+    stage,
+    endpoint,
+    method: response.request().method(),
+    status: response.status(),
+    error,
+    origin: headers.origin ?? "unavailable",
+    requestHost: new URL(response.url()).host,
+    refererOrigin,
+  });
+}
 
 async function openContext(browser: Browser): Promise<Session> {
   const context = await browser.newContext({ baseURL });
@@ -43,7 +62,9 @@ async function saveReference(page: Page, recipeID: string): Promise<string> {
 }
 
 async function captureReference(page: Page, bookmarkID: string): Promise<void> {
-  const response = await page.request.post(`/api/library/bookmarks/${bookmarkID}/capture`);
+  const response = await page.request.post(`/api/library/bookmarks/${bookmarkID}/capture`, {
+    headers: { Origin: baseURL },
+  });
   expect(response.status()).toBe(200);
 }
 
@@ -113,9 +134,22 @@ test("private snapshots use signed captures, stay actor-bound, and import only b
     );
     await owner.page.getByRole("button", { name: "Save to Library" }).click();
     const conditionalResponse = await conditionalResponsePromise;
-    expect(conditionalResponse.status()).toBe(201);
+    const responseBody: unknown = await conditionalResponse.json().catch(() => null);
+    const responseError = typeof responseBody === "object" && responseBody !== null && "error" in responseBody && typeof responseBody.error === "string"
+      ? responseBody.error
+      : "unavailable";
+    const requestHeaders = await conditionalResponse.request().allHeaders();
+    const refererOrigin = requestHeaders.referer ? new URL(requestHeaders.referer).origin : "unavailable";
+    const responseContext = JSON.stringify({
+      status: conditionalResponse.status(),
+      error: responseError,
+      origin: requestHeaders.origin ?? "unavailable",
+      requestHost: new URL(conditionalResponse.url()).host,
+      refererOrigin,
+    });
+    expect(conditionalResponse.status(), `conditional save response: ${responseContext}`).toBe(201);
     expect((await conditionalResponse.request().postDataJSON()).save_mode).toBe("conditional");
-    const conditional = (await conditionalResponse.json()) as { bookmark_id?: string; id?: string; save_state?: string };
+    const conditional = responseBody as { bookmark_id?: string; id?: string; save_state?: string };
     const conditionalBookmarkID = conditional.bookmark_id ?? conditional.id;
     expect(conditionalBookmarkID).toBeTruthy();
     expect(conditional.save_state).toBe("snapshot");
@@ -133,7 +167,8 @@ test("private snapshots use signed captures, stay actor-bound, and import only b
     const privateRead = owner.page.waitForResponse((response) => response.url().endsWith(`/api/library/bookmarks/${conditionalBookmarkID}/snapshot`));
     await owner.page.reload();
     const readResponse = await privateRead;
-    expect(readResponse.status()).toBe(200);
+    const readContext = await apiResponseContext(readResponse, "private-snapshot-read", "/api/library/bookmarks/:id/snapshot");
+    expect(readResponse.status(), `private snapshot read response: ${readContext}`).toBe(200);
     expect(readResponse.headers()["cache-control"]).toBe("private, no-store");
     expect(readResponse.headers().vary).toBe("Cookie");
     expect(readResponse.headers()["referrer-policy"]).toBe("no-referrer");
@@ -162,7 +197,8 @@ test("private snapshots use signed captures, stay actor-bound, and import only b
     );
     await captureButton.press("Enter");
     const captureResponse = await captureResponsePromise;
-    expect(captureResponse.status()).toBe(200);
+    const captureContext = await apiResponseContext(captureResponse, "explicit-snapshot-capture", "/api/library/bookmarks/:id/capture");
+    expect(captureResponse.status(), `explicit capture response: ${captureContext}`).toBe(200);
     await expect(owner.page.getByRole("status").filter({ hasText: "Bookmark updated." })).toBeVisible();
     await expect(owner.page.getByRole("link", { name: `Open ${titles.reference}` })).toBeVisible();
 

@@ -128,6 +128,42 @@ it("checks exact recipe status by one target and never treats an error as unsave
   await expect(fetchRecipeBookmarkStatus({ local_recipe_id: "private-id" })).rejects.toThrow("Could not check saved status.");
 });
 
+it("parses the full remote status view before accepting capture eligibility", async () => {
+  const uri = "https://peer.example/federation/recipes/abc";
+  const remoteRecipe = {
+    object_uri: uri, source_origin: "https://peer.example", source_recipe_id: "abc", creator_name: "Remote chef",
+    sequence: 4, updated_at: "2026-11-04T12:00:00Z",
+    recipe: { title: "Soup", description: "", servings: 2, prep_time_minutes: 5, cook_time_minutes: 10, ingredients: [], steps: [{ text: "Cook" }], tags: [] },
+  };
+  const status = {
+    id: "bookmark-1", target_kind: "remote", target: { remote_object_uri: uri }, availability: "available",
+    created_at: "2026-11-04T12:00:00Z", saved: true, save_state: "reference", can_capture_snapshot: true,
+    source_state: "published", remote_recipe: remoteRecipe,
+  };
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(status)));
+
+  await expect(fetchRecipeBookmarkStatus({ remote_object_uri: uri })).resolves.toMatchObject({
+    saved: true, bookmark_id: "bookmark-1", can_capture_snapshot: true,
+    bookmark: { id: "bookmark-1", save_state: "reference", remote_recipe: remoteRecipe },
+  });
+});
+
+it("rejects malformed full remote status views rather than granting capture", async () => {
+  const uri = "https://peer.example/federation/recipes/abc";
+  const status = {
+    id: "bookmark-1", target_kind: "remote", target: { remote_object_uri: uri }, availability: "available",
+    created_at: "now", saved: true, save_state: "reference", can_capture_snapshot: "true",
+    remote_recipe: {
+      object_uri: uri, source_origin: "https://peer.example", source_recipe_id: "abc", creator_name: "Remote chef",
+      sequence: 4, updated_at: "now",
+      recipe: { title: "Soup", description: "", servings: 2, prep_time_minutes: 5, cook_time_minutes: 10, ingredients: [], steps: [{ text: "Cook" }], tags: [] },
+    },
+  };
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(status)));
+
+  await expect(fetchRecipeBookmarkStatus({ remote_object_uri: uri })).rejects.toThrow("Could not check saved status.");
+});
+
 it("sends conditional mode for a remote save and parses the frozen-copy result", async () => {
   const uri = "https://peer.example/federation/recipes/abc";
   const snapshot = { object_uri: uri, source_origin: "https://peer.example", source_recipe_id: "abc", creator_name: "Remote chef", sequence: 5, updated_at: "2026-11-04", recipe: { title: "Soup", description: "", ingredients: [], steps: [{ text: "Cook" }], servings: 1, prep_time_minutes: 0, cook_time_minutes: 1, tags: [] } };

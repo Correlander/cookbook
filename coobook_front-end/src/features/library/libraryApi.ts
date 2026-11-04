@@ -661,9 +661,21 @@ function parseOptionalCreatorAttributions(value: unknown): { creator_attribution
 function parseBookmarkStatus(value: unknown): RecipeBookmarkStatus {
   if (!isRecord(value) || typeof value.saved !== "boolean") throw new Error("Could not check saved status.");
   if (!value.saved) return { saved: false };
+  if (value.can_capture_snapshot !== undefined && typeof value.can_capture_snapshot !== "boolean")
+    throw new Error("Could not check saved status.");
+  if ("id" in value) {
+    const bookmark = parseRecipeBookmarkView(value);
+    if (value.bookmark_id !== undefined && value.bookmark_id !== bookmark.id)
+      throw new Error("Could not check saved status.");
+    return {
+      saved: true,
+      bookmark_id: bookmark.id,
+      bookmark,
+      ...(typeof value.can_capture_snapshot === "boolean" ? { can_capture_snapshot: value.can_capture_snapshot } : {}),
+    };
+  }
   if (typeof value.bookmark_id !== "string" || !value.bookmark_id) throw new Error("Could not check saved status.");
-  const bookmark = typeof value.id === "string" ? parseRecipeBookmarkView(value) : undefined;
-  return { saved: true, bookmark_id: value.bookmark_id, ...(bookmark ? { bookmark } : {}), ...(typeof value.can_capture_snapshot === "boolean" ? { can_capture_snapshot: value.can_capture_snapshot } : {}) };
+  return { saved: true, bookmark_id: value.bookmark_id, ...(typeof value.can_capture_snapshot === "boolean" ? { can_capture_snapshot: value.can_capture_snapshot } : {}) };
 }
 
 function requiredString(value: unknown): string {

@@ -4,8 +4,30 @@ import (
 	"context"
 	"errors"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 )
+
+func TestDecodeCachedPublicRemoteRecipeSupportsExchangeV2PayloadLimit(t *testing.T) {
+	base := `{"title":"Dish","description":"","ingredients":[],"steps":[],"servings":1,"prep_time_minutes":0,"cook_time_minutes":0,"tags":[]}`
+	result := RemoteRecipeReadView{ObjectURI: testFederationOrigin + "/federation/recipes/" + testFederationID, SourceOrigin: testFederationOrigin, SourceRecipeID: testFederationID, CreatorName: "Creator", Sequence: 1, UpdatedAt: "2026-11-03T12:00:00Z"}
+	for _, size := range []int{1 << 20, 1_500_000, 1_500_001} {
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
+			if len(base) > size {
+				t.Fatal("test base exceeds boundary")
+			}
+			body := base + strings.Repeat(" ", size-len(base))
+			_, err := decodeCachedPublicRemoteRecipe(result.ObjectURI, result.SourceOrigin, result.SourceRecipeID, result, body)
+			if size <= 1_500_000 && err != nil {
+				t.Fatalf("accepted boundary rejected: %v", err)
+			}
+			if size > 1_500_000 && err == nil {
+				t.Fatal("one-byte-over body accepted")
+			}
+		})
+	}
+}
 
 func TestReadCachedPublicRemoteRecipeIsPrivateInstanceSafeAndCacheOnly(t *testing.T) {
 	db := testDatabase(t)

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"Cookbook_Database_Backend/internal/federation/exchangev2"
 	"github.com/common-fate/httpsig/alg_ed25519"
 	"github.com/common-fate/httpsig/contentdigest"
 	"github.com/common-fate/httpsig/sigbase"
@@ -281,10 +282,18 @@ func TestFederationSignatureMiddlewareReleasesInvalidNonceAndEnforcesCapacity(t 
 }
 
 func signedFederationRequest(t *testing.T, privateKey ed25519.PrivateKey, keyID, nonce, body string) *http.Request {
+	return signedFederationRequestWithTag(t, privateKey, keyID, nonce, body, federationSignatureTag)
+}
+
+func signedFederationRequestWithTag(t *testing.T, privateKey ed25519.PrivateKey, keyID, nonce, body, tag string) *http.Request {
+	return signedFederationRequestWithTagAtOrigin(t, privateKey, keyID, nonce, body, tag, "https://local.example")
+}
+
+func signedFederationRequestWithTagAtOrigin(t *testing.T, privateKey ed25519.PrivateKey, keyID, nonce, body, tag, origin string) *http.Request {
 	t.Helper()
 	bodyBytes := []byte(body)
-	req := httptest.NewRequest(http.MethodPost, "https://local.example/api/federation/inbox", bytes.NewReader(bodyBytes))
-	req.Host = "local.example"
+	req := httptest.NewRequest(http.MethodPost, origin+"/api/federation/inbox", bytes.NewReader(bodyBytes))
+	req.Host = strings.TrimPrefix(origin, "https://")
 	req.Header.Set("Content-Type", "application/json")
 	digest := sha256.Sum256(bodyBytes)
 	digestHeader := httpsfv.NewDictionary()
@@ -295,7 +304,7 @@ func signedFederationRequest(t *testing.T, privateKey ed25519.PrivateKey, keyID,
 	}
 	req.Header.Set("Content-Digest", digestValue)
 	transport := signer.Transport{
-		KeyID: keyID, Tag: federationSignatureTag,
+		KeyID: keyID, Tag: tag,
 		Alg:               federationTestSigner{alg_ed25519.Ed25519{PrivateKey: privateKey}},
 		CoveredComponents: []string{"@method", "@target-uri", "content-type", "content-length", "content-digest"},
 		GetNonce:          func() (string, error) { return nonce, nil },
@@ -310,4 +319,101 @@ func signedFederationRequest(t *testing.T, privateKey ed25519.PrivateKey, keyID,
 		t.Fatal(err)
 	}
 	return req
+}
+
+func TestFederationV2AcceptanceRechecksProfileAndKeyAfterVerification(t *testing.T) {
+	db := testDatabase(t)
+	origin := "https://sender.example.org"
+	if err := registerFederationPeer(db, origin, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE federation_peers SET exchange_profile=? WHERE origin=?`, federationExchangeV2Retention, origin); err != nil {
+		t.Fatal(err)
+	}
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registerFederationPeerKey(db, origin, "sender-key", publicKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1,federation_enabled=1,federation_origin='https://local.example' WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	object, err := federationRecipeObjectID(origin, testFederationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := serializeFederationV2Event(origin, newID(), exchangev2.RecipeSnapshot, 1, time.Now(), federationRecipeSource{ID: testFederationID, CreatorName: "Sender", Title: "Soup", Visibility: visibilityPublic}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := exchangev2.Decode(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.RetentionGrant = &exchangev2.RetentionGrant{Purpose: exchangev2.GrantPurpose, Retention: exchangev2.GrantRetention, Portability: exchangev2.GrantPortability, ObjectID: object, Sequence: 1, PayloadSHA256: exchangev2.PayloadDigest(event.Payload)}
+	payload, err = exchangev2.Encode(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, race := range []string{"profile reset", "key revoked"} {
+		t.Run(race, func(t *testing.T) {
+			request := signedFederationRequestWithTagAtOrigin(t, privateKey, "sender-key", strings.Repeat("r", 40)+race, string(payload), federationSignatureV2Tag, "https://receiver.example.org")
+			meta, err := captureFederationV2RequestMetadata(request, "https://receiver.example.org")
+			if err != nil {
+				t.Fatal(err)
+			}
+			request = request.WithContext(context.WithValue(request.Context(), federationV2RequestMetadataKey, meta))
+			middleware := federationSignatureMiddlewareForTag(db, "https://receiver.example.org", nil, federationSignatureV2Tag, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				verified, err := verifyFederationRetentionEvidence(r, db, origin, body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if race == "profile reset" {
+					_, err = db.Exec(`UPDATE federation_peers SET exchange_profile='v1' WHERE origin=?`, origin)
+				} else {
+					_, err = db.Exec(`UPDATE federation_peer_keys SET status='revoked' WHERE key_id='sender-key'`)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx := context.WithValue(r.Context(), federationVerifiedRequestKey{}, verified)
+				if _, _, err := acceptFederationEvent(ctx, db, origin, body); err == nil {
+					t.Error("accepted request after authenticated state changed")
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			response := httptest.NewRecorder()
+			middleware.ServeHTTP(response, request)
+			if response.Code != http.StatusNoContent {
+				t.Fatalf("signature verification status=%d body=%s", response.Code, response.Body)
+			}
+			var receipts, events, objects int
+			_ = db.QueryRow(`SELECT COUNT(*) FROM federation_retention_receipts`).Scan(&receipts)
+			_ = db.QueryRow(`SELECT COUNT(*) FROM federation_received_events`).Scan(&events)
+			_ = db.QueryRow(`SELECT COUNT(*) FROM federation_remote_catalog`).Scan(&objects)
+			if receipts != 0 || events != 0 || objects != 0 {
+				t.Fatalf("recheck race mutated receiver state receipt=%d event=%d object=%d", receipts, events, objects)
+			}
+		})
+		if race == "profile reset" {
+			if _, err := db.Exec(`UPDATE federation_peers SET exchange_profile=? WHERE origin=?`, federationExchangeV2Retention, origin); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			// Use a fresh key for the next independent race because key IDs are never reactivated.
+			publicKey, privateKey, err = ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := registerFederationPeerKey(db, origin, "sender-key-2", publicKey); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 }

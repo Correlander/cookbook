@@ -270,6 +270,8 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.recipeTrash(w, r)
 	case len(parts) == 3 && parts[0] == "recipes" && parts[2] == "publication":
 		h.recipePublication(w, r, parts[1])
+	case len(parts) == 3 && parts[0] == "recipes" && parts[2] == "federation-retention":
+		h.federationRetentionAssertion(w, r, parts[1])
 	case len(parts) == 3 && parts[0] == "recipes" && parts[2] == "restore":
 		h.restoreTrashedRecipe(w, r, parts[1])
 	case len(parts) == 1 && parts[0] == "recipes":

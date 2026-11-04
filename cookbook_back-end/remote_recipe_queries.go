@@ -227,18 +227,10 @@ func decodeCachedPublicRemoteRecipe(objectURI, origin, recipeID string, result R
 		return RemoteRecipeReadView{}, errors.New("invalid cached remote recipe timestamp")
 	}
 	var content RemoteRecipeContent
-	if body == "" || len(body) > 1<<20 {
+	if body == "" || len(body) > 1_500_000 {
 		return RemoteRecipeReadView{}, errors.New("invalid cached remote recipe body")
 	}
-	if err := rejectJSONDuplicateKeys(body); err != nil {
-		return RemoteRecipeReadView{}, fmt.Errorf("decode cached remote recipe: %w", err)
-	}
-	decoder := json.NewDecoder(bytes.NewBufferString(body))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&content); err != nil {
-		return RemoteRecipeReadView{}, fmt.Errorf("decode cached remote recipe: %w", err)
-	}
-	if err := ensureJSONEOF(decoder); err != nil {
+	if err := decodeRemoteRecipePayload([]byte(body), &content); err != nil {
 		return RemoteRecipeReadView{}, fmt.Errorf("decode cached remote recipe: %w", err)
 	}
 	input := recipeInput{
@@ -264,6 +256,25 @@ func decodeCachedPublicRemoteRecipe(objectURI, origin, recipeID string, result R
 		CookTime: input.CookTime, Tags: input.Tags,
 	}
 	return result, nil
+}
+
+func decodeRemoteRecipePayload(body []byte, content *RemoteRecipeContent) error {
+	if len(body) == 0 || len(body) > 1_500_000 {
+		return errors.New("invalid remote recipe body size")
+	}
+	if err := rejectJSONDuplicateKeys(string(body)); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(content); err != nil {
+		return err
+	}
+	if err := ensureJSONEOF(decoder); err != nil {
+		return err
+	}
+	input := recipeInput{Title: content.Title, Description: content.Description, Ingredients: content.Ingredients, Steps: content.Steps, Servings: content.Servings, PrepTime: content.PrepTime, CookTime: content.CookTime, Tags: content.Tags, Visibility: visibilityPublic, EditPolicy: "owner_only"}
+	return input.validate()
 }
 
 func rejectJSONDuplicateKeys(raw string) error {

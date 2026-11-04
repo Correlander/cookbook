@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"Cookbook_Database_Backend/internal/federation/exchangev2"
 )
 
 const publicationFixtureTime = "2026-11-03T12:00:00.000000000Z"
@@ -679,3 +681,92 @@ func TestLocalCreationFieldsNeverEnterFederationWireSchema(t *testing.T) {
 }
 
 func timeNowForPublicationTest() time.Time { return time.Now().UTC() }
+
+func TestFederationRetentionAssertionIsCurrentOwnerExactVersionAndAtomic(t *testing.T) {
+	env := newPublicationTestEnv(t, visibilityPublic, RecipePublicationPublished, RecipeFederationFollowers, true)
+	if err := registerFederationPeer(env.db, "https://legacy-v1.example.org", true); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/recipes/" + testFederationID + "/federation-retention"
+	noV2Peer := callContentAPI(env.handler, http.MethodPost, path, `{"expected_recipe_version":1}`, env.owner)
+	if noV2Peer.Code != http.StatusConflict {
+		t.Fatalf("assertion without an opted-in peer status=%d body=%s", noV2Peer.Code, noV2Peer.Body)
+	}
+	var sequenceBeforeOptIn int64
+	if err := env.db.QueryRow(`SELECT sequence FROM federation_local_objects WHERE recipe_id=?`, testFederationID).Scan(&sequenceBeforeOptIn); err != nil || sequenceBeforeOptIn != 1 {
+		t.Fatalf("no-peer assertion advanced sequence=%d err=%v", sequenceBeforeOptIn, err)
+	}
+	if _, err := env.db.Exec(`UPDATE federation_peers SET exchange_profile=? WHERE origin='https://peer.example.org'`, federationExchangeV2Retention); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, body string
+		cookie     *http.Cookie
+		want       int
+	}{
+		{name: "non-owner", body: `{"expected_recipe_version":1}`, cookie: env.other, want: http.StatusConflict},
+		{name: "stale version", body: `{"expected_recipe_version":2}`, cookie: env.owner, want: http.StatusConflict},
+		{name: "unexpected caller field", body: `{"expected_recipe_version":1,"owner_id":"owner"}`, cookie: env.owner, want: http.StatusBadRequest},
+	} {
+		rec := callContentAPI(env.handler, http.MethodPost, path, tc.body, tc.cookie)
+		if rec.Code != tc.want {
+			t.Fatalf("%s status=%d body=%s want=%d", tc.name, rec.Code, rec.Body, tc.want)
+		}
+	}
+	var before int64
+	if err := env.db.QueryRow(`SELECT sequence FROM federation_local_objects WHERE recipe_id=?`, testFederationID).Scan(&before); err != nil || before != 1 {
+		t.Fatalf("denied sequence=%d err=%v", before, err)
+	}
+	response := callContentAPI(env.handler, http.MethodPost, path, `{"expected_recipe_version":1}`, env.owner)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("owner assertion status=%d body=%s", response.Code, response.Body)
+	}
+	var sequence int64
+	if err := env.db.QueryRow(`SELECT sequence FROM federation_local_objects WHERE recipe_id=?`, testFederationID).Scan(&sequence); err != nil || sequence != 2 {
+		t.Fatalf("accepted sequence=%d err=%v", sequence, err)
+	}
+	var payload []byte
+	if err := env.db.QueryRow(`SELECT payload FROM federation_outbox WHERE peer_origin='https://peer.example.org' ORDER BY sequence DESC LIMIT 1`).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	event, err := exchangev2.Decode(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.RetentionGrant == nil || event.RetentionGrant.ObjectID != event.ObjectID || event.RetentionGrant.Sequence != event.Sequence || event.RetentionGrant.PayloadSHA256 != exchangev2.PayloadDigest(event.Payload) || event.Sequence != 2 {
+		t.Fatalf("grant is not exactly bound: %+v", event.RetentionGrant)
+	}
+	var legacyRows int
+	if err := env.db.QueryRow(`SELECT COUNT(*) FROM federation_outbox WHERE peer_origin='https://legacy-v1.example.org'`).Scan(&legacyRows); err != nil || legacyRows != 0 {
+		t.Fatalf("owner assertion reached default-v1 peer rows=%d err=%v", legacyRows, err)
+	}
+	var auditCount int
+	if err := env.db.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE action='recipe.federation.retention.assert' AND response_status=?`, http.StatusAccepted).Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatalf("transactional audit count=%d err=%v", auditCount, err)
+	}
+	var outboxBefore int
+	if err := env.db.QueryRow(`SELECT COUNT(*) FROM federation_outbox`).Scan(&outboxBefore); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.db.Exec(`CREATE TRIGGER reject_retention_assertion BEFORE INSERT ON federation_outbox WHEN json_extract(CAST(NEW.payload AS TEXT),'$.retention_grant') IS NOT NULL BEGIN SELECT RAISE(ABORT,'injected assertion failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	rejected := callContentAPI(env.handler, http.MethodPost, path, `{"expected_recipe_version":1}`, env.owner)
+	if rejected.Code != http.StatusInternalServerError {
+		t.Fatalf("outbox failure status=%d body=%s", rejected.Code, rejected.Body)
+	}
+	var afterSequence int64
+	var outboxAfter, auditAfter int
+	if err := env.db.QueryRow(`SELECT sequence FROM federation_local_objects WHERE recipe_id=?`, testFederationID).Scan(&afterSequence); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.db.QueryRow(`SELECT COUNT(*) FROM federation_outbox`).Scan(&outboxAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.db.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE action='recipe.federation.retention.assert' AND response_status=?`, http.StatusAccepted).Scan(&auditAfter); err != nil {
+		t.Fatal(err)
+	}
+	if afterSequence != 2 || outboxAfter != outboxBefore || auditAfter != 1 {
+		t.Fatalf("failed assertion committed state sequence=%d outbox=%d/%d audit=%d", afterSequence, outboxAfter, outboxBefore, auditAfter)
+	}
+}

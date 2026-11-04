@@ -407,6 +407,50 @@ func (h apiHandler) recipePublication(w http.ResponseWriter, r *http.Request, re
 	}
 }
 
+func (h apiHandler) federationRetentionAssertion(w http.ResponseWriter, r *http.Request, recipeID string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	uid := authenticatedUser(r)
+	if uid == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var input struct {
+		ExpectedRecipeVersion int `json:"expected_recipe_version"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if input.ExpectedRecipeVersion < 1 {
+		writeError(w, http.StatusBadRequest, "invalid_recipe_version")
+		return
+	}
+	err := withImmediateSQLiteWriteTx(r.Context(), h.db, func(tx sqliteExecutor) error {
+		if err := enqueueFederationOwnerAssertion(r.Context(), tx, recipeID, uid, input.ExpectedRecipeVersion); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(r.Context(), `INSERT INTO audit_events(id,actor_id,action,resource_type,resource_id,response_status,created_at) VALUES(?,?,?,?,?,?,?)`, newID(), uid, "recipe.federation.retention.assert", "recipes", recipeID, http.StatusAccepted, timestamp())
+		return err
+	})
+	if errors.Is(err, errFederationOwnerAssertionConflict) {
+		writeError(w, http.StatusConflict, "federation_assertion_conflict")
+		return
+	}
+	if err != nil {
+		if strings.Contains(err.Error(), "outbox capacity") {
+			w.Header().Set("Retry-After", "3600")
+			writeError(w, http.StatusServiceUnavailable, "federation_queue_unavailable")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	markTransactionalAuditSuccess(r)
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued"})
+}
+
 func (h apiHandler) updateRecipePublication(w http.ResponseWriter, r *http.Request, recipeID, uid string) {
 	ifMatch, status, code := parsePublicationIfMatch(r)
 	if status != 0 {

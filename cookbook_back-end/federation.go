@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
@@ -10,10 +11,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"Cookbook_Database_Backend/internal/federation/exchangev2"
 	"github.com/common-fate/httpsig"
+	"github.com/common-fate/httpsig/sigset"
 )
 
 type federationInboxHandler struct {
@@ -84,7 +88,20 @@ func (h federationInboxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusLengthRequired, "content_length_required")
 		return
 	}
-	federationSignatureMiddleware(h.db, h.origin, h.trustedProxies, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tag, err := federationRequestSignatureTag(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid_signature_profile")
+		return
+	}
+	if tag == federationSignatureV2Tag {
+		meta, err := captureFederationV2RequestMetadata(r, h.origin)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "invalid_signature_profile")
+			return
+		}
+		r = r.WithContext(context.WithValue(r.Context(), federationV2RequestMetadataKey, meta))
+	}
+	federationSignatureMiddlewareForTag(h.db, h.origin, h.trustedProxies, tag, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		peerOrigin, ok := httpsig.AttributesFromContext(r.Context()).(string)
 		if !ok {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -95,7 +112,16 @@ func (h federationInboxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusRequestEntityTooLarge, "event_too_large")
 			return
 		}
-		status, response, err := acceptFederationEvent(r.Context(), h.db, peerOrigin, body)
+		acceptCtx := r.Context()
+		if tag == federationSignatureV2Tag {
+			verified, err := verifyFederationRetentionEvidence(r, h.db, peerOrigin, body)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, "invalid_signature_profile")
+				return
+			}
+			acceptCtx = context.WithValue(acceptCtx, federationVerifiedRequestKey{}, verified)
+		}
+		status, response, err := acceptFederationEvent(acceptCtx, h.db, peerOrigin, body)
 		if err != nil {
 			if errors.Is(err, errFederationConflict) {
 				writeError(w, http.StatusConflict, "federation_conflict")
@@ -106,6 +132,11 @@ func (h federationInboxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 				writeError(w, http.StatusServiceUnavailable, "federation_resource_capacity")
 				return
 			}
+			if errors.Is(err, errFederationRetentionCapacity) {
+				w.Header().Set("Retry-After", "3600")
+				writeError(w, http.StatusServiceUnavailable, "federation_retention_capacity")
+				return
+			}
 			writeError(w, http.StatusBadRequest, "invalid_federation_event")
 			return
 		}
@@ -113,6 +144,119 @@ func (h federationInboxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		w.WriteHeader(status)
 		_, _ = w.Write(response)
 	})).ServeHTTP(w, r)
+}
+
+type federationV2RequestMetadataKeyType struct{}
+
+var federationV2RequestMetadataKey = federationV2RequestMetadataKeyType{}
+
+type federationV2RequestMetadata struct {
+	components []string
+	values     []string
+	target     string
+	keyID      string
+}
+
+func federationRequestSignatureTag(r *http.Request) (string, error) {
+	set, err := sigset.Unmarshal(r)
+	if err != nil {
+		return "", errors.New("ambiguous federation signature")
+	}
+	_, v1Err := set.Find(federationSignatureTag)
+	_, v2Err := set.Find(federationSignatureV2Tag)
+	if v1Err == nil && v2Err == nil {
+		return "", errors.New("multiple federation signature profiles")
+	}
+	if v2Err == nil {
+		if len(set.Messages) != 1 {
+			return "", errors.New("ambiguous Exchange v2 signatures")
+		}
+		return federationSignatureV2Tag, nil
+	}
+	if v1Err == nil {
+		return federationSignatureTag, nil
+	}
+	return "", errors.New("unsupported federation signature tag")
+}
+
+func captureFederationV2RequestMetadata(r *http.Request, configuredOrigin string) (federationV2RequestMetadata, error) {
+	if r.URL.RequestURI() != "/api/federation/inbox" {
+		return federationV2RequestMetadata{}, errors.New("invalid federation inbox target")
+	}
+	canonicalOrigin, err := canonicalFederationOrigin(configuredOrigin)
+	if err != nil || canonicalOrigin != configuredOrigin {
+		return federationV2RequestMetadata{}, errors.New("invalid configured federation origin")
+	}
+	authority := strings.TrimPrefix(configuredOrigin, "https://")
+	if r.Host != authority {
+		return federationV2RequestMetadata{}, errors.New("request authority differs from configured verifier authority")
+	}
+	set, err := sigset.Unmarshal(r)
+	if err != nil {
+		return federationV2RequestMetadata{}, err
+	}
+	message, err := set.Find(federationSignatureV2Tag)
+	if err != nil {
+		return federationV2RequestMetadata{}, err
+	}
+	if len(r.Header.Values("Content-Digest")) != 1 || len(r.Header.Values("Content-Type")) != 1 {
+		return federationV2RequestMetadata{}, errors.New("ambiguous signed headers")
+	}
+	components := append([]string(nil), message.Input.CoveredComponents...)
+	values := make([]string, 0, len(components))
+	for _, component := range components {
+		switch component {
+		case "@method":
+			values = append(values, r.Method)
+		case "@target-uri":
+			target := r.URL.RequestURI()
+			if target == "" {
+				target = "/"
+			}
+			values = append(values, configuredOrigin+target)
+		case "content-type":
+			values = append(values, r.Header.Values("Content-Type")[0])
+		case "content-length":
+			values = append(values, strconv.FormatInt(r.ContentLength, 10))
+		case "content-digest":
+			values = append(values, r.Header.Values("Content-Digest")[0])
+		default:
+			return federationV2RequestMetadata{}, errors.New("unsupported signed component")
+		}
+	}
+	target := r.URL.RequestURI()
+	if target == "" {
+		target = "/"
+	}
+	return federationV2RequestMetadata{components: components, values: values, target: r.URL.RequestURI(), keyID: message.Input.KeyID}, nil
+}
+
+func verifyFederationRetentionEvidence(r *http.Request, db *sql.DB, origin string, body []byte) (federationVerifiedRequest, error) {
+	var result federationVerifiedRequest
+	meta, ok := r.Context().Value(federationV2RequestMetadataKey).(federationV2RequestMetadata)
+	if !ok {
+		return result, errFederationRetentionEvidence
+	}
+	raw, ok := r.Context().Value(federationRawSignatureHeadersKey{}).(federationRawSignatureHeaders)
+	if !ok {
+		return result, errFederationRetentionEvidence
+	}
+	componentsJSON, err := json.Marshal(meta.components)
+	if err != nil {
+		return result, err
+	}
+	valuesJSON, err := json.Marshal(meta.values)
+	if err != nil {
+		return result, err
+	}
+	var publicKey []byte
+	var foundOrigin string
+	if err := db.QueryRowContext(r.Context(), `SELECT origin,public_key FROM federation_peer_keys WHERE key_id=? AND status='active'`, meta.keyID).Scan(&foundOrigin, &publicKey); err != nil || foundOrigin != origin || len(publicKey) != ed25519.PublicKeySize {
+		return result, errFederationRetentionEvidence
+	}
+	result.publicKey = append([]byte(nil), publicKey...)
+	result.Evidence = federationRetentionEvidence{ReceiptID: newID(), EventBody: append([]byte(nil), body...), SignatureInput: raw.input, SignatureValue: raw.signature, RequestMethod: r.Method, RequestTarget: meta.target, CoveredComponents: string(componentsJSON), CoveredValues: string(valuesJSON), AuthenticatedOrigin: origin, KeyID: meta.keyID}
+	return result, nil
 }
 
 func federationEnabled(db *sql.DB) bool {
@@ -145,7 +289,34 @@ type federationRecipeSource struct {
 }
 
 func acceptFederationEvent(ctx context.Context, db *sql.DB, keyOrigin string, body []byte) (int, []byte, error) {
-	event, recipeJSON, err := decodeFederationEvent(body)
+	v2Event, v2Err := exchangev2.Decode(body)
+	v2 := v2Err == nil
+	var event federationEvent
+	var recipeJSON []byte
+	var err error
+	if v2 {
+		if v2Event.SourceOrigin != keyOrigin {
+			return 0, nil, errors.New("invalid or mismatched federation event")
+		}
+		event = federationEvent{EventID: v2Event.EventID, EventType: v2Event.EventType, SourceOrigin: v2Event.SourceOrigin, ObjectID: v2Event.ObjectID, Sequence: v2Event.Sequence}
+		if v2Event.EventType != exchangev2.RecipeWithdrawal {
+			var content RemoteRecipeContent
+			if err := decodeRemoteRecipePayload(v2Event.Payload, &content); err != nil {
+				return 0, nil, errors.New("invalid Exchange v2 recipe payload")
+			}
+			if v2Event.Attribution == nil {
+				return 0, nil, errors.New("invalid Exchange v2 attribution")
+			}
+			event.Attribution = &federationEventAttribution{CreatorName: v2Event.Attribution.CreatorName}
+			recipeJSON = append([]byte(nil), v2Event.Payload...)
+		}
+	} else {
+		event, recipeJSON, err = decodeFederationEvent(body)
+	}
+	_, authenticatedV2 := verifiedFederationRetentionRequestFromContext(ctx)
+	if v2 != authenticatedV2 {
+		return 0, nil, errors.New("federation signature tag and body version mismatch")
+	}
 	if err != nil || event.SourceOrigin != keyOrigin {
 		return 0, nil, errors.New("invalid or mismatched federation event")
 	}
@@ -157,6 +328,25 @@ func acceptFederationEvent(ctx context.Context, db *sql.DB, keyOrigin string, bo
 	acceptedStatus := 0
 	acceptedResponse := []byte(nil)
 	err = withImmediateSQLiteWriteTx(ctx, db, func(tx sqliteExecutor) error {
+		var peerEnabled int
+		var profile string
+		var keyStatus, keyOriginStored string
+		if err := tx.QueryRowContext(ctx, `SELECT enabled,exchange_profile FROM federation_peers WHERE origin=?`, keyOrigin).Scan(&peerEnabled, &profile); err != nil || peerEnabled != 1 {
+			return errors.New("federation peer is disabled")
+		}
+		if v2 {
+			if profile != federationExchangeV2Retention {
+				return errors.New("federation v2 profile is disabled")
+			}
+			verified, ok := verifiedFederationRetentionRequestFromContext(ctx)
+			if !ok || verified.Evidence.AuthenticatedOrigin != keyOrigin {
+				return errFederationRetentionEvidence
+			}
+			var publicKey []byte
+			if err := tx.QueryRowContext(ctx, `SELECT origin,status,public_key FROM federation_peer_keys WHERE key_id=?`, verified.Evidence.KeyID).Scan(&keyOriginStored, &keyStatus, &publicKey); err != nil || keyOriginStored != keyOrigin || keyStatus != "active" || !bytes.Equal(publicKey, verified.publicKey) {
+				return errFederationRetentionEvidence
+			}
+		}
 		var previousDigest []byte
 		var previousStatus int
 		var previousResponse string
@@ -171,32 +361,31 @@ func acceptFederationEvent(ctx context.Context, db *sql.DB, keyOrigin string, bo
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		var peerEnabled int
-		if err := tx.QueryRowContext(ctx, `SELECT enabled FROM federation_peers WHERE origin=?`, keyOrigin).Scan(&peerEnabled); err != nil || peerEnabled != 1 {
-			return errors.New("federation peer is disabled")
-		}
 		var latestSequence int64
 		var priorDeleted int
 		var priorStateKnown int
 		var priorObjectBytes int64
+		isUpdate := event.EventType == federationEventUpdate || event.EventType == exchangev2.RecipeUpdate
+		isSnapshot := event.EventType == federationEventSnapshot || event.EventType == exchangev2.RecipeSnapshot
+		isWithdrawal := event.EventType == federationEventTombstone || event.EventType == exchangev2.RecipeWithdrawal
 		err = tx.QueryRowContext(ctx, `SELECT high_water_sequence,deleted,state_known,logical_bytes FROM federation_remote_catalog WHERE object_id=? AND source_origin=?`, event.ObjectID, keyOrigin).Scan(&latestSequence, &priorDeleted, &priorStateKnown, &priorObjectBytes)
 		catalogExists := err == nil
 		if errors.Is(err, sql.ErrNoRows) {
-			if event.EventType != federationEventSnapshot {
+			if !isSnapshot {
 				return errFederationConflict
 			}
 			latestSequence = 0
 		} else if err != nil {
 			return err
 		}
-		if event.Sequence <= latestSequence || (event.EventType == federationEventUpdate && (priorDeleted == 1 || priorStateKnown == 0)) {
+		if event.Sequence <= latestSequence || (isUpdate && (priorDeleted == 1 || priorStateKnown == 0)) || (!catalogExists && !isSnapshot) {
 			return errFederationConflict
 		}
 		now := timestamp()
 		recipeID := strings.TrimPrefix(event.ObjectID, keyOrigin+"/federation/recipes/")
 		creatorName, rawRecipe := "", ""
 		deleted := 1
-		if event.EventType != federationEventTombstone {
+		if !isWithdrawal {
 			creatorName, rawRecipe, deleted = event.Attribution.CreatorName, string(recipeJSON), 0
 		}
 		title, description, tagsJSON := "", "", "[]"
@@ -212,7 +401,9 @@ func acceptFederationEvent(ctx context.Context, db *sql.DB, keyOrigin string, bo
 			}
 		}
 		sourceState := "published"
-		if deleted == 1 {
+		if deleted == 1 && v2 && isWithdrawal {
+			sourceState = "withdrawn"
+		} else if deleted == 1 {
 			sourceState = "unknown_legacy"
 		}
 		nextObjectBytes := remoteCatalogLogicalBytes(keyOrigin, event.ObjectID, recipeID, creatorName, rawRecipe, title, description, tagsJSON, sourceState, event.Sequence, deleted)
@@ -236,7 +427,12 @@ func acceptFederationEvent(ctx context.Context, db *sql.DB, keyOrigin string, bo
 		} else if _, err := tx.ExecContext(ctx, `INSERT INTO federation_remote_catalog(source_origin,object_id,source_recipe_id,high_water_sequence,deleted,state_known,source_state,logical_bytes) VALUES(?,?,?,?,?,1,?,?)`, keyOrigin, event.ObjectID, recipeID, event.Sequence, deleted, sourceState, nextObjectBytes); err != nil {
 			return err
 		}
-		if err := closeFederationRetentionReceipt(ctx, tx, keyOrigin, event.ObjectID); err != nil {
+		if v2 && v2Event.RetentionGrant != nil {
+			verified, _ := verifiedFederationRetentionRequestFromContext(ctx)
+			if err := admitFederationRetentionReceipt(ctx, tx, verified.asRetentionEvidence()); err != nil {
+				return err
+			}
+		} else if err := closeFederationRetentionReceipt(ctx, tx, keyOrigin, event.ObjectID); err != nil {
 			return err
 		}
 		if deleted == 1 {
@@ -333,8 +529,19 @@ func validFederationEgressOrigin(origin string) bool {
 	return err == nil && canonical == origin
 }
 
-func hasPendingFederationContentForRecipe(tx *sql.Tx, peer, recipeID string) (bool, error) {
-	rows, err := tx.Query(`SELECT payload FROM federation_outbox WHERE peer_origin=? AND object_id LIKE ? ORDER BY sequence,id`, peer, "%/federation/recipes/"+recipeID)
+func federationOutboxEventSummary(payload []byte) (sourceOrigin, objectID, eventType string, sequence int64, err error) {
+	if event, decodeErr := exchangev2.Decode(payload); decodeErr == nil {
+		return event.SourceOrigin, event.ObjectID, event.EventType, event.Sequence, nil
+	}
+	event, _, err := decodeFederationEvent(payload)
+	if err != nil {
+		return "", "", "", 0, err
+	}
+	return event.SourceOrigin, event.ObjectID, event.EventType, event.Sequence, nil
+}
+
+func hasPendingFederationContentForRecipe(ctx context.Context, tx sqliteExecutor, peer, recipeID string) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT payload FROM federation_outbox WHERE peer_origin=? AND object_id LIKE ? ORDER BY sequence,id`, peer, "%/federation/recipes/"+recipeID)
 	if err != nil {
 		return false, err
 	}
@@ -344,12 +551,12 @@ func hasPendingFederationContentForRecipe(tx *sql.Tx, peer, recipeID string) (bo
 		if err := rows.Scan(&payload); err != nil {
 			return false, err
 		}
-		event, _, err := decodeFederationEvent(payload)
+		sourceOrigin, objectID, eventType, _, err := federationOutboxEventSummary(payload)
 		if err != nil {
 			return false, err
 		}
-		if strings.HasSuffix(event.ObjectID, "/federation/recipes/"+recipeID) &&
-			(event.EventType == federationEventSnapshot || event.EventType == federationEventUpdate) {
+		if sourceOrigin != "" && strings.HasSuffix(objectID, "/federation/recipes/"+recipeID) &&
+			(eventType == federationEventSnapshot || eventType == federationEventUpdate || eventType == exchangev2.RecipeSnapshot || eventType == exchangev2.RecipeUpdate) {
 			return true, nil
 		}
 	}
@@ -359,8 +566,8 @@ func hasPendingFederationContentForRecipe(tx *sql.Tx, peer, recipeID string) (bo
 	return false, nil
 }
 
-func reconcilePendingFederationRows(tx *sql.Tx, peer, objectID string, now int64, prune bool) (int64, int64, error) {
-	rows, err := tx.Query(`SELECT id,payload,lease_until FROM federation_outbox WHERE peer_origin=? AND object_id=? ORDER BY sequence,id`, peer, objectID)
+func reconcilePendingFederationRows(ctx context.Context, tx sqliteExecutor, peer, objectID string, now int64, prune bool) (int64, int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id,payload,lease_until FROM federation_outbox WHERE peer_origin=? AND object_id=? ORDER BY sequence,id`, peer, objectID)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -377,22 +584,22 @@ func reconcilePendingFederationRows(tx *sql.Tx, peer, objectID string, now int64
 			rows.Close()
 			return 0, 0, err
 		}
-		event, _, err := decodeFederationEvent(row.payload)
+		_, _, eventType, sequence, err := federationOutboxEventSummary(row.payload)
 		if err != nil {
 			rows.Close()
 			return 0, 0, err
 		}
-		if event.EventType == federationEventTombstone {
-			if event.Sequence > highestTombstoneSequence {
-				highestTombstoneSequence = event.Sequence
+		if eventType == federationEventTombstone || eventType == exchangev2.RecipeWithdrawal {
+			if sequence > highestTombstoneSequence {
+				highestTombstoneSequence = sequence
 			}
 			continue
 		}
-		if event.EventType != federationEventSnapshot && event.EventType != federationEventUpdate {
+		if eventType != federationEventSnapshot && eventType != federationEventUpdate && eventType != exchangev2.RecipeSnapshot && eventType != exchangev2.RecipeUpdate {
 			continue
 		}
-		if event.Sequence > highestContentSequence {
-			highestContentSequence = event.Sequence
+		if sequence > highestContentSequence {
+			highestContentSequence = sequence
 		}
 		if prune && (!row.leaseEnd.Valid || row.leaseEnd.Int64 < now) {
 			remove = append(remove, row.id)
@@ -406,7 +613,7 @@ func reconcilePendingFederationRows(tx *sql.Tx, peer, objectID string, now int64
 		return 0, 0, err
 	}
 	for _, id := range remove {
-		if _, err := tx.Exec(`DELETE FROM federation_outbox WHERE id=?`, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM federation_outbox WHERE id=?`, id); err != nil {
 			return 0, 0, err
 		}
 	}
@@ -414,23 +621,27 @@ func reconcilePendingFederationRows(tx *sql.Tx, peer, objectID string, now int64
 }
 
 func enqueueFederationChangeForPeer(tx *sql.Tx, recipeID, targetPeer string, forceSnapshot bool) error {
+	return enqueueFederationChangeForPeerExec(context.Background(), tx, recipeID, targetPeer, forceSnapshot)
+}
+
+func enqueueFederationChangeForPeerExec(ctx context.Context, tx sqliteExecutor, recipeID, targetPeer string, forceSnapshot bool) error {
 	var federation, instancePublic int
 	var origin string
-	if err := tx.QueryRow(`SELECT federation_enabled,public_instance,federation_origin FROM instance_settings WHERE id=1`).Scan(&federation, &instancePublic, &origin); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT federation_enabled,public_instance,federation_origin FROM instance_settings WHERE id=1`).Scan(&federation, &instancePublic, &origin); err != nil {
 		return err
 	}
 	var source federationRecipeSource
 	var ingredientsJSON, stepsJSON, tagsJSON, deletedAt string
-	if err := tx.QueryRow(`SELECT id,owner_id,creator_name,source_recipe_id,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,image_path,COALESCE(deleted_at,'') FROM recipes WHERE id=?`, recipeID).Scan(&source.ID, &source.OwnerID, &source.CreatorName, &source.SourceRecipeID, &source.Title, &source.Description, &ingredientsJSON, &stepsJSON, &source.Servings, &source.PrepTime, &source.CookTime, &tagsJSON, &source.Visibility, &source.ImagePath, &deletedAt); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT id,owner_id,creator_name,source_recipe_id,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,image_path,COALESCE(deleted_at,'') FROM recipes WHERE id=?`, recipeID).Scan(&source.ID, &source.OwnerID, &source.CreatorName, &source.SourceRecipeID, &source.Title, &source.Description, &ingredientsJSON, &stepsJSON, &source.Servings, &source.PrepTime, &source.CookTime, &tagsJSON, &source.Visibility, &source.ImagePath, &deletedAt); err != nil {
 		return err
 	}
 	source.Deleted = deletedAt != ""
 	var sequence int64
-	err := tx.QueryRow(`SELECT sequence FROM federation_local_objects WHERE recipe_id=?`, recipeID).Scan(&sequence)
+	err := tx.QueryRowContext(ctx, `SELECT sequence FROM federation_local_objects WHERE recipe_id=?`, recipeID).Scan(&sequence)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	policyEligible, err := federationRecipePublicationEligible(context.Background(), tx, recipeID, origin)
+	policyEligible, err := federationRecipePublicationEligible(ctx, tx, recipeID, origin)
 	if err != nil {
 		return err
 	}
@@ -446,25 +657,26 @@ func enqueueFederationChangeForPeer(tx *sql.Tx, recipeID, targetPeer string, for
 			return err
 		}
 	}
-	peerQuery := `SELECT origin,enabled FROM federation_peers ORDER BY origin`
+	peerQuery := `SELECT origin,enabled,exchange_profile FROM federation_peers ORDER BY origin`
 	peerArgs := []any{}
 	if targetPeer != "" {
-		peerQuery = `SELECT origin,enabled FROM federation_peers WHERE origin=? ORDER BY origin`
+		peerQuery = `SELECT origin,enabled,exchange_profile FROM federation_peers WHERE origin=? ORDER BY origin`
 		peerArgs = append(peerArgs, targetPeer)
 	}
-	rows, err := tx.Query(peerQuery, peerArgs...)
+	rows, err := tx.QueryContext(ctx, peerQuery, peerArgs...)
 	if err != nil {
 		return err
 	}
 	type federationPeer struct {
 		origin  string
 		enabled bool
+		profile string
 	}
 	var peers []federationPeer
 	for rows.Next() {
 		var peer federationPeer
 		var enabled int
-		if err := rows.Scan(&peer.origin, &enabled); err != nil {
+		if err := rows.Scan(&peer.origin, &enabled, &peer.profile); err != nil {
 			rows.Close()
 			return err
 		}
@@ -484,6 +696,7 @@ func enqueueFederationChangeForPeer(tx *sql.Tx, recipeID, targetPeer string, for
 	type eventTarget struct {
 		peer      string
 		eventType string
+		profile   string
 	}
 	targets := make([]eventTarget, 0, len(peers))
 	var objectID string
@@ -505,7 +718,7 @@ func enqueueFederationChangeForPeer(tx *sql.Tx, recipeID, targetPeer string, for
 	}
 	for _, peer := range peers {
 		var peerPublished int
-		peerErr := tx.QueryRow(`SELECT published FROM federation_local_peer_objects WHERE peer_origin=? AND recipe_id=?`, peer.origin, recipeID).Scan(&peerPublished)
+		peerErr := tx.QueryRowContext(ctx, `SELECT published FROM federation_local_peer_objects WHERE peer_origin=? AND recipe_id=?`, peer.origin, recipeID).Scan(&peerPublished)
 		if peerErr != nil && !errors.Is(peerErr, sql.ErrNoRows) {
 			return peerErr
 		}
@@ -526,7 +739,7 @@ func enqueueFederationChangeForPeer(tx *sql.Tx, recipeID, targetPeer string, for
 				if err := ensureObjectID(); err != nil {
 					return err
 				}
-				pendingContentSequence, pendingTombstoneSequence, err := reconcilePendingFederationRows(tx, peer.origin, objectID, time.Now().Unix(), true)
+				pendingContentSequence, pendingTombstoneSequence, err := reconcilePendingFederationRows(ctx, tx, peer.origin, objectID, time.Now().Unix(), true)
 				if err != nil {
 					return err
 				}
@@ -537,7 +750,7 @@ func enqueueFederationChangeForPeer(tx *sql.Tx, recipeID, targetPeer string, for
 				if peerPublished == 1 {
 					return errors.New("federation origin is required to withdraw a published object")
 				}
-				pendingContent, err := hasPendingFederationContentForRecipe(tx, peer.origin, recipeID)
+				pendingContent, err := hasPendingFederationContentForRecipe(ctx, tx, peer.origin, recipeID)
 				if err != nil {
 					return err
 				}
@@ -547,7 +760,16 @@ func enqueueFederationChangeForPeer(tx *sql.Tx, recipeID, targetPeer string, for
 			}
 		}
 		if eventType != "" {
-			targets = append(targets, eventTarget{peer: peer.origin, eventType: eventType})
+			if peer.profile == federationExchangeV2Retention {
+				if eventType == federationEventTombstone {
+					eventType = exchangev2.RecipeWithdrawal
+				} else if eventType == federationEventSnapshot {
+					eventType = exchangev2.RecipeSnapshot
+				} else {
+					eventType = exchangev2.RecipeUpdate
+				}
+			}
+			targets = append(targets, eventTarget{peer: peer.origin, eventType: eventType, profile: peer.profile})
 		}
 	}
 	if len(targets) == 0 {
@@ -558,36 +780,236 @@ func enqueueFederationChangeForPeer(tx *sql.Tx, recipeID, targetPeer string, for
 	if eligible {
 		publishedNow = 1
 	}
-	if _, err := tx.Exec(`INSERT INTO federation_local_objects(recipe_id,sequence,published) VALUES(?,?,?) ON CONFLICT(recipe_id) DO UPDATE SET sequence=excluded.sequence,published=excluded.published`, recipeID, sequence, publishedNow); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO federation_local_objects(recipe_id,sequence,published) VALUES(?,?,?) ON CONFLICT(recipe_id) DO UPDATE SET sequence=excluded.sequence,published=excluded.published`, recipeID, sequence, publishedNow); err != nil {
 		return err
 	}
 	for _, target := range targets {
-		body, err := serializeFederationEvent(origin, newID(), target.eventType, sequence, time.Now(), federation == 1, instancePublic == 1, source)
+		var body []byte
+		var err error
+		if target.profile == federationExchangeV2Retention {
+			body, err = serializeFederationV2Event(origin, newID(), target.eventType, sequence, time.Now(), source, nil, nil)
+		} else {
+			body, err = serializeFederationEvent(origin, newID(), target.eventType, sequence, time.Now(), federation == 1, instancePublic == 1, source)
+		}
 		if err != nil {
 			return err
 		}
-		var event federationEvent
-		if err := json.Unmarshal(body, &event); err != nil {
-			return err
+		var eventID, eventObject string
+		var eventSequence int64
+		if target.profile == federationExchangeV2Retention {
+			parsed, err := exchangev2.Decode(body)
+			if err != nil {
+				return err
+			}
+			eventID, eventObject, eventSequence = parsed.EventID, parsed.ObjectID, parsed.Sequence
+		} else {
+			var event federationEvent
+			if err := json.Unmarshal(body, &event); err != nil {
+				return err
+			}
+			eventID, eventObject, eventSequence = event.EventID, event.ObjectID, event.Sequence
 		}
 		peerPublished := 0
 		if eligible {
 			peerPublished = 1
 		}
-		if _, err := tx.Exec(`INSERT INTO federation_local_peer_objects(peer_origin,recipe_id,published,updated_at) VALUES(?,?,?,?) ON CONFLICT(peer_origin,recipe_id) DO UPDATE SET published=excluded.published,updated_at=excluded.updated_at`, target.peer, recipeID, peerPublished, timestamp()); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO federation_local_peer_objects(peer_origin,recipe_id,published,updated_at) VALUES(?,?,?,?) ON CONFLICT(peer_origin,recipe_id) DO UPDATE SET published=excluded.published,updated_at=excluded.updated_at`, target.peer, recipeID, peerPublished, timestamp()); err != nil {
 			return err
 		}
 		var peerCount, peerBytes, totalCount, totalBytes int
-		if err := tx.QueryRow(`SELECT COUNT(*),COALESCE(SUM(length(payload)),0) FROM federation_outbox WHERE peer_origin=?`, target.peer).Scan(&peerCount, &peerBytes); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(length(payload)),0) FROM federation_outbox WHERE peer_origin=?`, target.peer).Scan(&peerCount, &peerBytes); err != nil {
 			return err
 		}
-		if err := tx.QueryRow(`SELECT COUNT(*),COALESCE(SUM(length(payload)),0) FROM federation_outbox`).Scan(&totalCount, &totalBytes); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(length(payload)),0) FROM federation_outbox`).Scan(&totalCount, &totalBytes); err != nil {
 			return err
 		}
 		if peerCount >= 1000 || int64(peerBytes)+int64(len(body)) > 16<<20 || totalCount >= 10000 || int64(totalBytes)+int64(len(body)) > 64<<20 {
 			return errors.New("federation outbox capacity reached")
 		}
-		if _, err := tx.Exec(`INSERT INTO federation_outbox(id,peer_origin,event_id,object_id,sequence,payload,next_attempt,created_at) VALUES(?,?,?,?,?,?,?,?)`, newID(), target.peer, event.EventID, event.ObjectID, event.Sequence, body, time.Now().Unix(), timestamp()); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO federation_outbox(id,peer_origin,event_id,object_id,sequence,payload,next_attempt,created_at) VALUES(?,?,?,?,?,?,?,?)`, newID(), target.peer, eventID, eventObject, eventSequence, body, time.Now().Unix(), timestamp()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func serializeFederationV2Event(origin, eventID, eventType string, sequence int64, occurredAt time.Time, source federationRecipeSource, exactPayload []byte, grant *exchangev2.RetentionGrant) ([]byte, error) {
+	if sequence < 1 || occurredAt.IsZero() || !isFederationID(eventID) {
+		return nil, errors.New("invalid federation v2 event metadata")
+	}
+	objectID, err := federationRecipeObjectID(origin, source.ID)
+	if err != nil {
+		return nil, err
+	}
+	event := exchangev2.Event{Protocol: exchangev2.Protocol, SchemaVersion: exchangev2.SchemaVersion, EventID: eventID, EventType: eventType, SourceOrigin: origin, ObjectID: objectID, Sequence: sequence, OccurredAt: occurredAt.UTC().Format(time.RFC3339Nano)}
+	event.RetentionGrant = grant
+	switch eventType {
+	case exchangev2.RecipeSnapshot, exchangev2.RecipeUpdate:
+		if source.Deleted || source.Visibility != visibilityPublic {
+			return nil, errors.New("recipe is not eligible for federation")
+		}
+		creator := strings.TrimSpace(source.CreatorName)
+		if creator == "" {
+			creator = "Unknown creator"
+		}
+		if len(creator) > 200 {
+			return nil, errors.New("invalid federation attribution")
+		}
+		event.Attribution = &exchangev2.Attribution{CreatorName: creator}
+		if len(exactPayload) == 0 {
+			input := recipeInput{Title: source.Title, Description: source.Description, Ingredients: source.Ingredients, Steps: source.Steps, Servings: source.Servings, PrepTime: source.PrepTime, CookTime: source.CookTime, Tags: source.Tags, Visibility: visibilityPublic, EditPolicy: "owner_only"}
+			if err := input.validate(); err != nil {
+				return nil, errors.New("invalid public recipe")
+			}
+			if input.Ingredients == nil {
+				input.Ingredients = []ingredient{}
+			}
+			if input.Steps == nil {
+				input.Steps = []recipeStep{}
+			}
+			content := RemoteRecipeContent{Title: input.Title, Description: input.Description, Ingredients: input.Ingredients, Steps: input.Steps, Servings: input.Servings, PrepTime: input.PrepTime, CookTime: input.CookTime, Tags: input.Tags}
+			exactPayload, err = json.Marshal(content)
+			if err != nil {
+				return nil, err
+			}
+		}
+		event.Payload = append([]byte(nil), exactPayload...)
+		event.PayloadSHA256 = exchangev2.PayloadDigest(event.Payload)
+	case exchangev2.RecipeWithdrawal:
+		if len(exactPayload) != 0 {
+			return nil, errors.New("withdrawals cannot contain recipe content")
+		}
+	default:
+		return nil, errors.New("unsupported federation v2 event type")
+	}
+	return exchangev2.Encode(event)
+}
+
+var errFederationOwnerAssertionConflict = errors.New("federation owner assertion conflict")
+
+func enqueueFederationOwnerAssertion(ctx context.Context, tx sqliteExecutor, recipeID, actorID string, expectedVersion int) error {
+	if expectedVersion < 1 || actorID == "" {
+		return errFederationOwnerAssertionConflict
+	}
+	var federation, publicInstance int
+	var origin string
+	if err := tx.QueryRowContext(ctx, `SELECT federation_enabled,public_instance,federation_origin FROM instance_settings WHERE id=1`).Scan(&federation, &publicInstance, &origin); err != nil {
+		return err
+	}
+	var source federationRecipeSource
+	var version int
+	var ingredientsJSON, stepsJSON, tagsJSON, deletedAt string
+	if err := tx.QueryRowContext(ctx, `SELECT id,owner_id,creator_name,title,description,ingredients_json,steps_json,servings,prep_time_minutes,cook_time_minutes,tags_json,visibility,image_path,COALESCE(deleted_at,''),version FROM recipes WHERE id=?`, recipeID).Scan(&source.ID, &source.OwnerID, &source.CreatorName, &source.Title, &source.Description, &ingredientsJSON, &stepsJSON, &source.Servings, &source.PrepTime, &source.CookTime, &tagsJSON, &source.Visibility, &source.ImagePath, &deletedAt, &version); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errFederationOwnerAssertionConflict
+		}
+		return err
+	}
+	if source.OwnerID != actorID || deletedAt != "" || version != expectedVersion || source.Visibility != visibilityPublic || federation != 1 || publicInstance != 1 || !validFederationEgressOrigin(origin) {
+		return errFederationOwnerAssertionConflict
+	}
+	source.Deleted = deletedAt != ""
+	if err := json.Unmarshal([]byte(ingredientsJSON), &source.Ingredients); err != nil {
+		return err
+	}
+	if err := json.Unmarshal([]byte(stepsJSON), &source.Steps); err != nil {
+		return err
+	}
+	if err := json.Unmarshal([]byte(tagsJSON), &source.Tags); err != nil {
+		return err
+	}
+	eligible, err := federationRecipePublicationEligible(ctx, tx, recipeID, origin)
+	if err != nil {
+		return err
+	}
+	if !eligible {
+		return errFederationOwnerAssertionConflict
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT origin FROM federation_peers WHERE enabled=1 AND exchange_profile=? ORDER BY origin`, federationExchangeV2Retention)
+	if err != nil {
+		return err
+	}
+	var peers []string
+	for rows.Next() {
+		var peer string
+		if err := rows.Scan(&peer); err != nil {
+			rows.Close()
+			return err
+		}
+		peers = append(peers, peer)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if len(peers) == 0 {
+		return errFederationOwnerAssertionConflict
+	}
+	var sequence int64
+	err = tx.QueryRowContext(ctx, `SELECT sequence FROM federation_local_objects WHERE recipe_id=?`, recipeID).Scan(&sequence)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	sequence++
+	objectID, err := federationRecipeObjectID(origin, recipeID)
+	if err != nil {
+		return err
+	}
+	content := recipeInput{Title: source.Title, Description: source.Description, Ingredients: source.Ingredients, Steps: source.Steps, Servings: source.Servings, PrepTime: source.PrepTime, CookTime: source.CookTime, Tags: source.Tags, Visibility: visibilityPublic, EditPolicy: "owner_only"}
+	if err := content.validate(); err != nil {
+		return err
+	}
+	if content.Ingredients == nil {
+		content.Ingredients = []ingredient{}
+	}
+	if content.Steps == nil {
+		content.Steps = []recipeStep{}
+	}
+	serialized, err := json.Marshal(RemoteRecipeContent{Title: content.Title, Description: content.Description, Ingredients: content.Ingredients, Steps: content.Steps, Servings: content.Servings, PrepTime: content.PrepTime, CookTime: content.CookTime, Tags: content.Tags})
+	if err != nil {
+		return err
+	}
+	digest := exchangev2.PayloadDigest(serialized)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO federation_local_objects(recipe_id,sequence,published) VALUES(?,?,1) ON CONFLICT(recipe_id) DO UPDATE SET sequence=excluded.sequence,published=1`, recipeID, sequence); err != nil {
+		return err
+	}
+	for _, peer := range peers {
+		var published int
+		peerStateErr := tx.QueryRowContext(ctx, `SELECT published FROM federation_local_peer_objects WHERE peer_origin=? AND recipe_id=?`, peer, recipeID).Scan(&published)
+		if peerStateErr != nil && !errors.Is(peerStateErr, sql.ErrNoRows) {
+			return peerStateErr
+		}
+		eventType := exchangev2.RecipeUpdate
+		if published == 0 {
+			eventType = exchangev2.RecipeSnapshot
+		}
+		grant := &exchangev2.RetentionGrant{Purpose: exchangev2.GrantPurpose, Retention: exchangev2.GrantRetention, Portability: exchangev2.GrantPortability, ObjectID: objectID, Sequence: sequence, PayloadSHA256: digest}
+		body, err := serializeFederationV2Event(origin, newID(), eventType, sequence, time.Now(), source, serialized, grant)
+		if err != nil {
+			return err
+		}
+		var event exchangev2.Event
+		event, err = exchangev2.Decode(body)
+		if err != nil {
+			return err
+		}
+		var count, bytesUsed, totalCount, totalBytes int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(length(payload)),0) FROM federation_outbox WHERE peer_origin=?`, peer).Scan(&count, &bytesUsed); err != nil {
+			return err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(length(payload)),0) FROM federation_outbox`).Scan(&totalCount, &totalBytes); err != nil {
+			return err
+		}
+		if count >= 1000 || int64(bytesUsed)+int64(len(body)) > 16<<20 || totalCount >= 10000 || int64(totalBytes)+int64(len(body)) > 64<<20 {
+			return errors.New("federation outbox capacity reached")
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO federation_outbox(id,peer_origin,event_id,object_id,sequence,payload,next_attempt,created_at) VALUES(?,?,?,?,?,?,?,?)`, newID(), peer, event.EventID, event.ObjectID, event.Sequence, body, time.Now().Unix(), timestamp()); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO federation_local_peer_objects(peer_origin,recipe_id,published,updated_at) VALUES(?,?,1,?) ON CONFLICT(peer_origin,recipe_id) DO UPDATE SET published=1,updated_at=excluded.updated_at`, peer, recipeID, timestamp()); err != nil {
 			return err
 		}
 	}

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"Cookbook_Database_Backend/internal/federation/exchangev2"
 	"github.com/common-fate/httpsig/alg_ed25519"
 	"github.com/common-fate/httpsig/contentdigest"
 	"github.com/common-fate/httpsig/signature"
@@ -146,8 +147,14 @@ func deliverFederationEvent(ctx context.Context, client *http.Client, key federa
 		return err
 	}
 	req.Header.Set("Content-Digest", contentDigest)
+	tag := federationSignatureTag
+	if _, err := exchangev2.Decode(payload); err == nil {
+		tag = federationSignatureV2Tag
+	} else if _, _, v1Err := decodeFederationEvent(payload); v1Err != nil {
+		return errors.New("invalid queued federation event")
+	}
 	transport := &signer.Transport{
-		KeyID: keyID, Tag: federationSignatureTag,
+		KeyID: keyID, Tag: tag,
 		Alg:               federationEd25519Signer{privateKey: key.PrivateKey},
 		CoveredComponents: []string{"@method", "@target-uri", "content-type", "content-length", "content-digest"},
 	}
@@ -218,20 +225,28 @@ func claimFederationDelivery(db *sql.DB, now time.Time) (*federationDelivery, er
 	if err != nil {
 		return nil, err
 	}
-	event, _, err := decodeFederationEvent(delivery.payload)
-	if err != nil {
-		return nil, err
+	v2Event, v2Err := exchangev2.Decode(delivery.payload)
+	isV2 := v2Err == nil
+	var eventType, objectID, sourceOrigin string
+	if isV2 {
+		eventType, objectID, sourceOrigin = v2Event.EventType, v2Event.ObjectID, v2Event.SourceOrigin
+	} else {
+		event, _, err := decodeFederationEvent(delivery.payload)
+		if err != nil {
+			return nil, err
+		}
+		eventType, objectID, sourceOrigin = event.EventType, event.ObjectID, event.SourceOrigin
 	}
 	var origin string
 	if err := tx.QueryRow(`SELECT federation_origin FROM instance_settings WHERE id=1`).Scan(&origin); err != nil {
 		return nil, err
 	}
-	if !validFederationEgressOrigin(origin) || event.SourceOrigin != origin {
+	if !validFederationEgressOrigin(origin) || sourceOrigin != origin {
 		return nil, errors.New("federation origin is unavailable for queued event")
 	}
-	if event.EventType == federationEventSnapshot || event.EventType == federationEventUpdate {
-		recipeID, ok := federationObjectRecipeID(origin, event.ObjectID)
-		if !ok || event.SourceOrigin != origin {
+	if eventType == federationEventSnapshot || eventType == federationEventUpdate || eventType == exchangev2.RecipeSnapshot || eventType == exchangev2.RecipeUpdate {
+		recipeID, ok := federationObjectRecipeID(origin, objectID)
+		if !ok || sourceOrigin != origin {
 			return nil, errors.New("federation outbox object does not match local origin")
 		}
 		eligible, err := federationRecipePublicationEligible(context.Background(), tx, recipeID, origin)

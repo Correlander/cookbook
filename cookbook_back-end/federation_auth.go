@@ -22,11 +22,30 @@ import (
 )
 
 const (
-	federationSignatureTag  = "cookbook-exchange-v1"
-	federationSignatureSkew = 5 * time.Minute
-	federationNonceTTL      = 10 * time.Minute
-	federationInboxPerHour  = 1000
+	federationSignatureTag   = "cookbook-exchange-v1"
+	federationSignatureV2Tag = "cookbook-exchange-v2-retention"
+	federationSignatureSkew  = 5 * time.Minute
+	federationNonceTTL       = 10 * time.Minute
+	federationInboxPerHour   = 1000
 )
+
+type federationVerifiedRequestKey struct{}
+type federationVerifiedRequest struct {
+	Evidence  federationRetentionEvidence
+	publicKey []byte
+}
+
+func verifiedFederationRetentionRequestFromContext(ctx context.Context) (federationVerifiedRequest, bool) {
+	value, ok := ctx.Value(federationVerifiedRequestKey{}).(federationVerifiedRequest)
+	return value, ok
+}
+
+func (v federationVerifiedRequest) asRetentionEvidence() federationRetentionEvidence {
+	return v.Evidence
+}
+
+type federationRawSignatureHeaders struct{ input, signature string }
+type federationRawSignatureHeadersKey struct{}
 
 type federationKeyDirectory struct{ db *sql.DB }
 
@@ -183,6 +202,10 @@ func releaseFederationNonce(ctx context.Context, db *sql.DB, hash string) error 
 }
 
 func federationSignatureMiddleware(db *sql.DB, origin string, trustedProxies []*net.IPNet, next http.Handler) http.Handler {
+	return federationSignatureMiddlewareForTag(db, origin, trustedProxies, federationSignatureTag, next)
+}
+
+func federationSignatureMiddlewareForTag(db *sql.DB, origin string, trustedProxies []*net.IPNet, tag string, next http.Handler) http.Handler {
 	validation := httpsig.DefaultValidationOpts()
 	validation.BeforeDuration = federationSignatureSkew
 	validation.AfterDuration = 0
@@ -195,7 +218,7 @@ func federationSignatureMiddleware(db *sql.DB, origin string, trustedProxies []*
 	verify := httpsig.Middleware(httpsig.MiddlewareOpts{
 		NonceStorage: federationNonceStorage{db: db},
 		KeyDirectory: federationKeyDirectory{db: db},
-		Tag:          federationSignatureTag, Validation: &validation,
+		Tag:          tag, Validation: &validation,
 		OnValidationError: func(ctx context.Context, err error) {
 			if attempt, ok := ctx.Value(federationNonceAttemptKey{}).(*federationNonceAttempt); ok {
 				attempt.validationErr = err
@@ -232,12 +255,21 @@ func federationSignatureMiddleware(db *sql.DB, origin string, trustedProxies []*
 			writeError(w, http.StatusBadRequest, "invalid_content_digest")
 			return
 		}
-		if err := validateFederationSignatureProfile(r); err != nil {
+		if err := validateFederationSignatureProfileForTag(r, tag); err != nil {
 			writeError(w, http.StatusUnauthorized, "invalid_signature_profile")
 			return
 		}
-		attempt := &federationNonceAttempt{sourceOrigin: federationSignaturePeerOrigin(r, db)}
-		r = r.WithContext(context.WithValue(r.Context(), federationNonceAttemptKey{}, attempt))
+		attempt := &federationNonceAttempt{sourceOrigin: federationSignaturePeerOriginForTag(r, db, tag)}
+		ctx := context.WithValue(r.Context(), federationNonceAttemptKey{}, attempt)
+		if tag == federationSignatureV2Tag {
+			rawInput, rawSig := r.Header.Values("Signature-Input"), r.Header.Values("Signature")
+			if len(rawInput) != 1 || len(rawSig) != 1 {
+				writeError(w, http.StatusUnauthorized, "invalid_signature_profile")
+				return
+			}
+			ctx = context.WithValue(ctx, federationRawSignatureHeadersKey{}, federationRawSignatureHeaders{input: rawInput[0], signature: rawSig[0]})
+		}
+		r = r.WithContext(ctx)
 		captured := newFederationSignatureResponse()
 		verify.ServeHTTP(captured, r)
 		if attempt.validationErr != nil && attempt.reserved {
@@ -257,11 +289,15 @@ func federationSignatureMiddleware(db *sql.DB, origin string, trustedProxies []*
 }
 
 func federationSignaturePeerOrigin(r *http.Request, db *sql.DB) string {
+	return federationSignaturePeerOriginForTag(r, db, federationSignatureTag)
+}
+
+func federationSignaturePeerOriginForTag(r *http.Request, db *sql.DB, tag string) string {
 	set, err := sigset.Unmarshal(r)
 	if err != nil {
 		return ""
 	}
-	message, err := set.Find(federationSignatureTag)
+	message, err := set.Find(tag)
 	if err != nil || message.Input.KeyID == "" {
 		return ""
 	}
@@ -306,17 +342,21 @@ func (r *federationSignatureResponse) writeTo(w http.ResponseWriter) {
 }
 
 func validateFederationSignatureProfile(r *http.Request) error {
+	return validateFederationSignatureProfileForTag(r, federationSignatureTag)
+}
+
+func validateFederationSignatureProfileForTag(r *http.Request, tag string) error {
 	set, err := sigset.Unmarshal(r)
 	if err != nil {
 		return err
 	}
-	message, err := set.Find(federationSignatureTag)
+	message, err := set.Find(tag)
 	if err != nil {
 		return err
 	}
 	want := []string{"@method", "@target-uri", "content-type", "content-length", "content-digest"}
 	got := message.Input.CoveredComponents
-	if message.Input.Alg != "" || message.Input.Tag != federationSignatureTag || len(got) != len(want) {
+	if message.Input.Alg != "" || message.Input.Tag != tag || len(got) != len(want) {
 		return errors.New("unsupported federation signature profile")
 	}
 	for i := range want {

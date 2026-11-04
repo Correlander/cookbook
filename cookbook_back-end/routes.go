@@ -72,6 +72,7 @@ func handlerWithAuthConfig(db *sql.DB, auth authHandler, cfg config) http.Handle
 	mux.Handle("POST /api/instance/owner-transfers/{id}/accept", recentPasskeyChange(http.HandlerFunc(api.instanceOwnerAPI)))
 	mux.Handle("DELETE /api/instance/owner-transfers/{id}", recentPasskeyChange(http.HandlerFunc(api.instanceOwnerAPI)))
 	mux.Handle("POST /api/recipes/{id}/transfer", csrfProtection(auth.origin, requireSession(db, auditChanges(db, requireRecentAuthentication(db, api)))))
+	mux.Handle("POST /api/recipes/{id}/federation-retention", csrfProtection(auth.origin, requireSession(db, auditChanges(db, requireRecentAuthentication(db, api)))))
 	mux.Handle("PATCH /api/admin/users/{id}", csrfProtection(auth.origin, requireSession(db, auditChanges(db, requireRecentAuthentication(db, api)))))
 	mux.Handle("/api/public/courses", api)
 	mux.Handle("/api/public/courses/", api)

@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import CookbookDetailRoot from "./CookbookDetailRoot.tsx";
 
@@ -80,9 +80,10 @@ it("loads public metadata and recipes only after confirmed anonymity and preserv
   expect(calls.some((url) => url.startsWith("/api/recipes?cookbook_id="))).toBe(false);
 });
 
-it("uses authenticated metadata and recipe APIs without public fallback on denial", async () => {
+it("waits for the authenticated recipe denial and does not fall back to public APIs", async () => {
   window.history.replaceState(null, "", "/cookbook?id=private-book");
   const calls: string[] = [];
+  const recipeResponse = deferred<Response>();
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     calls.push(url);
@@ -94,18 +95,28 @@ it("uses authenticated metadata and recipe APIs without public fallback on denia
       visibility: "private",
       owner_id: user.id,
     }));
-    if (url === "/api/recipes?cookbook_id=private-book&limit=24&offset=0&sort=recent")
-      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/recipes?cookbook_id=private-book&limit=24&offset=0&sort=recent") {
+      return recipeResponse.promise;
+    }
     return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
   });
   vi.stubGlobal("fetch", fetchMock);
 
   render(<CookbookDetailRoot />);
-  expect(await screen.findByRole("heading", { name: "My recipes" })).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Edit cookbook" })).toBeTruthy();
-  expect(screen.queryByText(/public recipes/)).toBeNull();
+  await waitFor(() => {
+    expect(calls).toContain("/api/recipes?cookbook_id=private-book&limit=24&offset=0&sort=recent");
+  });
   expect(calls).toContain("/api/cookbooks/private-book");
   expect(calls).toContain("/api/recipes?cookbook_id=private-book&limit=24&offset=0&sort=recent");
+
+  await act(async () => {
+    recipeResponse.resolve(jsonResponse({ error: "not_found" }, 404));
+    await recipeResponse.promise;
+  });
+  expect(await screen.findByText("This cookbook is unavailable.")).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "My recipes" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Edit cookbook" })).toBeTruthy();
+  expect(screen.queryByText(/public recipes/)).toBeNull();
   expect(calls.some((url) => url.startsWith("/api/public/cookbooks"))).toBe(false);
 });
 

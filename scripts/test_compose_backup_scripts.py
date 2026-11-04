@@ -163,6 +163,7 @@ elif command == "run":
                 or 'set_snapshot_copy_owner "/snapshot/$sidecar"' not in restore_script
                 or 'set_snapshot_copy_owner /snapshot/cookbook.db' not in restore_script
                 or 'chown -R "$snapshot_uid:$snapshot_gid" /snapshot' in restore_script): fail(92)
+        pathlib.Path(os.environ["MOCK_STAGE_SCRIPT"]).write_text(restore_script)
         snapshot_uid, snapshot_gid = rest[-2:]
         if pathlib.Path(sys.argv[0]).name == "podman":
             if snapshot_uid or snapshot_gid: fail(93)
@@ -201,6 +202,7 @@ else: fail(91)
                 "MOCK_ACTOR_FAIL": actor_fail,
                 "MOCK_ACTOR_LOG": str(self.root / "actor.log"),
                 "MOCK_STAGE_LOG": str(self.root / "stage-owner.json"),
+                "MOCK_STAGE_SCRIPT": str(self.root / "restore-helper.sh"),
                 "MOCK_STAGE_CHOWN_FAIL": stage_chown_fail,
                 "MOCK_RUNNING": running,
                 "COOKBOOK_BACKUP_DIR": str(self.backup_dir),
@@ -286,6 +288,13 @@ esac
         self.assertEqual(self._events(), ["ps", "stop", "run", "start"])
         self.assertEqual(json.loads((self.root / "stage-owner.json").read_text()),
                          {"uid": str(os.getuid()), "gid": str(os.getgid())})
+
+    def test_restore_embedded_shell_payload_parses_as_posix_sh(self):
+        result = self._run("restore-compose.sh", self.archive)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        helper = (self.root / "restore-helper.sh").read_text()
+        parsed = subprocess.run(["sh", "-n", "-c", helper], text=True, capture_output=True)
+        self.assertEqual(parsed.returncode, 0, parsed.stderr)
 
     def test_restore_stage_ownership_failure_keeps_service_stopped(self):
         result = self._run("restore-compose.sh", self.archive, stage_chown_fail="yes")

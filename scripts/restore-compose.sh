@@ -116,8 +116,12 @@ compose run -T --rm --no-deps --user 0:0 \
 	snapshot_uid=$3
 	snapshot_gid=$4
 	if [ -n "$snapshot_uid" ] || [ -n "$snapshot_gid" ]; then
-		case "$snapshot_uid" in ''|*[!0-9]*) echo "restore snapshot UID is invalid" >&2; exit 1 ;; esac
-		case "$snapshot_gid" in ''|*[!0-9]*) echo "restore snapshot GID is invalid" >&2; exit 1 ;; esac
+		if [ -z "$snapshot_uid" ] || [ -z "$snapshot_gid" ]; then
+			echo "restore snapshot UID/GID pair is incomplete" >&2
+			exit 1
+		fi
+		case "$snapshot_uid" in *[!0-9]*) echo "restore snapshot UID is invalid" >&2; exit 1 ;; esac
+		case "$snapshot_gid" in *[!0-9]*) echo "restore snapshot GID is invalid" >&2; exit 1 ;; esac
 	fi
 
 	set_snapshot_copy_owner() {

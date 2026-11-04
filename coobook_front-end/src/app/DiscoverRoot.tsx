@@ -11,8 +11,8 @@ type DiscoverType = "recipes" | "cookbooks" | "courses";
 const discoverTypes: DiscoverType[] = ["recipes", "cookbooks", "courses"];
 type PublicConfig = { courses_enabled: boolean; public_instance: boolean };
 
-function readRoute() {
-  const params = new URLSearchParams(window.location.search);
+function routeFromSearch(search: string) {
+  const params = new URLSearchParams(search);
   const candidate = params.get("type");
   return {
     type: discoverTypes.includes(candidate as DiscoverType) ? candidate as DiscoverType : "recipes" as DiscoverType,
@@ -22,7 +22,7 @@ function readRoute() {
 
 function DiscoverPage() {
   const { state, currentUser, refreshSession } = useAppSession();
-  const [route, setRoute] = useState(readRoute);
+  const [route, setRoute] = useState({ type: "recipes" as DiscoverType, query: "" });
   const [coursesEnabled, setCoursesEnabled] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -38,9 +38,10 @@ function DiscoverPage() {
   }, []);
 
   useEffect(() => {
-    const onPopState = () => setRoute(readRoute());
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
+    const syncRoute = () => setRoute(routeFromSearch(window.location.search));
+    syncRoute();
+    window.addEventListener("popstate", syncRoute);
+    return () => window.removeEventListener("popstate", syncRoute);
   }, []);
 
   function updateRoute(next: Partial<typeof route>, push = true) {

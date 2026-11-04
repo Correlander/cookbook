@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { renderToString } from "react-dom/server";
 import { afterEach, expect, it, vi } from "vitest";
 import DiscoverRoot from "./DiscoverRoot.tsx";
 
@@ -8,6 +9,22 @@ function response(value: unknown, status = 200) {
 
 afterEach(() => {
   cleanup(); vi.unstubAllGlobals(); window.history.replaceState({}, "", "/");
+});
+
+it("server-renders the static Discover shell without browser globals", () => {
+  const browserWindow = globalThis.window;
+  const fetchMock = vi.fn();
+  vi.stubGlobal("window", undefined);
+  vi.stubGlobal("fetch", fetchMock);
+  try {
+    const html = renderToString(<DiscoverRoot />);
+    expect(html).toContain("Discover");
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain("Checking your session");
+    expect(fetchMock).not.toHaveBeenCalled();
+  } finally {
+    vi.stubGlobal("window", browserWindow);
+  }
 });
 
 it("reads, writes and restores the selected type through the route query", async () => {

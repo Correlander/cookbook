@@ -63,6 +63,18 @@ func TestSignedRetentionReceiptCaptureIsOwnerScopedAndModerationCollectsBytes(t 
 	}
 	bookmarkID := referenceView.ID
 	h := apiHandler{db: db}
+	for _, save := range []struct {
+		actor, mode string
+	}{
+		{actor: "other", mode: "conditional"},
+		{actor: "admin", mode: "snapshot"},
+	} {
+		response := doBookmarkRequest(t, h, save.actor, http.MethodPost, "/api/library/bookmarks", `{"save_mode":"`+save.mode+`","target":{"remote_object_uri":"`+objectURI+`"}}`)
+		var view RecipeBookmarkView
+		if response.Code != http.StatusCreated || json.Unmarshal(response.Body.Bytes(), &view) != nil || view.SaveState != "snapshot" {
+			t.Fatalf("new %s save did not return snapshot wire state: actor=%s status=%d body=%s", save.mode, save.actor, response.Code, response.Body)
+		}
+	}
 	type captureResult struct {
 		version remoteSnapshotVersion
 		err     error
@@ -168,6 +180,41 @@ func TestSignedRetentionReceiptCaptureIsOwnerScopedAndModerationCollectsBytes(t 
 	if capture.Code != http.StatusOK || capture.Header().Get("Cache-Control") != "private, no-store" {
 		t.Fatalf("capture status=%d cache=%q body=%s", capture.Code, capture.Header().Get("Cache-Control"), capture.Body)
 	}
+	var captureView RecipeBookmarkView
+	if err := json.Unmarshal(capture.Body.Bytes(), &captureView); err != nil || captureView.SaveState != "snapshot" {
+		t.Fatalf("new capture DTO did not use snapshot wire state: state=%q err=%v body=%s", captureView.SaveState, err, capture.Body)
+	}
+	repeatedSave := doBookmarkRequest(t, h, "viewer", http.MethodPost, "/api/library/bookmarks", `{"save_mode":"conditional","target":{"remote_object_uri":"`+objectURI+`"}}`)
+	var repeatedView RecipeBookmarkView
+	if repeatedSave.Code != http.StatusOK || json.Unmarshal(repeatedSave.Body.Bytes(), &repeatedView) != nil || repeatedView.SaveState != "snapshot" {
+		t.Fatalf("repeated active save leaked persisted state: status=%d body=%s", repeatedSave.Code, repeatedSave.Body)
+	}
+	var persistedState string
+	if err := db.QueryRow(`SELECT state FROM library_remote_snapshot_pins WHERE bookmark_id=?`, bookmarkID).Scan(&persistedState); err != nil || persistedState != "active" {
+		t.Fatalf("wire projection changed persisted pin state: state=%q err=%v", persistedState, err)
+	}
+	var fallback []libraryRecipeEntryRef
+	fallbackTx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallback, err = libraryCanonicalRemoteRecipeEntries(context.Background(), fallbackTx, "viewer", "")
+	_ = fallbackTx.Rollback()
+	if err != nil {
+		t.Fatalf("canonical library fallback: %v", err)
+	}
+	var fallbackJSON []byte
+	for _, entry := range fallback {
+		if entry.Item.BookmarkID == bookmarkID {
+			fallbackJSON, err = json.Marshal(entry.Item)
+			if err != nil || !strings.Contains(string(fallbackJSON), `"save_state":"snapshot"`) {
+				t.Fatalf("canonical fallback DTO did not use snapshot wire state: %s err=%v", fallbackJSON, err)
+			}
+		}
+	}
+	if len(fallbackJSON) == 0 {
+		t.Fatal("canonical fallback omitted active snapshot")
+	}
 	var publicProjection map[string]json.RawMessage
 	if err := json.Unmarshal(capture.Body.Bytes(), &publicProjection); err != nil {
 		t.Fatal(err)
@@ -208,7 +255,8 @@ func TestSignedRetentionReceiptCaptureIsOwnerScopedAndModerationCollectsBytes(t 
 		}
 	}
 	search := doBookmarkRequest(t, h, "viewer", http.MethodGet, "/api/library/recipes?q=Retained", "")
-	if search.Code != http.StatusOK || !strings.Contains(search.Body.String(), `"snapshot_recipe"`) || !strings.Contains(search.Body.String(), `"total":1`) {
+	var projectedPage LibraryRecipePage
+	if search.Code != http.StatusOK || json.Unmarshal(search.Body.Bytes(), &projectedPage) != nil || !strings.Contains(search.Body.String(), `"snapshot_recipe"`) || !strings.Contains(search.Body.String(), `"total":1`) || len(projectedPage.Items) != 1 || projectedPage.Items[0].SaveState != "snapshot" {
 		t.Fatalf("SQL-projected private snapshot search status=%d body=%s", search.Code, search.Body)
 	}
 	updatedSource := source
@@ -287,9 +335,13 @@ func TestSignedRetentionReceiptCaptureIsOwnerScopedAndModerationCollectsBytes(t 
 	if admin.Code != http.StatusOK || !strings.Contains(admin.Body.String(), `"save_state":"removed"`) {
 		t.Fatalf("moderation removal status=%d body=%s", admin.Code, admin.Body)
 	}
+	removedSave := doBookmarkRequest(t, h, "viewer", http.MethodPost, "/api/library/bookmarks", `{"target":{"remote_object_uri":"`+objectURI+`"}}`)
+	if removedSave.Code != http.StatusOK || !strings.Contains(removedSave.Body.String(), `"save_state":"removed"`) || strings.Contains(removedSave.Body.String(), `"save_state":"snapshot"`) {
+		t.Fatalf("repeated save changed removed marker: status=%d body=%s", removedSave.Code, removedSave.Body)
+	}
 	var versions int
 	var marker, state string
-	if err := db.QueryRow(`SELECT COUNT(*) FROM library_remote_snapshot_versions`).Scan(&versions); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM library_remote_snapshot_versions WHERE version_id=?`, captureRecord.VersionID).Scan(&versions); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRow(`SELECT state,COALESCE(removed_version_id,'') FROM library_remote_snapshot_pins WHERE bookmark_id=?`, bookmarkID).Scan(&state, &marker); err != nil {
@@ -311,6 +363,9 @@ func TestSignedRetentionReceiptCaptureIsOwnerScopedAndModerationCollectsBytes(t 
 		t.Fatalf("removed remote detail fell back to cache: status=%d body=%s", detail.Code, detail.Body)
 	}
 	if _, err := db.Exec(`DELETE FROM recipe_bookmarks WHERE id=?`, bookmarkID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM recipe_bookmarks WHERE user_id IN ('other','admin') AND remote_object_uri=?`, objectURI); err != nil {
 		t.Fatal(err)
 	}
 	var pins int

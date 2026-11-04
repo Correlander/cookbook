@@ -300,7 +300,7 @@ func libraryCanonicalSnapshotEntries(ctx context.Context, queryer interface {
 			return nil, err
 		}
 		item := LibraryRecipeItem{Availability: "unavailable", TargetKind: "remote", BookmarkID: bookmarkID,
-			Relationships: []string{"saved"}, CreatedAt: createdAt, SaveState: state, VersionID: versionID,
+			Relationships: []string{"saved"}, CreatedAt: createdAt, SaveState: remoteSnapshotSaveState(state), VersionID: versionID,
 			SourceState: sourceState, ProvenanceState: provenance, ModeratedAt: moderatedAt,
 			ModerationReason: reason, ModerationOutcome: outcome}
 		if state == "active" {

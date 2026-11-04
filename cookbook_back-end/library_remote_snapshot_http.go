@@ -131,10 +131,18 @@ func remoteSnapshotBookmarkView(id, createdAt string, item remoteSnapshotVersion
 	remote := PrivateSnapshotRecipeReadView{ObjectURI: item.ObjectURI, SourceOrigin: item.SourceOrigin, SourceRecipeID: item.SourceRecipeID,
 		CreatorName: item.CreatorName, Recipe: content, Sequence: remoteSnapshotSequenceValue(item.Sequence), UpdatedAt: item.ReceivedAt}
 	return RecipeBookmarkView{ID: id, TargetKind: "remote", Target: &RecipeBookmarkTarget{RemoteObjectURI: item.ObjectURI},
-		Availability: "available", SnapshotRecipe: &remote, SaveState: state, VersionID: item.VersionID,
+		Availability: "available", SnapshotRecipe: &remote, SaveState: remoteSnapshotSaveState(state), VersionID: item.VersionID,
 		SourceState: item.SourceState, ProvenanceState: item.Provenance, PublisherRetentionClaim: item.GrantPurpose,
 		ModeratedAt: moderatedAt, ModerationReason: reason, ModerationOutcome: outcome, CreatedAt: createdAt,
 		Saved: true, SnapshotAvailable: true}
+}
+
+// remoteSnapshotSaveState translates persisted pin lifecycle into the public saved-item classification.
+func remoteSnapshotSaveState(state string) string {
+	if state == "active" {
+		return "snapshot"
+	}
+	return state
 }
 
 func blockedRemoteSnapshotBookmarkView(id, createdAt, objectURI, state, moderatedAt, reason, outcome string) RecipeBookmarkView {

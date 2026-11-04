@@ -271,6 +271,13 @@ func TestBackupActorFixture(t *testing.T) {
             if generated.returncode:
                 raise AssertionError(f"actor fixture generation failed: {(generated.stdout + generated.stderr)[-2000:]}")
             fixture_test.unlink()
+            source_db = sqlite3.connect(database)
+            try:
+                source_schema_version = source_db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
+            finally:
+                source_db.close()
+            if source_schema_version is None or source_schema_version[0] is None:
+                self.fail("generated source database has no migration version")
 
             # Add an uncheckpointed WAL-only marker; the archive deliberately omits SQLite's transient -shm.
             connection = sqlite3.connect(database)
@@ -414,7 +421,7 @@ volumes:
             with sqlite3.connect(recovered_snapshot / "cookbook.db") as restored_db:
                 restored_db.execute("PRAGMA foreign_keys=ON")
                 version = restored_db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
-                self.assertEqual(version, (8,))
+                self.assertEqual(version, source_schema_version)
                 self.assertEqual(restored_db.execute("PRAGMA integrity_check").fetchone(), ("ok",))
                 self.assertEqual(restored_db.execute("PRAGMA foreign_key_check").fetchall(), [])
                 saved_references = restored_db.execute(

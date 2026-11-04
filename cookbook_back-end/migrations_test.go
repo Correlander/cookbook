@@ -445,8 +445,8 @@ INSERT INTO sessions(id,token_hash,user_id,expires_at,created_at,user_agent) VAL
 		db.Close()
 		t.Fatalf("pre-ledger revision count=%d err=%v", beforeRevisions, err)
 	}
-	// Reconstruct the schema shape immediately before v4, as an unversioned
-	// installation cannot already contain the passkey grant migration.
+	// Reconstruct the older unversioned shape by removing schema added in later
+	// migrations, including the v9 projection table and trigger.
 	if _, err := db.Exec(`ALTER TABLE webauthn_ceremonies RENAME TO webauthn_ceremonies_v4;
 CREATE TABLE webauthn_ceremonies(id TEXT PRIMARY KEY,user_id TEXT REFERENCES users(id) ON DELETE CASCADE,purpose TEXT NOT NULL CHECK (purpose IN ('registration','login')),session_data TEXT NOT NULL,expires_at TEXT NOT NULL,created_at TEXT NOT NULL);
 INSERT INTO webauthn_ceremonies(id,user_id,purpose,session_data,expires_at,created_at) SELECT id,user_id,purpose,session_data,expires_at,created_at FROM webauthn_ceremonies_v4;
@@ -457,6 +457,11 @@ DROP TABLE passkey_enrollment_grants`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`DROP TABLE schema_migrations`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP TRIGGER federation_remote_recipe_search_invalidate_after_update;
+DROP TABLE federation_remote_recipe_search`); err != nil {
 		db.Close()
 		t.Fatal(err)
 	}

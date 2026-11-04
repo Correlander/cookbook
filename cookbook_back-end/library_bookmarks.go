@@ -140,6 +140,7 @@ func validLibraryInstanceID(value string) bool {
 }
 
 func (h apiHandler) recipeBookmarks(w http.ResponseWriter, r *http.Request, bookmarkID string) {
+	w.Header().Set("Cache-Control", "private, no-store")
 	userID := authenticatedUser(r)
 	if userID == "" {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -161,6 +162,99 @@ func (h apiHandler) recipeBookmarks(w http.ResponseWriter, r *http.Request, book
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 	}
+}
+
+func (h apiHandler) recipeBookmarkStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "private, no-store")
+	userID := authenticatedUser(r)
+	if userID == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	query := r.URL.Query()
+	localIDs, hasLocal := query["local_recipe_id"]
+	remoteURIs, hasRemote := query["remote_object_uri"]
+	if len(query) != 1 || hasLocal == hasRemote || (hasLocal && len(localIDs) != 1) || (hasRemote && len(remoteURIs) != 1) {
+		writeError(w, http.StatusBadRequest, "invalid_bookmark_target")
+		return
+	}
+	target := RecipeBookmarkTarget{}
+	if hasLocal {
+		target.LocalRecipeID = localIDs[0]
+	} else {
+		target.RemoteObjectURI = remoteURIs[0]
+	}
+	kind, validationErr := validateRecipeBookmarkTarget(target)
+	if validationErr != nil {
+		writeError(w, http.StatusBadRequest, "invalid_bookmark_target")
+		return
+	}
+
+	tx, err := h.db.BeginTx(r.Context(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	defer tx.Rollback()
+	instanceID := ""
+	if kind == "local" {
+		instanceID, err = currentLibraryInstanceID(r.Context(), tx)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		if _, readErr := readRecipeDetail(r.Context(), tx, ContentActor{AccountID: userID}, target.LocalRecipeID); errors.Is(readErr, errRecipeDetailNotFound) || errors.Is(readErr, errRecipeDetailDenied) {
+			writeError(w, http.StatusNotFound, "not_found")
+			return
+		} else if readErr != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+	} else {
+		if _, readErr := readCachedPublicRemoteRecipe(r.Context(), tx, ContentActor{AccountID: userID}, target.RemoteObjectURI); errors.Is(readErr, errRemoteRecipeNotFound) {
+			writeError(w, http.StatusNotFound, "not_found")
+			return
+		} else if errors.Is(readErr, errRemoteRecipeInvalidURI) {
+			writeError(w, http.StatusBadRequest, "invalid_bookmark_target")
+			return
+		} else if readErr != nil {
+			// Query failures are wrapped at the cache read boundary; malformed
+			// or mismatched cached records are unavailable references.
+			if !strings.HasPrefix(readErr.Error(), "read cached remote recipe:") {
+				writeError(w, http.StatusNotFound, "not_found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+	}
+
+	response := struct {
+		Saved      bool   `json:"saved"`
+		BookmarkID string `json:"bookmark_id,omitempty"`
+	}{}
+	if kind == "local" {
+		err = tx.QueryRowContext(r.Context(), `SELECT id FROM recipe_bookmarks
+			WHERE user_id=? AND target_kind='local' AND local_instance_id=? AND local_recipe_id=?`, userID, instanceID, target.LocalRecipeID).Scan(&response.BookmarkID)
+	} else {
+		err = tx.QueryRowContext(r.Context(), `SELECT id FROM recipe_bookmarks
+			WHERE user_id=? AND target_kind='remote' AND remote_object_uri=?`, userID, target.RemoteObjectURI).Scan(&response.BookmarkID)
+	}
+	if err == nil {
+		response.Saved = true
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h apiHandler) listRecipeBookmarks(w http.ResponseWriter, r *http.Request, actor ContentActor) {

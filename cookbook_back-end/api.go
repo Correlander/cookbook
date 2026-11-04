@@ -234,6 +234,8 @@ func (h apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.importData(w, r)
 	case len(parts) == 2 && parts[0] == "library" && parts[1] == "bookmarks":
 		h.recipeBookmarks(w, r, "")
+	case len(parts) == 3 && parts[0] == "library" && parts[1] == "bookmarks" && parts[2] == "status":
+		h.recipeBookmarkStatus(w, r)
 	case len(parts) == 3 && parts[0] == "library" && parts[1] == "bookmarks":
 		h.recipeBookmarks(w, r, parts[2])
 	case len(parts) == 2 && parts[0] == "library" && parts[1] == "recipes":

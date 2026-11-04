@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -36,6 +39,156 @@ func doBookmarkRequest(t *testing.T, h http.Handler, userID, method, path, body 
 	recorder := httptest.NewRecorder()
 	h.ServeHTTP(recorder, request)
 	return recorder
+}
+
+func TestRecipeBookmarkStatusUsesExactReadableTargets(t *testing.T) {
+	db := testDatabase(t)
+	insertRecipeBookmarkFixture(t, db)
+	instanceID, err := currentLibraryInstanceID(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO cookbook_memberships(cookbook_id,user_id,role,created_at) VALUES('book','other','viewer','now')`); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 30; index++ {
+		if _, err := db.Exec(`INSERT INTO recipe_bookmarks(id,user_id,target_kind,local_instance_id,local_recipe_id,created_at) VALUES(?, 'viewer','local',?,?,?)`, fmt.Sprintf("older-%02d", index), instanceID, fmt.Sprintf("missing-%02d", index), "zzzz"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	uri := testFederationOrigin + "/federation/recipes/" + testFederationID
+	if _, err := db.Exec(`INSERT INTO federation_peers(origin,enabled,created_at,updated_at) VALUES(?,1,'now','now')`, testFederationOrigin); err != nil {
+		t.Fatal(err)
+	}
+	remoteJSON := `{"title":"Cached dish","description":"","ingredients":[],"steps":[],"servings":1,"prep_time_minutes":0,"cook_time_minutes":0,"tags":[]}`
+	if _, err := db.Exec(`INSERT INTO federation_remote_recipes(object_id,source_origin,source_recipe_id,sequence,creator_name,recipe_json,deleted,updated_at) VALUES(?,?,?,?,?,?,0,?)`, uri, testFederationOrigin, testFederationID, 1, "Remote cook", remoteJSON, "2026-11-03T12:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	h := apiHandler{db: db}
+	status := func(user, selector, value string) *httptest.ResponseRecorder {
+		return doBookmarkRequest(t, h, user, http.MethodGet, "/api/library/bookmarks/status?"+selector+"="+url.QueryEscape(value), "")
+	}
+	var bookmarkCountBeforeStatus int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM recipe_bookmarks WHERE user_id='viewer'`).Scan(&bookmarkCountBeforeStatus); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []struct{ selector, value string }{{"local_recipe_id", "shared"}, {"remote_object_uri", uri}} {
+		response := status("viewer", target.selector, target.value)
+		if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "private, no-store" || response.Body.String() != "{\"saved\":false}\n" {
+			t.Fatalf("unsaved %s status=%d cache=%q body=%s", target.selector, response.Code, response.Header().Get("Cache-Control"), response.Body)
+		}
+	}
+	var bookmarkCountAfterStatus int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM recipe_bookmarks WHERE user_id='viewer'`).Scan(&bookmarkCountAfterStatus); err != nil || bookmarkCountAfterStatus != bookmarkCountBeforeStatus {
+		t.Fatalf("status reads changed bookmark count from %d to %d (err=%v)", bookmarkCountBeforeStatus, bookmarkCountAfterStatus, err)
+	}
+	for _, target := range []RecipeBookmarkTarget{{LocalRecipeID: "shared"}, {RemoteObjectURI: uri}} {
+		payload, err := json.Marshal(map[string]any{"target": target})
+		if err != nil {
+			t.Fatal(err)
+		}
+		created := doBookmarkRequest(t, h, "viewer", http.MethodPost, "/api/library/bookmarks", string(payload))
+		if created.Code != http.StatusCreated {
+			t.Fatalf("save target %+v status=%d body=%s", target, created.Code, created.Body)
+		}
+		var bookmark RecipeBookmarkView
+		if err := json.Unmarshal(created.Body.Bytes(), &bookmark); err != nil {
+			t.Fatal(err)
+		}
+		selector, value := "local_recipe_id", target.LocalRecipeID
+		if value == "" {
+			selector, value = "remote_object_uri", target.RemoteObjectURI
+		}
+		response := status("viewer", selector, value)
+		var body map[string]json.RawMessage
+		var decoded struct {
+			Saved      bool   `json:"saved"`
+			BookmarkID string `json:"bookmark_id"`
+		}
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &body) != nil || json.Unmarshal(response.Body.Bytes(), &decoded) != nil || len(body) != 2 || !decoded.Saved || decoded.BookmarkID != bookmark.ID {
+			t.Fatalf("saved %s status=%d body=%s bookmark=%q", selector, response.Code, response.Body, bookmark.ID)
+		}
+		other := status("other", selector, value)
+		if other.Code != http.StatusOK || other.Body.String() != "{\"saved\":false}\n" {
+			t.Fatalf("cross-account %s status=%d body=%s", selector, other.Code, other.Body)
+		}
+		if target.LocalRecipeID != "" {
+			page := doBookmarkRequest(t, h, "viewer", http.MethodGet, "/api/library/bookmarks?limit=24&offset=0", "")
+			var savedPage RecipeBookmarkPage
+			if page.Code != http.StatusOK || json.Unmarshal(page.Body.Bytes(), &savedPage) != nil || savedPage.Total != 31 || len(savedPage.Items) != 24 {
+				t.Fatalf("saved page status=%d body=%s", page.Code, page.Body)
+			}
+			for _, item := range savedPage.Items {
+				if item.ID == bookmark.ID {
+					t.Fatal("target bookmark unexpectedly appeared in the first 24-item page")
+				}
+			}
+		}
+	}
+	foreignNamespace := strings.Repeat("f", 32)
+	if _, err := db.Exec(`UPDATE recipe_bookmarks SET local_instance_id=? WHERE target_kind='local'`, foreignNamespace); err != nil {
+		t.Fatal(err)
+	}
+	if response := status("viewer", "local_recipe_id", "shared"); response.Code != http.StatusOK || response.Body.String() != "{\"saved\":false}\n" {
+		t.Fatalf("foreign namespace status=%d body=%s", response.Code, response.Body)
+	}
+	if response := status("viewer", "local_recipe_id", "private"); response.Code != http.StatusNotFound {
+		t.Fatalf("private local status=%d body=%s", response.Code, response.Body)
+	}
+	if _, err := db.Exec(`DELETE FROM cookbook_memberships WHERE cookbook_id='book' AND user_id='viewer'`); err != nil {
+		t.Fatal(err)
+	}
+	if response := status("viewer", "local_recipe_id", "shared"); response.Code != http.StatusNotFound {
+		t.Fatalf("revoked local status=%d body=%s", response.Code, response.Body)
+	}
+	if response := status("viewer", "local_recipe_id", "missing"); response.Code != http.StatusNotFound {
+		t.Fatalf("missing local status=%d body=%s", response.Code, response.Body)
+	}
+	if _, err := db.Exec(`UPDATE recipes SET deleted_at='deleted' WHERE id='shared';`); err != nil {
+		t.Fatal(err)
+	}
+	if response := status("owner", "local_recipe_id", "shared"); response.Code != http.StatusNotFound {
+		t.Fatalf("deleted local status=%d body=%s", response.Code, response.Body)
+	}
+	if response := status("viewer", "remote_object_uri", testFederationOrigin+"/federation/recipes/1123456789abcdef0123456789abcdef"); response.Code != http.StatusNotFound {
+		t.Fatalf("uncached remote status=%d body=%s", response.Code, response.Body)
+	}
+	if _, err := db.Exec(`UPDATE federation_remote_recipes SET source_recipe_id='1123456789abcdef0123456789abcdef' WHERE object_id=?`, uri); err != nil {
+		t.Fatal(err)
+	}
+	if response := status("viewer", "remote_object_uri", uri); response.Code != http.StatusNotFound {
+		t.Fatalf("mismatched cache status=%d body=%s", response.Code, response.Body)
+	}
+}
+
+func TestRecipeBookmarkStatusRejectsMalformedRequestsAndStorageFailures(t *testing.T) {
+	db := testDatabase(t)
+	insertRecipeBookmarkFixture(t, db)
+	h := apiHandler{db: db}
+	for _, path := range []string{
+		"/api/library/bookmarks/status",
+		"/api/library/bookmarks/status?local_recipe_id=",
+		"/api/library/bookmarks/status?local_recipe_id=shared&local_recipe_id=shared",
+		"/api/library/bookmarks/status?remote_object_uri=not-a-canonical-uri",
+		"/api/library/bookmarks/status?local_recipe_id=shared&remote_object_uri=https%3A%2F%2Fremote.example%2Ffederation%2Frecipes%2F0123456789abcdef0123456789abcdef",
+		"/api/library/bookmarks/status?local_recipe_id=shared&offset=0",
+	} {
+		if response := doBookmarkRequest(t, h, "viewer", http.MethodGet, path, ""); response.Code != http.StatusBadRequest {
+			t.Errorf("malformed path %q status=%d body=%s", path, response.Code, response.Body)
+		}
+	}
+	if response := doBookmarkRequest(t, h, "", http.MethodGet, "/api/library/bookmarks/status?local_recipe_id=shared", ""); response.Code != http.StatusUnauthorized || response.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("anonymous status=%d cache=%q body=%s", response.Code, response.Header().Get("Cache-Control"), response.Body)
+	}
+	if response := doBookmarkRequest(t, h, "viewer", http.MethodPost, "/api/library/bookmarks/status?local_recipe_id=shared", ""); response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("wrong method status=%d body=%s", response.Code, response.Body)
+	}
+	if _, err := db.Exec(`DROP TABLE recipe_bookmarks`); err != nil {
+		t.Fatal(err)
+	}
+	if response := doBookmarkRequest(t, h, "viewer", http.MethodGet, "/api/library/bookmarks/status?local_recipe_id=shared", ""); response.Code != http.StatusInternalServerError || response.Body.String() != "{\"error\":\"storage_error\"}\n" {
+		t.Fatalf("storage failure status=%d body=%s", response.Code, response.Body)
+	}
 }
 
 func TestRecipeBookmarksArePerAccountAndReauthorizeLocalReads(t *testing.T) {

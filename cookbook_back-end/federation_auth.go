@@ -424,6 +424,9 @@ func revokeFederationPeerKey(db *sql.DB, origin, keyID string) error {
 		if _, err := tx.Exec(`DELETE FROM federation_outbox WHERE peer_origin=?`, origin); err != nil {
 			return err
 		}
+		if err := closeFederationOriginForDisable(context.Background(), tx, origin); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

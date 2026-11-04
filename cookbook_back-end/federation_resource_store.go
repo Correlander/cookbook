@@ -198,8 +198,8 @@ func preserveFederationReceivedEvents(ctx context.Context, exec migrationExecuto
 	return nil
 }
 
-func remoteCatalogLogicalBytes(origin, object, recipeID, creator, body, title, description, tags string, sequence int64, deleted int) int64 {
-	return int64(len(origin) + len(object) + len(recipeID) + len(creator) + len(body) + len(title) + len(description) + len(tags) + len(fmt.Sprint(sequence)) + len(fmt.Sprint(deleted)) + 1)
+func remoteCatalogLogicalBytes(origin, object, recipeID, creator, body, title, description, tags, sourceState string, sequence int64, deleted int) int64 {
+	return int64(len(origin) + len(object) + len(recipeID) + len(creator) + len(body) + len(title) + len(description) + len(tags) + len(sourceState) + len(fmt.Sprint(sequence)) + len(fmt.Sprint(deleted)) + 1)
 }
 
 func receivedEventLogicalBytes(origin, id string, digest []byte, object string, sequence int64, received string, status int, response string) int64 {

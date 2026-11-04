@@ -211,7 +211,11 @@ func acceptFederationEvent(ctx context.Context, db *sql.DB, keyOrigin string, bo
 				}
 			}
 		}
-		nextObjectBytes := remoteCatalogLogicalBytes(keyOrigin, event.ObjectID, recipeID, creatorName, rawRecipe, title, description, tagsJSON, event.Sequence, deleted)
+		sourceState := "published"
+		if deleted == 1 {
+			sourceState = "unknown_legacy"
+		}
+		nextObjectBytes := remoteCatalogLogicalBytes(keyOrigin, event.ObjectID, recipeID, creatorName, rawRecipe, title, description, tagsJSON, sourceState, event.Sequence, deleted)
 		objectDelta := nextObjectBytes
 		objectRows := int64(1)
 		if catalogExists {
@@ -226,10 +230,13 @@ func acceptFederationEvent(ctx context.Context, db *sql.DB, keyOrigin string, bo
 			return err
 		}
 		if catalogExists {
-			if _, err := tx.ExecContext(ctx, `UPDATE federation_remote_catalog SET source_recipe_id=?,high_water_sequence=?,deleted=?,state_known=1,logical_bytes=? WHERE source_origin=? AND object_id=?`, recipeID, event.Sequence, deleted, nextObjectBytes, keyOrigin, event.ObjectID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE federation_remote_catalog SET source_recipe_id=?,high_water_sequence=?,deleted=?,state_known=1,source_state=?,logical_bytes=? WHERE source_origin=? AND object_id=?`, recipeID, event.Sequence, deleted, sourceState, nextObjectBytes, keyOrigin, event.ObjectID); err != nil {
 				return err
 			}
-		} else if _, err := tx.ExecContext(ctx, `INSERT INTO federation_remote_catalog(source_origin,object_id,source_recipe_id,high_water_sequence,deleted,state_known,logical_bytes) VALUES(?,?,?,?,?,1,?)`, keyOrigin, event.ObjectID, recipeID, event.Sequence, deleted, nextObjectBytes); err != nil {
+		} else if _, err := tx.ExecContext(ctx, `INSERT INTO federation_remote_catalog(source_origin,object_id,source_recipe_id,high_water_sequence,deleted,state_known,source_state,logical_bytes) VALUES(?,?,?,?,?,1,?,?)`, keyOrigin, event.ObjectID, recipeID, event.Sequence, deleted, sourceState, nextObjectBytes); err != nil {
+			return err
+		}
+		if err := closeFederationRetentionReceipt(ctx, tx, keyOrigin, event.ObjectID); err != nil {
 			return err
 		}
 		if deleted == 1 {

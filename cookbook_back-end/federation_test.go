@@ -468,6 +468,10 @@ func TestFederationPeerAdministrationAndKeyRotation(t *testing.T) {
 	if response := postJSON("/api/admin/federation/peers", `{"origin":"https://peer.example.org","enabled":true}`); response.Code != http.StatusOK {
 		t.Fatalf("peer enable status=%d body=%s", response.Code, response.Body)
 	}
+	objectID := "https://peer.example.org/federation/recipes/11111111111111111111111111111111"
+	if _, err := db.Exec(`INSERT INTO federation_remote_catalog(source_origin,object_id,source_recipe_id,high_water_sequence,deleted,state_known,logical_bytes,source_state) VALUES(?,?,?,9,0,1,100,'published')`, "https://peer.example.org", objectID, "11111111111111111111111111111111"); err != nil {
+		t.Fatal(err)
+	}
 	get := requestForUser(http.MethodGet, "/api/admin/federation/peers", "admin")
 	response := httptest.NewRecorder()
 	api.ServeHTTP(response, get)
@@ -485,6 +489,15 @@ func TestFederationPeerAdministrationAndKeyRotation(t *testing.T) {
 	api.ServeHTTP(response, revoke)
 	if response.Code != http.StatusOK || federationPeerEnabled(db, "https://peer.example.org") {
 		t.Fatalf("last peer key revocation status=%d body=%s", response.Code, response.Body)
+	}
+	var sourceState string
+	var sequence int64
+	var remaining int
+	if err := db.QueryRow(`SELECT source_state,high_water_sequence FROM federation_remote_catalog WHERE source_origin=? AND object_id=?`, "https://peer.example.org", objectID).Scan(&sourceState, &sequence); err != nil || sourceState != "disconnected" || sequence != 9 {
+		t.Fatalf("last-key revocation catalog state=%q sequence=%d err=%v", sourceState, sequence, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_retention_receipts WHERE source_origin=?`, "https://peer.example.org").Scan(&remaining); err != nil || remaining != 0 {
+		t.Fatalf("last-key revocation receipt rows=%d err=%v", remaining, err)
 	}
 }
 
@@ -534,8 +547,17 @@ func TestDisabledPeerDropsQueueAndResynchronizesTombstonesAndSnapshots(t *testin
 	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_outbox WHERE peer_origin=?`, peerOrigin).Scan(&queued); err != nil || queued != 2 {
 		t.Fatalf("initial snapshots=%d err=%v", queued, err)
 	}
+	remoteObject := peerOrigin + "/federation/recipes/33333333333333333333333333333333"
+	if _, err := db.Exec(`INSERT INTO federation_remote_catalog(source_origin,object_id,source_recipe_id,high_water_sequence,deleted,state_known,logical_bytes,source_state) VALUES(?,?,?,12,0,1,100,'published')`, peerOrigin, remoteObject, "33333333333333333333333333333333"); err != nil {
+		t.Fatal(err)
+	}
 	if response := call(http.MethodDelete, `{"origin":"`+peerOrigin+`"}`); response.Code != http.StatusOK {
 		t.Fatalf("disable peer status=%d body=%s", response.Code, response.Body)
+	}
+	var remoteState string
+	var remoteSequence int64
+	if err := db.QueryRow(`SELECT source_state,high_water_sequence FROM federation_remote_catalog WHERE source_origin=? AND object_id=?`, peerOrigin, remoteObject).Scan(&remoteState, &remoteSequence); err != nil || remoteState != "disconnected" || remoteSequence != 12 {
+		t.Fatalf("disabled peer catalog state=%q sequence=%d err=%v", remoteState, remoteSequence, err)
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_outbox WHERE peer_origin=?`, peerOrigin).Scan(&queued); err != nil || queued != 0 {
 		t.Fatalf("disabled peer queue=%d err=%v", queued, err)

@@ -136,7 +136,7 @@ func TestFederationReceiptOnlyHighWaterRequiresSnapshotToRehydrate(t *testing.T)
 		t.Fatal(err)
 	}
 	object := testFederationOrigin + "/federation/recipes/" + testFederationID
-	bytes := remoteCatalogLogicalBytes(testFederationOrigin, object, testFederationID, "", "", "", "", "[]", 7, 0)
+	bytes := remoteCatalogLogicalBytes(testFederationOrigin, object, testFederationID, "", "", "", "", "[]", "unknown_legacy", 7, 0)
 	if _, err := db.Exec(`INSERT INTO federation_remote_catalog(source_origin,object_id,source_recipe_id,high_water_sequence,deleted,state_known,logical_bytes) VALUES(?,?,?,?,0,0,?)`, testFederationOrigin, object, testFederationID, 7, bytes); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestFederationResourceUTF8AccountingAndReplacementDeltas(t *testing.T) {
 	if err := db.QueryRow(`SELECT title,description,tags_json FROM federation_remote_recipe_search WHERE object_id=?`, object).Scan(&title, &description, &tags); err != nil {
 		t.Fatal(err)
 	}
-	wantObjectBytes := remoteCatalogLogicalBytes(testFederationOrigin, object, recipeID, creator, raw, title, description, tags, sequence, deleted)
+	wantObjectBytes := remoteCatalogLogicalBytes(testFederationOrigin, object, recipeID, creator, raw, title, description, tags, "published", sequence, deleted)
 	var objectBytes, receiptBytes int64
 	if err := db.QueryRow(`SELECT logical_bytes FROM federation_remote_catalog WHERE source_origin=? AND object_id=?`, testFederationOrigin, object).Scan(&objectBytes); err != nil {
 		t.Fatal(err)

@@ -302,6 +302,11 @@ func (h apiHandler) federationPeers(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "storage_error")
 			return
 		}
+		if err := closeFederationOriginForDisable(r.Context(), tx, origin); err != nil {
+			_ = tx.Rollback()
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
 		if err := tx.Commit(); err != nil {
 			writeError(w, http.StatusInternalServerError, "storage_error")
 			return

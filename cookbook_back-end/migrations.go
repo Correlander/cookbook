@@ -89,6 +89,11 @@ func registeredSchemaMigrations() []schemaMigration {
 		name:     "federation-resource-limits",
 		checksum: migrationChecksum("federation-resource-limits", federationResourceLimitsDDL+"\x00"+federationReceivedEventsV11DDL+"\x00"+federationNonceResourceSchemaDDL),
 		apply:    applyFederationResourceLimitsMigration,
+	}, {
+		version:  12,
+		name:     "federation-retention-receipts",
+		checksum: migrationChecksum("federation-retention-receipts", federationRetentionReceiptsDDL),
+		apply:    applyFederationRetentionReceiptsMigration,
 	}}
 }
 

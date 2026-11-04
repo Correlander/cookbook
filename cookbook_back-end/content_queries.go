@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ContentActor is the authenticated local principal for a content query.
@@ -104,6 +105,121 @@ func readRecipeDetail(ctx context.Context, queryer contentQueryer, actor Content
 	}
 	item.CreatorAttributions = attributions[recipeID]
 	return projectRecipeForActor(item, actor.AccountID), nil
+}
+
+// readRecipeDetails loads a bounded page of local recipes with the same ACL and
+// actor projection as readRecipeDetail, using set queries for shared context.
+func readRecipeDetails(ctx context.Context, queryer contentQueryer, actor ContentActor, recipeIDs []string) (map[string]recipe, map[string][]LibraryRecipeCookbookContext, error) {
+	result := make(map[string]recipe, len(recipeIDs))
+	cookbookContexts := make(map[string][]LibraryRecipeCookbookContext, len(recipeIDs))
+	if len(recipeIDs) == 0 {
+		return result, cookbookContexts, nil
+	}
+	placeholders := make([]string, 0, len(recipeIDs))
+	args := make([]any, 0, len(recipeIDs)+2)
+	for _, id := range recipeIDs {
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+	args = append(args, actor.AccountID, actor.AccountID)
+	query := `SELECT r.id,r.owner_id,r.creator_name,r.source_recipe_id,r.title,r.description,r.ingredients_json,r.steps_json,r.servings,r.prep_time_minutes,r.cook_time_minutes,r.tags_json,r.visibility,r.edit_policy,r.version,r.created_at,r.updated_at,r.image_path
+		FROM recipes r JOIN instance_settings s ON s.id=1
+		WHERE r.id IN (` + strings.Join(placeholders, ",") + `) AND r.deleted_at IS NULL AND ` + recipeActorReadPredicate
+	rows, err := queryer.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read recipe library page: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item recipe
+		var ingredients, steps, tags, imagePath string
+		if err := rows.Scan(&item.ID, &item.OwnerID, &item.CreatorName, &item.SourceRecipeID, &item.Title, &item.Description, &ingredients, &steps, &item.Servings, &item.PrepTime, &item.CookTime, &tags, &item.Visibility, &item.EditPolicy, &item.Version, &item.CreatedAt, &item.UpdatedAt, &imagePath); err != nil {
+			return nil, nil, fmt.Errorf("scan recipe library page: %w", err)
+		}
+		if err := json.Unmarshal([]byte(ingredients), &item.Ingredients); err != nil {
+			return nil, nil, fmt.Errorf("decode recipe ingredients: %w", err)
+		}
+		if err := json.Unmarshal([]byte(steps), &item.Steps); err != nil {
+			return nil, nil, fmt.Errorf("decode recipe steps: %w", err)
+		}
+		if err := json.Unmarshal([]byte(tags), &item.Tags); err != nil {
+			return nil, nil, fmt.Errorf("decode recipe tags: %w", err)
+		}
+		if imagePath != "" {
+			item.Image = "/api/recipes/" + item.ID + "/image"
+		}
+		result[item.ID] = item
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("iterate recipe library page: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, nil, fmt.Errorf("close recipe library page: %w", err)
+	}
+	roles, err := recipeMemberRolesForActor(ctx, queryer, actor.AccountID, recipeIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	cookbookContexts, err = readRecipeCookbookContextsForActor(ctx, queryer, actor.AccountID, recipeIDs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read recipe library cookbooks: %w", err)
+	}
+	attributions, err := readCreatorAttributions(ctx, queryer, actor.AccountID, "recipe", recipeIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	for id, item := range result {
+		memberRole := roles[id]
+		if !hasLocalRecipeRead(actor.AccountID, item.OwnerID, memberRole) {
+			item.SourceRecipeID = ""
+		}
+		item.CookbookIDs = make([]string, 0, len(cookbookContexts[id]))
+		for _, context := range cookbookContexts[id] {
+			item.CookbookIDs = append(item.CookbookIDs, context.ID)
+		}
+		item.CreatorAttributions = attributions[id]
+		item.CanEdit = canEditRecipe(actor.AccountID, access{ownerID: item.OwnerID, memberRole: memberRole}, item.EditPolicy)
+		item.CanDelete = actor.AccountID != "" && actor.AccountID == item.OwnerID
+		item.CanManageSharing = canManageRecipeSharing(actor.AccountID, item.OwnerID)
+		result[id] = projectRecipeForActor(item, actor.AccountID)
+	}
+	for id := range cookbookContexts {
+		if _, readable := result[id]; !readable {
+			delete(cookbookContexts, id)
+		}
+	}
+	return result, cookbookContexts, nil
+}
+
+func readRecipeCookbookContextsForActor(ctx context.Context, queryer contentQueryer, actorID string, recipeIDs []string) (map[string][]LibraryRecipeCookbookContext, error) {
+	result := make(map[string][]LibraryRecipeCookbookContext, len(recipeIDs))
+	if len(recipeIDs) == 0 {
+		return result, nil
+	}
+	placeholders := make([]string, 0, len(recipeIDs))
+	args := make([]any, 0, len(recipeIDs)+3)
+	args = append(args, actorID)
+	for _, id := range recipeIDs {
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+	args = append(args, actorID, actorID)
+	rows, err := queryer.QueryContext(ctx, `SELECT cr.recipe_id,cr.cookbook_id,COALESCE(m.role,'') FROM cookbook_recipes cr JOIN cookbooks c ON c.id=cr.cookbook_id JOIN instance_settings s ON s.id=1 LEFT JOIN cookbook_memberships m ON m.cookbook_id=c.id AND m.user_id=? WHERE cr.recipe_id IN (`+strings.Join(placeholders, ",")+") AND "+cookbookActorReadPredicate+" ORDER BY cr.recipe_id,cr.cookbook_id", args...)
+	if err != nil {
+		return nil, fmt.Errorf("read visible recipe cookbooks: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var recipeID, cookbookID, roleValue string
+		if err := rows.Scan(&recipeID, &cookbookID, &roleValue); err != nil {
+			return nil, fmt.Errorf("scan visible recipe cookbook: %w", err)
+		}
+		result[recipeID] = append(result[recipeID], LibraryRecipeCookbookContext{ID: cookbookID, MembershipRole: roleValue})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate visible recipe cookbooks: %w", err)
+	}
+	return result, nil
 }
 
 // projectRecipeForActor retains the internal owner account ID only for its

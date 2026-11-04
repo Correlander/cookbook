@@ -107,3 +107,26 @@ func TestParseFederationRecipeObjectURIRequiresCanonicalExactObject(t *testing.T
 		}
 	}
 }
+
+func TestReadCachedPublicRemoteRecipesValidatesBoundedBatch(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('viewer','viewer@example.test','Viewer','now');
+		INSERT INTO federation_peers(origin,enabled,created_at,updated_at) VALUES(?,1,'now','now')`, testFederationOrigin); err != nil {
+		t.Fatal(err)
+	}
+	uri := testFederationOrigin + "/federation/recipes/" + testFederationID
+	body := `{"title":"Batch dish","description":"","ingredients":[],"steps":[],"servings":1,"prep_time_minutes":0,"cook_time_minutes":0,"tags":[]}`
+	if _, err := db.Exec(`INSERT INTO federation_remote_recipes(object_id,source_origin,source_recipe_id,sequence,creator_name,recipe_json,deleted,updated_at) VALUES(?,?,?,?,?,?,0,?)`, uri, testFederationOrigin, testFederationID, 1, "Creator", body, "2026-11-03T12:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readCachedPublicRemoteRecipes(context.Background(), db, ContentActor{AccountID: "viewer"}, []string{uri, uri, "https://invalid.example/?fetch=true"})
+	if err != nil || len(got) != 1 || got[uri].Recipe.Title != "Batch dish" {
+		t.Fatalf("validated batch = %+v err=%v", got, err)
+	}
+	if _, err := db.Exec(`UPDATE federation_remote_recipes SET source_recipe_id=? WHERE object_id=?`, "1123456789abcdef0123456789abcdef", uri); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readCachedPublicRemoteRecipes(context.Background(), db, ContentActor{AccountID: "viewer"}, []string{uri}); err == nil {
+		t.Fatal("mismatched cache source binding accepted")
+	}
+}

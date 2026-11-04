@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -170,5 +171,39 @@ func TestRecipeDetailGETAndReadAfterWritePreserveStorageErrors(t *testing.T) {
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM recipes WHERE owner_id='owner' AND title='Committed dish'`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("rolled-back write count=%d err=%v", count, err)
+	}
+}
+
+func TestReadRecipeDetailsBatchesCanonicalACLAndVisibleAssociations(t *testing.T) {
+	db := testDatabase(t)
+	insertRecipeQueryFixture(t, db)
+	if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1 WHERE id=1;
+		INSERT INTO cookbooks(id,owner_id,title,visibility,created_at,updated_at) VALUES('visible-book','owner','Visible','public','now','now'),('hidden-book','admin','Hidden','private','now','now');
+		INSERT INTO cookbook_recipes(cookbook_id,recipe_id,added_by,created_at) VALUES('visible-book','private-recipe','owner','now'),('hidden-book','private-recipe','admin','now');
+		INSERT INTO cookbook_memberships(cookbook_id,user_id,role,created_at) VALUES('visible-book','viewer','editor','now');`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	got, contexts, err := readRecipeDetails(context.Background(), tx, ContentActor{AccountID: "viewer"}, []string{"private-recipe", "missing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, ok := got["private-recipe"]
+	if len(got) != 1 || !ok || item.OwnerID != "" || !item.CanEdit || item.CanDelete || item.CanManageSharing || item.ID != "private-recipe" || len(item.CookbookIDs) != 2 || item.CookbookIDs[0] != "book" || item.CookbookIDs[1] != "visible-book" {
+		t.Fatalf("member canonical projection = %+v", got)
+	}
+	if _, ok := got["missing"]; ok {
+		t.Fatal("missing resource returned")
+	}
+	if len(contexts["private-recipe"]) != 2 || contexts["private-recipe"][0].ID != "book" || contexts["private-recipe"][0].MembershipRole != "viewer" || contexts["private-recipe"][1].ID != "visible-book" || contexts["private-recipe"][1].MembershipRole != "editor" || strings.Contains(fmt.Sprint(contexts["private-recipe"]), "hidden-book") {
+		t.Fatalf("readable cookbook role context = %+v", contexts["private-recipe"])
+	}
+	admin, adminContexts, err := readRecipeDetails(context.Background(), tx, ContentActor{AccountID: "admin"}, []string{"private-recipe"})
+	if err != nil || len(admin) != 0 || len(adminContexts) != 0 {
+		t.Fatalf("admin ACL bypass: %+v err=%v", admin, err)
 	}
 }

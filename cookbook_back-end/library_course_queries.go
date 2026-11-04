@@ -77,6 +77,7 @@ func (h apiHandler) libraryCourses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page := LibraryCoursePage{Items: []LibraryCourseItem{}, Total: total, Limit: limit, Offset: offset}
+	availableIDs := []string{}
 	for rows.Next() {
 		var item LibraryCourseItem
 		var id, ownerID, ownerName, title, description, visibility, createdAt, updatedAt, savedAt, sortAt string
@@ -91,6 +92,7 @@ func (h apiHandler) libraryCourses(w http.ResponseWriter, r *http.Request) {
 			item.Relationships = []string{"saved"}
 			item.CreatedAt = savedAt
 		} else {
+			availableIDs = append(availableIDs, id)
 			item.Availability = "available"
 			item.Relationships = []string{}
 			if owned != 0 {
@@ -114,6 +116,26 @@ func (h apiHandler) libraryCourses(w http.ResponseWriter, r *http.Request) {
 	if err := rows.Close(); err != nil {
 		writeError(w, 500, "storage_error")
 		return
+	}
+	readableCourses, err := readCourseDetails(r.Context(), tx, uid, availableIDs)
+	if err != nil {
+		writeError(w, 500, "storage_error")
+		return
+	}
+	for i := range page.Items {
+		if page.Items[i].Availability != "available" {
+			continue
+		}
+		id := page.Items[i].Course.ID
+		item, ok := readableCourses[id]
+		if !ok {
+			writeError(w, 500, "storage_error")
+			return
+		}
+		if item.OwnerID != uid {
+			item.OwnerID = ""
+		}
+		page.Items[i].Course = &item
 	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, 500, "storage_error")

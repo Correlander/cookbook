@@ -186,8 +186,8 @@ func TestCourseReadDistinguishesMissingAndStorageFailure(t *testing.T) {
 		t.Fatalf("inaccessible course status=%d body=%s, want 404 not_found", inaccessible.Code, inaccessible.Body)
 	}
 
-	// The course writes remain valid, but the joined owner projection fails on
-	// its post-write read, reproducing a committed write reported as not found.
+	// The owner projection failure occurs after the course insert begins. Course
+	// creation must roll back instead of committing data without its response.
 	if _, err := db.Exec(`ALTER TABLE users DROP COLUMN display_name`); err != nil {
 		t.Fatal(err)
 	}
@@ -197,8 +197,8 @@ func TestCourseReadDistinguishesMissingAndStorageFailure(t *testing.T) {
 		t.Fatalf("course create post-write read status=%d body=%s, want 500 storage_error", created.Code, created.Body)
 	}
 	var createdCount int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM courses WHERE title='Committed course' AND owner_id='owner'`).Scan(&createdCount); err != nil || createdCount != 1 {
-		t.Fatalf("course create did not commit before read failure: count=%d err=%v", createdCount, err)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM courses WHERE title='Committed course' AND owner_id='owner'`).Scan(&createdCount); err != nil || createdCount != 0 {
+		t.Fatalf("course create did not roll back after read failure: count=%d err=%v", createdCount, err)
 	}
 
 	updated := callAPI(handler, http.MethodPatch, "/api/courses/private-course", map[string]string{"title": "Committed update"}, ownerCookie)

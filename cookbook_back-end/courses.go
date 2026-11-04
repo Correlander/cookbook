@@ -9,15 +9,17 @@ import (
 )
 
 type course struct {
-	ID          string `json:"id"`
-	OwnerID     string `json:"owner_id,omitempty"`
-	OwnerName   string `json:"owner_name"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Visibility  string `json:"visibility"`
-	LessonCount int    `json:"lesson_count"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	ID                  string                   `json:"id"`
+	OwnerID             string                   `json:"owner_id,omitempty"`
+	OwnerName           string                   `json:"owner_name"`
+	Title               string                   `json:"title"`
+	Description         string                   `json:"description"`
+	CreatorName         string                   `json:"creator_name"`
+	CreatorAttributions []creatorAttributionRead `json:"creator_attributions,omitempty"`
+	Visibility          string                   `json:"visibility"`
+	LessonCount         int                      `json:"lesson_count"`
+	CreatedAt           string                   `json:"created_at"`
+	UpdatedAt           string                   `json:"updated_at"`
 }
 
 type courseLesson struct {
@@ -84,28 +86,55 @@ func (h apiHandler) courseCollection(w http.ResponseWriter, r *http.Request) {
 		h.listCourses(w, r, authenticatedUser(r))
 	case http.MethodPost:
 		var input struct {
-			Title       string `json:"title"`
-			Description string `json:"description"`
-			Visibility  string `json:"visibility"`
+			Title              string                   `json:"title"`
+			Description        string                   `json:"description"`
+			Visibility         string                   `json:"visibility"`
+			CreatorAttribution *creatorAttributionInput `json:"creator_attribution,omitempty"`
 		}
 		if !decodeJSON(w, r, &input) {
 			return
 		}
 		input.Title = strings.TrimSpace(input.Title)
-		if !validCourseFields(input.Title, input.Description, input.Visibility) || (input.Visibility == "public" && !h.instancePublic()) {
+		if !validCourseFields(input.Title, input.Description, input.Visibility) || (input.Visibility == "public" && !h.instancePublic()) || validateCreatorAttributionInput(input.CreatorAttribution) != nil {
 			writeError(w, http.StatusBadRequest, "invalid_course")
 			return
 		}
 		uid := authenticatedUser(r)
 		id, now := newID(), timestamp()
-		if _, err := h.db.Exec(`INSERT INTO courses(id,owner_id,title,description,visibility,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, id, uid, input.Title, strings.TrimSpace(input.Description), input.Visibility, now, now); err != nil {
+		tx, err := h.db.BeginTx(r.Context(), nil)
+		if err != nil {
 			writeError(w, http.StatusInternalServerError, "storage_error")
 			return
 		}
-		item, ok := h.readCourseRecord(w, requestForUser(http.MethodGet, "/api/courses/"+id, uid), id)
-		if ok {
-			writeJSON(w, http.StatusCreated, item)
+		defer tx.Rollback()
+		creatorName := ""
+		if input.CreatorAttribution != nil && input.CreatorAttribution.Kind == "name_claim" {
+			creatorName = input.CreatorAttribution.Name
 		}
+		if _, err := tx.ExecContext(r.Context(), `INSERT INTO courses(id,owner_id,title,description,creator_name,visibility,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, id, uid, input.Title, strings.TrimSpace(input.Description), creatorName, input.Visibility, now, now); err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		if input.CreatorAttribution != nil && input.CreatorAttribution.Kind == "local_profile" {
+			profile, err := ensureCreatorProfile(r.Context(), tx, uid)
+			if err == nil {
+				err = insertLocalAttribution(r.Context(), tx, "course", id, profile.ID, "creator", "self_asserted_at_creation")
+			}
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "storage_error")
+				return
+			}
+		}
+		item, err := readCourseDetail(r.Context(), tx, uid, id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		writeJSON(w, http.StatusCreated, item)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 	}
@@ -117,20 +146,47 @@ func (h apiHandler) listCourses(w http.ResponseWriter, r *http.Request, uid stri
 		writeError(w, http.StatusBadRequest, "invalid_pagination")
 		return
 	}
-	rows, err := h.db.Query(`SELECT c.id,c.owner_id,u.display_name,c.title,c.description,c.visibility,COUNT(l.id),c.created_at,c.updated_at
-		FROM courses c JOIN users u ON u.id=c.owner_id JOIN instance_settings s ON s.id=1
-		LEFT JOIN course_lessons l ON l.course_id=c.id
-		WHERE c.owner_id=? OR (s.public_instance=1 AND c.visibility='public')
-		GROUP BY c.id ORDER BY c.updated_at DESC,c.id LIMIT ? OFFSET ?`, uid, limit, offset)
+	tx, err := h.db.BeginTx(r.Context(), &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
-	defer rows.Close()
-	items := []course{}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(r.Context(), `SELECT c.id FROM courses c JOIN instance_settings s ON s.id=1
+		WHERE c.owner_id=? OR (s.public_instance=1 AND c.visibility='public')
+		ORDER BY c.updated_at DESC,c.id LIMIT ? OFFSET ?`, uid, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	ids := []string{}
 	for rows.Next() {
-		var item course
-		if err := rows.Scan(&item.ID, &item.OwnerID, &item.OwnerName, &item.Title, &item.Description, &item.Visibility, &item.LessonCount, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	if err := rows.Close(); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	readable, err := readCourseDetails(r.Context(), tx, uid, ids)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	items := make([]course, 0, len(ids))
+	for _, id := range ids {
+		item, ok := readable[id]
+		if !ok {
 			writeError(w, http.StatusInternalServerError, "storage_error")
 			return
 		}
@@ -139,7 +195,7 @@ func (h apiHandler) listCourses(w http.ResponseWriter, r *http.Request, uid stri
 		}
 		items = append(items, item)
 	}
-	if err := rows.Err(); err != nil {
+	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
@@ -211,11 +267,14 @@ func (h apiHandler) readCourse(w http.ResponseWriter, r *http.Request, id string
 }
 
 func (h apiHandler) readCourseRecord(w http.ResponseWriter, r *http.Request, id string) (course, bool) {
-	var item course
-	var public int
-	err := h.db.QueryRow(`SELECT c.id,c.owner_id,u.display_name,c.title,c.description,c.visibility,COUNT(l.id),c.created_at,c.updated_at,s.public_instance
-		FROM courses c JOIN users u ON u.id=c.owner_id JOIN instance_settings s ON s.id=1
-		LEFT JOIN course_lessons l ON l.course_id=c.id WHERE c.id=? GROUP BY c.id`, id).Scan(&item.ID, &item.OwnerID, &item.OwnerName, &item.Title, &item.Description, &item.Visibility, &item.LessonCount, &item.CreatedAt, &item.UpdatedAt, &public)
+	tx, err := h.db.BeginTx(r.Context(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return course{}, false
+	}
+	defer tx.Rollback()
+	actorID := authenticatedUser(r)
+	item, err := readCourseDetail(r.Context(), tx, actorID, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "not_found")
 		return course{}, false
@@ -224,12 +283,12 @@ func (h apiHandler) readCourseRecord(w http.ResponseWriter, r *http.Request, id 
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return course{}, false
 	}
-	if !canReadResource(authenticatedUser(r), access{instancePublic: public == 1, visibility: visibility(item.Visibility), ownerID: item.OwnerID}) {
-		writeError(w, http.StatusNotFound, "not_found")
-		return course{}, false
-	}
-	if authenticatedUser(r) != item.OwnerID {
+	if actorID != item.OwnerID {
 		item.OwnerID = ""
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return course{}, false
 	}
 	return item, true
 }

@@ -24,7 +24,7 @@ type creatorAttributionRead struct {
 
 func readCreatorAttributions(ctx context.Context, queryer contentQueryer, actorID, targetKind string, targetIDs []string) (map[string][]creatorAttributionRead, error) {
 	result := make(map[string][]creatorAttributionRead, len(targetIDs))
-	if actorID == "" || len(targetIDs) == 0 {
+	if (actorID == "" && targetKind != "course") || len(targetIDs) == 0 {
 		return result, nil
 	}
 
@@ -38,6 +38,10 @@ func readCreatorAttributions(ctx context.Context, queryer contentQueryer, actorI
 		targetColumn = "a.cookbook_id"
 		resourceJoin = "JOIN cookbooks c ON c.id=a.cookbook_id JOIN instance_settings s ON s.id=1"
 		resourceACL = cookbookActorReadPredicate
+	case "course":
+		targetColumn = "a.course_id"
+		resourceJoin = "JOIN courses c ON c.id=a.course_id JOIN instance_settings s ON s.id=1"
+		resourceACL = `(c.owner_id=? OR (s.public_instance=1 AND c.visibility='public'))`
 	default:
 		return nil, errors.New("invalid creator attribution target kind")
 	}

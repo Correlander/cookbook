@@ -117,26 +117,31 @@ func validateCreatorAttributionInput(input *creatorAttributionInput) error {
 }
 
 func insertLocalAttribution(ctx context.Context, tx *sql.Tx, targetKind, targetID, creatorID, roleValue, provenance string) error {
-	if targetKind != "recipe" && targetKind != "cookbook" {
+	if targetKind != "recipe" && targetKind != "cookbook" && targetKind != "course" {
 		return errors.New("invalid attribution target")
 	}
-	var recipeID, cookbookID any
+	var recipeID, cookbookID, courseID any
 	if targetKind == "recipe" {
 		recipeID = targetID
-	} else {
+	} else if targetKind == "cookbook" {
 		cookbookID = targetID
+	} else {
+		courseID = targetID
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO content_attributions(id,recipe_id,cookbook_id,subject_kind,creator_id,role,provenance,created_at)
-		VALUES(?,?,?,'local',?,?,?,?)`, newID(), recipeID, cookbookID, creatorID, roleValue, provenance, timestamp())
+	_, err := tx.ExecContext(ctx, `INSERT INTO content_attributions(id,recipe_id,cookbook_id,course_id,subject_kind,creator_id,role,provenance,created_at)
+		VALUES(?,?,?,?,'local',?,?,?,?)`, newID(), recipeID, cookbookID, courseID, creatorID, roleValue, provenance, timestamp())
 	return err
 }
 
 func insertExternalAttribution(ctx context.Context, tx *sql.Tx, targetKind, targetID string, item portableAttribution) error {
 	var recipeID, cookbookID any
+	var courseID any
 	if targetKind == "recipe" {
 		recipeID = targetID
 	} else if targetKind == "cookbook" {
 		cookbookID = targetID
+	} else if targetKind == "course" {
+		courseID = targetID
 	} else {
 		return errors.New("invalid attribution target")
 	}
@@ -144,7 +149,7 @@ func insertExternalAttribution(ctx context.Context, tx *sql.Tx, targetKind, targ
 	if item.NameClaim != "" {
 		name = item.NameClaim
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO content_attributions(id,recipe_id,cookbook_id,subject_kind,claim_source_instance_id,claim_creator_id,claim_name,role,provenance,created_at)
-		VALUES(?,?,?,'external_claim',?,?,?,?,?,?)`, newID(), recipeID, cookbookID, item.SourceInstanceID, item.CreatorID, name, item.Role, item.Provenance, timestamp())
+	_, err := tx.ExecContext(ctx, `INSERT INTO content_attributions(id,recipe_id,cookbook_id,course_id,subject_kind,claim_source_instance_id,claim_creator_id,claim_name,role,provenance,created_at)
+		VALUES(?,?,?,?,'external_claim',?,?,?,?,?,?)`, newID(), recipeID, cookbookID, courseID, item.SourceInstanceID, item.CreatorID, name, item.Role, item.Provenance, timestamp())
 	return err
 }

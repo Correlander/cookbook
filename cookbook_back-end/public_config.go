@@ -17,10 +17,11 @@ type publicAuthMethods struct {
 }
 
 type publicConfigResponse struct {
-	AuthMethods        publicAuthMethods `json:"auth_methods"`
-	RegistrationPolicy string            `json:"registration_policy"`
-	PublicInstance     bool              `json:"public_instance"`
-	CoursesEnabled     bool              `json:"courses_enabled"`
+	AuthMethods              publicAuthMethods `json:"auth_methods"`
+	RegistrationPolicy       string            `json:"registration_policy"`
+	PublicInstance           bool              `json:"public_instance"`
+	CoursesEnabled           bool              `json:"courses_enabled"`
+	CourseCreatorAttribution bool              `json:"course_creator_attribution,omitempty"`
 }
 
 func publicConfigFor(db *sql.DB, auth authHandler) http.Handler {
@@ -50,5 +51,6 @@ func (h publicConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	response.PublicInstance = public == 1
 	response.CoursesEnabled = courses == 1
+	response.CourseCreatorAttribution = true
 	writeJSON(w, http.StatusOK, response)
 }

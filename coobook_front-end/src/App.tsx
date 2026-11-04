@@ -259,7 +259,6 @@ function HomeApp({ pathname }: { pathname: string }) {
             sessionState.status === "authenticated" ||
             sessionState.status === "anonymous"
           }
-          pending={sessionState.status === "loading"}
         >
           {sessionState.status === "authenticated" && (
             <RecipeTrash onRestored={(recipe) => feed.restoreRecipe(recipe)} />

@@ -251,7 +251,7 @@ function LibraryPageView() {
                   {type !== "courses" && <a className="text-link" href={`/create?type=${type}`}>Create {type === "recipes" ? "recipe" : "cookbook"}</a>}
                 </div>
                 {type === "recipes" && <div className="library-search"><label htmlFor="library-recipe-search">Search your recipes</label><input id="library-recipe-search" type="search" value={query} onChange={(event) => updateQuery(event.currentTarget.value)} placeholder="Title, description, or tag" autoComplete="off" /></div>}
-                {notice?.actorID === currentUser.id && <Toast actorID={currentUser.id} message={notice.message} revision={noticeRevision.current} onDismiss={() => setNotice(null)} />}
+                {notice?.actorID === state.currentUser.id && <Toast actorID={state.currentUser.id} message={notice.message} revision={noticeRevision.current} onDismiss={() => setNotice(null)} />}
                 {mutationError && <p role="alert" className="form-message">{mutationError}</p>}
                 {loading && !activePage && <p role="status">Loading your {type} Library{activeQuery ? ` for “${activeQuery}”` : ""}…</p>}
                 {error && <div><p role="alert" className="form-message">{error}</p><button type="button" className="text-link" onClick={() => { if (currentUser) void loadFirstPage(type, currentUser.id, activeQuery); }}>Retry loading {type}{activeQuery ? ` for “${activeQuery}”` : ""}</button></div>}

@@ -482,13 +482,48 @@ func TestFederationPeerAdministrationAndKeyRotation(t *testing.T) {
 	if response := postJSON("/api/admin/federation/keys", `{"origin":"https://peer.example.org","key_id":"peer-key","public_key":"bad"}`); response.Code != http.StatusBadRequest {
 		t.Fatalf("invalid key status=%d body=%s", response.Code, response.Body)
 	}
+	if _, err := db.Exec(`UPDATE federation_peers SET exchange_profile='exchange-v2-retention' WHERE origin='https://peer.example.org'`); err != nil {
+		t.Fatal(err)
+	}
+	secondPublicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondKeyInput, _ := json.Marshal(map[string]string{"origin": "https://peer.example.org", "key_id": "peer-key-two", "public_key": base64.StdEncoding.EncodeToString(secondPublicKey)})
+	if response := postJSON("/api/admin/federation/keys", string(secondKeyInput)); response.Code != http.StatusOK {
+		t.Fatalf("overlapping key add status=%d body=%s", response.Code, response.Body)
+	}
+	revokeFirst := requestForUser(http.MethodDelete, "/api/admin/federation/keys", "admin")
+	revokeFirst.Body = io.NopCloser(bytes.NewBufferString(`{"origin":"https://peer.example.org","key_id":"peer-key"}`))
+	revokeFirst.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	api.ServeHTTP(response, revokeFirst)
+	if response.Code != http.StatusOK || !federationPeerEnabled(db, "https://peer.example.org") {
+		t.Fatalf("overlapping-key revocation status=%d body=%s", response.Code, response.Body)
+	}
+	var profile string
+	if err := db.QueryRow(`SELECT exchange_profile FROM federation_peers WHERE origin='https://peer.example.org'`).Scan(&profile); err != nil || profile != federationExchangeV2Retention {
+		t.Fatalf("overlapping-key rotation reset profile=%q err=%v", profile, err)
+	}
+	if response := postJSON("/api/admin/federation/peers", `{"origin":"https://peer.example.org","enabled":false}`); response.Code != http.StatusOK {
+		t.Fatalf("ordinary peer disable status=%d body=%s", response.Code, response.Body)
+	}
+	if response := postJSON("/api/admin/federation/peers", `{"origin":"https://peer.example.org","enabled":true}`); response.Code != http.StatusOK {
+		t.Fatalf("ordinary peer re-enable status=%d body=%s", response.Code, response.Body)
+	}
+	if err := db.QueryRow(`SELECT exchange_profile FROM federation_peers WHERE origin='https://peer.example.org'`).Scan(&profile); err != nil || profile != federationExchangeV2Retention {
+		t.Fatalf("ordinary pause changed profile=%q err=%v", profile, err)
+	}
 	revoke := requestForUser(http.MethodDelete, "/api/admin/federation/keys", "admin")
-	revoke.Body = io.NopCloser(bytes.NewBufferString(`{"origin":"https://peer.example.org","key_id":"peer-key"}`))
+	revoke.Body = io.NopCloser(bytes.NewBufferString(`{"origin":"https://peer.example.org","key_id":"peer-key-two"}`))
 	revoke.Header.Set("Content-Type", "application/json")
 	response = httptest.NewRecorder()
 	api.ServeHTTP(response, revoke)
 	if response.Code != http.StatusOK || federationPeerEnabled(db, "https://peer.example.org") {
 		t.Fatalf("last peer key revocation status=%d body=%s", response.Code, response.Body)
+	}
+	if err := db.QueryRow(`SELECT exchange_profile FROM federation_peers WHERE origin='https://peer.example.org'`).Scan(&profile); err != nil || profile != "v1" {
+		t.Fatalf("last-key trust reset profile=%q err=%v", profile, err)
 	}
 	var sourceState string
 	var sequence int64

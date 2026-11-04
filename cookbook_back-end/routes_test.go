@@ -77,6 +77,9 @@ func TestApplicationRoutesPreserveMethodsAndMiddleware(t *testing.T) {
 		{name: "admin mutation checks origin before session", method: http.MethodPatch, path: "/api/admin/settings", wantStatus: http.StatusForbidden, wantBody: `{"error":"csrf_origin_required"}`},
 		{name: "admin mutation requires session after valid origin", method: http.MethodPatch, path: "/api/admin/settings", origin: true, wantStatus: http.StatusUnauthorized, wantBody: `{"error":"unauthorized"}`},
 		{name: "admin mutation requires recent authentication", method: http.MethodPatch, path: "/api/admin/settings", origin: true, session: "old", wantStatus: http.StatusForbidden, wantBody: `{"error":"reauthentication_required"}`, wantAudit: true},
+		{name: "federation peer profile checks origin", method: http.MethodPatch, path: "/api/admin/federation/peers", wantStatus: http.StatusForbidden, wantBody: `{"error":"csrf_origin_required"}`},
+		{name: "federation peer profile requires session", method: http.MethodPatch, path: "/api/admin/federation/peers", origin: true, wantStatus: http.StatusUnauthorized, wantBody: `{"error":"unauthorized"}`},
+		{name: "federation peer profile requires recent session age", method: http.MethodPatch, path: "/api/admin/federation/peers", origin: true, session: "old", wantStatus: http.StatusForbidden, wantBody: `{"error":"reauthentication_required"}`, wantAudit: true},
 		{name: "snapshot moderation checks origin", method: http.MethodPatch, path: "/api/admin/library/snapshots/pin-one", wantStatus: http.StatusForbidden, wantBody: `{"error":"csrf_origin_required"}`},
 		{name: "snapshot moderation requires session", method: http.MethodPatch, path: "/api/admin/library/snapshots/pin-one", origin: true, wantStatus: http.StatusUnauthorized, wantBody: `{"error":"unauthorized"}`},
 		{name: "snapshot moderation requires recent authentication", method: http.MethodPatch, path: "/api/admin/library/snapshots/pin-one", origin: true, session: "old", wantStatus: http.StatusForbidden, wantBody: `{"error":"reauthentication_required"}`},
@@ -276,6 +279,7 @@ func TestApplicationAPICanonicalPathGuardRejectsAliasesBeforeDispatch(t *testing
 	assertDenied("settings slash cannot skip recent authentication", http.MethodPatch, "/api/admin/settings/", adminStale, true)
 	assertDenied("federation key slash cannot skip recent authentication", http.MethodPost, "/api/admin/federation/keys/", adminStale, true)
 	assertDenied("federation key revocation slash cannot skip recent authentication", http.MethodDelete, "/api/admin/federation/keys/", adminStale, true)
+	assertDenied("federation peer profile slash cannot skip recent authentication", http.MethodPatch, "/api/admin/federation/peers/", adminStale, true)
 	assertDenied("retention slash cannot skip recent authentication", http.MethodPost, "/api/recipes/shared/federation-retention/", ownerStale, true)
 	assertDenied("recipe transfer slash cannot skip recent authentication", http.MethodPost, "/api/recipes/shared/transfer/", ownerStale, true)
 	assertDenied("owner transfer slash remains non-mutating", http.MethodPost, "/api/instance/owner-transfers/", ownerStale, true)
@@ -284,6 +288,7 @@ func TestApplicationAPICanonicalPathGuardRejectsAliasesBeforeDispatch(t *testing
 		"/api/recipes/shared%2Ffederation-retention",
 		"/api/recipes/shared%2ffederation-retention",
 		"/api%2Fadmin/settings",
+		"/api/admin/federation%2Fpeers",
 		"/%2Fapi/admin/settings",
 	} {
 		assertDenied("encoded separator "+path, http.MethodPatch, path, adminStale, true)

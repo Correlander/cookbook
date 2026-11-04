@@ -14,11 +14,12 @@ import (
 )
 
 type federationPeerAdminItem struct {
-	Origin    string                   `json:"origin"`
-	Enabled   bool                     `json:"enabled"`
-	CreatedAt string                   `json:"created_at"`
-	UpdatedAt string                   `json:"updated_at"`
-	Keys      []federationPeerAdminKey `json:"keys"`
+	Origin          string                   `json:"origin"`
+	Enabled         bool                     `json:"enabled"`
+	ExchangeProfile string                   `json:"exchange_profile"`
+	CreatedAt       string                   `json:"created_at"`
+	UpdatedAt       string                   `json:"updated_at"`
+	Keys            []federationPeerAdminKey `json:"keys"`
 }
 
 type federationPeerAdminKey struct {
@@ -161,8 +162,11 @@ func (h apiHandler) federationPeers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.Method {
+	case http.MethodPatch:
+		patchFederationPeerProfile(w, r, h.db)
+		return
 	case http.MethodGet:
-		rows, err := h.db.Query(`SELECT origin,enabled,created_at,updated_at FROM federation_peers ORDER BY origin`)
+		rows, err := h.db.Query(`SELECT origin,enabled,exchange_profile,created_at,updated_at FROM federation_peers ORDER BY origin`)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "storage_error")
 			return
@@ -171,7 +175,7 @@ func (h apiHandler) federationPeers(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var peer federationPeerAdminItem
 			var enabled int
-			if err := rows.Scan(&peer.Origin, &enabled, &peer.CreatedAt, &peer.UpdatedAt); err != nil {
+			if err := rows.Scan(&peer.Origin, &enabled, &peer.ExchangeProfile, &peer.CreatedAt, &peer.UpdatedAt); err != nil {
 				writeError(w, http.StatusInternalServerError, "storage_error")
 				return
 			}

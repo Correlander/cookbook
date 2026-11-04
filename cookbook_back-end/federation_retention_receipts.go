@@ -179,8 +179,8 @@ func closeFederationOriginForDisable(ctx context.Context, tx sqliteExecutor, ori
 	return err
 }
 
-// resetFederationPeerExchangeProfileToV1 is intentionally one-way in this
-// persistence slice: capability activation belongs to the later admin contract.
+// resetFederationPeerExchangeProfileToV1 is used for an explicit downgrade and
+// for last-key trust reset. It leaves durable replay and object history intact.
 func resetFederationPeerExchangeProfileToV1(ctx context.Context, tx sqliteExecutor, origin string) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE federation_peers SET exchange_profile='v1' WHERE origin=?`, origin); err != nil {
 		return err

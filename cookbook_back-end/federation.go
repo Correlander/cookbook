@@ -1081,18 +1081,22 @@ func enqueueFederationOwnerAssertion(ctx context.Context, tx sqliteExecutor, rec
 }
 
 func queueFederationSnapshotsForAll(tx *sql.Tx, newlyEnabledPeer string) error {
+	return queueFederationSnapshotsForPeerExec(context.Background(), tx, newlyEnabledPeer)
+}
+
+func queueFederationSnapshotsForPeerExec(ctx context.Context, tx sqliteExecutor, newlyEnabledPeer string) error {
 	var federation int
-	if err := tx.QueryRow(`SELECT federation_enabled FROM instance_settings WHERE id=1`).Scan(&federation); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT federation_enabled FROM instance_settings WHERE id=1`).Scan(&federation); err != nil {
 		return err
 	}
 	if federation != 1 {
 		return nil
 	}
 	var enabled int
-	if err := tx.QueryRow(`SELECT enabled FROM federation_peers WHERE origin=?`, newlyEnabledPeer).Scan(&enabled); err != nil || enabled != 1 {
+	if err := tx.QueryRowContext(ctx, `SELECT enabled FROM federation_peers WHERE origin=?`, newlyEnabledPeer).Scan(&enabled); err != nil || enabled != 1 {
 		return errors.New("federation peer is not enabled")
 	}
-	rows, err := tx.Query(`SELECT id FROM recipes WHERE (visibility='public' AND deleted_at IS NULL) OR id IN (SELECT recipe_id FROM federation_local_peer_objects WHERE peer_origin=? AND published=1) ORDER BY id`, newlyEnabledPeer)
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM recipes WHERE (visibility='public' AND deleted_at IS NULL) OR id IN (SELECT recipe_id FROM federation_local_peer_objects WHERE peer_origin=? AND published=1) ORDER BY id`, newlyEnabledPeer)
 	if err != nil {
 		return err
 	}
@@ -1113,7 +1117,7 @@ func queueFederationSnapshotsForAll(tx *sql.Tx, newlyEnabledPeer string) error {
 		return err
 	}
 	for _, recipeID := range recipeIDs {
-		if err := enqueueFederationChangeForPeer(tx, recipeID, newlyEnabledPeer, true); err != nil {
+		if err := enqueueFederationChangeForPeerExec(ctx, tx, recipeID, newlyEnabledPeer, true); err != nil {
 			return err
 		}
 	}

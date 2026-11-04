@@ -126,7 +126,7 @@ test("Library and recipe detail preserve account, public, saved, unavailable, an
     await expect(
       admin.page.getByRole("heading", { name: "Your recipes" }),
     ).toBeVisible();
-    const typeNavigation = admin.page.getByRole("navigation", {
+    const typeNavigation = admin.page.getByRole("group", {
       name: "Library type",
     });
     await expect(typeNavigation.getByRole("button", { name: "Recipes" })).toHaveAttribute(

@@ -3,6 +3,14 @@ import type { APIRequestContext, APIResponse, Page } from "@playwright/test";
 import { readFile, stat, unlink } from "node:fs/promises";
 import type { AuthenticatedUser } from "../src/apiModels";
 
+export async function openAccountMenu(page: Page): Promise<void> {
+  const trigger = page.getByRole("button", { name: /account menu$/i });
+  await expect(trigger).toBeVisible();
+  if ((await trigger.getAttribute("aria-expanded")) !== "true")
+    await trigger.click();
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+}
+
 function isAuthenticatedUser(value: unknown): value is AuthenticatedUser {
   if (!value || typeof value !== "object") return false;
   const user = value as Partial<AuthenticatedUser>;

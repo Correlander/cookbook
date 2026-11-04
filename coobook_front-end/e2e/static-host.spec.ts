@@ -1,6 +1,6 @@
 import { test, expect, type Route } from '@playwright/test'
 import { readFile, stat, unlink } from 'node:fs/promises'
-import { signInWithSyntheticEmail } from './auth'
+import { openAccountMenu, signInWithSyntheticEmail } from './auth'
 
 test('serves built Astro root with its generated CSP and static metadata', async ({ page }) => {
   const violations: string[] = []
@@ -315,7 +315,7 @@ test('shows course creation only when the public configuration enables the featu
   await signInWithSyntheticEmail(page, request, 'course-feature@example.test', 'Course Feature')
   await page.route('**/api/public/config', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '{"courses_enabled":true}' }))
   await page.goto('/create')
-  const courseButton = page.getByRole('button', { name: 'Course' })
+  const courseButton = page.getByRole('button', { name: 'Course', exact: true })
   await expect(courseButton).toBeVisible()
   await courseButton.click()
   await expect(page.getByRole('heading', { name: 'Course details', level: 2 })).toBeVisible()
@@ -332,6 +332,7 @@ test('signed-in account users can open Account Security and cannot open instance
     await page.goto(path)
     await expect(page.getByRole('heading', { name: 'Account security', level: 2 })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Browser sessions' })).toBeVisible()
+    await openAccountMenu(page)
     await expect(page.getByRole('link', { name: 'Account', exact: true })).toBeVisible()
   }
 
@@ -356,14 +357,15 @@ test('signed-in instance administrators can open settings directly and through t
     await expect(page).toHaveTitle(/Instance settings/)
     await expect(page.getByRole('heading', { name: 'Instance administration', level: 1 })).toBeVisible()
     await expect(page.getByText('Enable public browsing')).toBeVisible()
+    await openAccountMenu(page)
     await expect(page.getByRole('link', { name: 'Instance', exact: true })).toBeVisible()
     await expect(page.getByRole('link', { name: 'Administration' })).toHaveCount(0)
   }
 
   await page.goto('/admin')
-  await expect(page.getByRole('heading', { name: 'Instance access', level: 1 })).toBeVisible()
-  await page.getByRole('link', { name: 'Open Instance Settings' }).click()
-  await expect(page).toHaveURL(/\/admin\/settings$/)
+  await expect(page.getByRole('heading', { name: 'People and permissions', level: 1 })).toBeVisible()
+  await page.getByRole('link', { name: 'Settings', exact: true }).click()
+  await expect(page).toHaveURL(/\/admin\/settings#visibility$/)
   await expect(page.getByRole('heading', { name: 'Instance administration', level: 1 })).toBeVisible()
 })
 

@@ -69,6 +69,11 @@ func registeredSchemaMigrations() []schemaMigration {
 		name:     "creator-profile-household-foundation",
 		checksum: migrationChecksum("creator-profile-household-foundation", creatorProfileFoundationDDL),
 		apply:    ApplyCreatorProfileFoundationMigration,
+	}, {
+		version:  8,
+		name:     "personal-library-cookbook-bookmarks",
+		checksum: migrationChecksum("personal-library-cookbook-bookmarks", cookbookBookmarkSchemaDDL+"\x00"+cookbookBookmarkLimitTriggerDDL),
+		apply:    ApplyCookbookBookmarkMigration,
 	}}
 }
 

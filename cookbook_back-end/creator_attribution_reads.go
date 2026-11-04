@@ -134,18 +134,76 @@ func recipeMemberRolesForActor(ctx context.Context, queryer contentQueryer, acto
 }
 
 func readCookbookDetail(ctx context.Context, queryer contentQueryer, actorID, cookbookID string) (cookbook, error) {
-	var item cookbook
-	err := queryer.QueryRowContext(ctx, `SELECT c.id,c.owner_id,c.title,c.description,c.visibility,c.created_at,c.updated_at
-		FROM cookbooks c JOIN instance_settings s ON s.id=1
-		WHERE c.id=? AND `+cookbookActorReadPredicate, cookbookID, actorID, actorID).
-		Scan(&item.ID, &item.OwnerID, &item.Title, &item.Description, &item.Visibility, &item.CreatedAt, &item.UpdatedAt)
+	items, err := readCookbookDetails(ctx, queryer, actorID, []string{cookbookID})
 	if err != nil {
 		return cookbook{}, err
 	}
-	attributions, err := readCreatorAttributions(ctx, queryer, actorID, "cookbook", []string{cookbookID})
-	if err != nil {
-		return cookbook{}, err
+	item, ok := items[cookbookID]
+	if !ok {
+		return cookbook{}, sql.ErrNoRows
 	}
-	item.CreatorAttributions = attributions[cookbookID]
 	return item, nil
+}
+
+// readCookbookDetails returns the canonical actor-visible cookbook projection
+// for a bounded set of IDs. Resource ACL and creator attribution are read
+// through the same queryer so callers can keep both in one transaction
+// snapshot. IDs that are missing or unreadable are omitted from the result.
+func readCookbookDetails(ctx context.Context, queryer contentQueryer, actorID string, cookbookIDs []string) (map[string]cookbook, error) {
+	items := make(map[string]cookbook, len(cookbookIDs))
+	if len(cookbookIDs) == 0 {
+		return items, nil
+	}
+	ids := make([]string, 0, len(cookbookIDs))
+	seen := make(map[string]struct{}, len(cookbookIDs))
+	for _, id := range cookbookIDs {
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	var placeholders strings.Builder
+	args := make([]any, 0, len(ids)+2)
+	for index, id := range ids {
+		if index > 0 {
+			placeholders.WriteByte(',')
+		}
+		placeholders.WriteByte('?')
+		args = append(args, id)
+	}
+	args = append(args, actorID, actorID)
+	rows, err := queryer.QueryContext(ctx, `SELECT c.id,c.owner_id,c.title,c.description,c.visibility,c.created_at,c.updated_at
+		FROM cookbooks c JOIN instance_settings s ON s.id=1
+		WHERE c.id IN (`+placeholders.String()+`) AND `+cookbookActorReadPredicate+`
+		ORDER BY c.id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read cookbook details: %w", err)
+	}
+	visibleIDs := make([]string, 0, len(ids))
+	for rows.Next() {
+		var item cookbook
+		if err := rows.Scan(&item.ID, &item.OwnerID, &item.Title, &item.Description, &item.Visibility, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan cookbook details: %w", err)
+		}
+		items[item.ID] = item
+		visibleIDs = append(visibleIDs, item.ID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterate cookbook details: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close cookbook details: %w", err)
+	}
+	attributions, err := readCreatorAttributions(ctx, queryer, actorID, "cookbook", visibleIDs)
+	if err != nil {
+		return nil, err
+	}
+	for id, item := range items {
+		item.CreatorAttributions = attributions[id]
+		items[id] = item
+	}
+	return items, nil
 }

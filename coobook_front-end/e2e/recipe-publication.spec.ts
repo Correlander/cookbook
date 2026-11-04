@@ -44,7 +44,7 @@ test("owners can publish and withdraw a public recipe without losing owner acces
       const adminUser = await signInWithSyntheticEmail(
         admin.page,
         admin.page.request,
-        "admin@example.test",
+        "admin-recipe-publication@example.test",
         "Synthetic Admin",
       );
       expect(adminUser.is_admin).toBe(true);

@@ -80,7 +80,7 @@ test("Library and recipe detail preserve account, public, saved, unavailable, an
     const adminUser = await signInWithSyntheticEmail(
       admin.page,
       admin.page.request,
-      "admin@example.test",
+      "admin-library-detail@example.test",
       "Library route admin",
     );
     expect(adminUser.is_admin).toBe(true);

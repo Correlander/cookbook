@@ -659,6 +659,36 @@ async function prepareBrowserArtifacts() {
   }
 }
 
+async function seedCaddyBrowserAdmins(backendName, browserArtifacts) {
+  const fixtureDirectory = join(browserArtifacts.runDirectory, 'cookbook-e2e-caddy-fixture')
+  const fixtureDatabase = join(fixtureDirectory, 'cookbook.db')
+  await mkdir(fixtureDirectory, { mode: 0o700 })
+  await chmod(fixtureDirectory, 0o700)
+
+  // SQLite must be cold while the fixture mutates it. The Caddy backend owns
+  // a disposable tmpfs database; stop it before copying that database to the
+  // private host fixture directory, then return the seeded file before start.
+  await runCommand(selectedEngine, ['stop', backendName])
+  await runCommand(selectedEngine, ['cp', `${backendName}:/data/cookbook.db`, fixtureDatabase])
+  await chmod(fixtureDatabase, 0o600)
+  const backendRoot = resolve(import.meta.dirname, '../../cookbook_back-end')
+  await runCommand('go', ['test', '-run', '^TestPrepareE2EAdminActorFixture$', '-count=1', '.'], {
+    cwd: backendRoot,
+    env: {
+      ...process.env,
+      COOKBOOK_E2E_ADMIN_ACTOR_FIXTURE: '1',
+      COOKBOOK_E2E_RUN_DIR: fixtureDirectory,
+      COOKBOOK_DATABASE: fixtureDatabase,
+    },
+  })
+  // Engine copy into the container is root-owned. The disposable /data tmpfs
+  // is already mode 1777, so make this one database writable to the cookbook
+  // UID while the host-side source remains protected by the 0700 parent.
+  await chmod(fixtureDatabase, 0o666)
+  await runCommand(selectedEngine, ['cp', fixtureDatabase, `${backendName}:/data/cookbook.db`])
+  await runCommand(selectedEngine, ['start', backendName])
+}
+
 let interrupted = false
 async function halt(exitCode, message) {
   if (interrupted) return
@@ -742,6 +772,8 @@ async function main() {
 
     await checkSmoke(origin)
     if (browserArtifacts) {
+      await seedCaddyBrowserAdmins(backendName, browserArtifacts)
+      await checkSmoke(origin)
       const frontendRoot = resolve(import.meta.dirname, '..')
       const browserCache = resolve(frontendRoot, '..', '..', 'engineering-local/tools/playwright/browsers')
       const browsersPath = process.env.PLAYWRIGHT_BROWSERS_PATH || browserCache

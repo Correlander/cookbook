@@ -11,7 +11,7 @@ test("administrators can explicitly change an isolated disabled peer profile", a
   const browserMutations: Promise<Record<string, string>>[] = [];
 
   try {
-    await signInWithSyntheticEmail(page, page.request, "admin@example.test", "E2E Admin");
+    await signInWithSyntheticEmail(page, page.request, "admin-retention-peer-profile@example.test", "E2E Admin");
     const created = await page.request.post("/api/admin/federation/peers", {
       headers: { Origin: origin },
       data: { origin: peerOrigin, enabled: false },

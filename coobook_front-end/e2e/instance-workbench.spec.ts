@@ -44,7 +44,7 @@ test('ordinary signed-in account sees no Instance entry or account list', async 
 })
 
 test('pre-claim administrator sees role management but no browser owner claim or transfer action', async ({ page, request }) => {
-  const user = await signInWithSyntheticEmail(page, request, 'admin@example.test', 'Workbench Admin')
+  const user = await signInWithSyntheticEmail(page, request, 'admin-instance-workbench@example.test', 'Workbench Admin')
   expect(user.is_admin).toBe(true)
   const authorityResponse = await page.request.get('/api/instance/authority')
   expect(authorityResponse.status()).toBe(200)

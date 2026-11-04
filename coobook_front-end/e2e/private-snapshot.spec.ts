@@ -143,7 +143,7 @@ test("private snapshots use signed captures, stay actor-bound, and import only b
   let copyImporter: Session | undefined;
   let releaseHeldRead: (() => void) | undefined;
   try {
-    await signIn(owner, "admin@example.test", "Snapshot Owner");
+    await signIn(owner, "admin-private-snapshot@example.test", "Snapshot Owner");
 
     const conditionalRoute = `/recipe?remote_object_uri=${encodeURIComponent(objectURI(ids.conditional))}`;
     await owner.page.goto(conditionalRoute);

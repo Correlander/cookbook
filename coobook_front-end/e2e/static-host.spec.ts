@@ -368,7 +368,7 @@ test('signed-in account users can open Account Security and cannot open instance
 })
 
 test('signed-in instance administrators can open settings directly and through the HTML alias', async ({ page, request }) => {
-  const user = await signInWithSyntheticEmail(page, request, 'admin@example.test', 'E2E Admin')
+  const user = await signInWithSyntheticEmail(page, request, 'admin-static-host@example.test', 'E2E Admin')
   expect(user.is_admin).toBe(true)
 
   for (const path of ['/admin/settings', '/admin/settings.html']) {

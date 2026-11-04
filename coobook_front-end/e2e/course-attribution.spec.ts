@@ -37,7 +37,7 @@ test("course attribution capability controls create claims and keeps edits immut
   let cleanupFailure: unknown;
 
   try {
-    await signInWithSyntheticEmail(page, page.request, "admin@example.test", "E2E Admin");
+    await signInWithSyntheticEmail(page, page.request, "admin-course-attribution@example.test", "E2E Admin");
     const settingsResponse = await page.request.get("/api/admin/settings");
     expect(settingsResponse.status()).toBe(200);
     const settings: unknown = await settingsResponse.json();

@@ -62,7 +62,8 @@ for (const timeoutArgs of [
   assert.equal(options.commandTimeoutMs, 30000)
 }
 const fakeEngineSource = `#!/usr/bin/env node
-import { readFile, writeFile } from 'node:fs/promises'
+import assert from 'node:assert/strict'
+import { readFile, stat, writeFile } from 'node:fs/promises'
 const [command, ...args] = process.argv.slice(2)
 const statePath = process.env.CADDY_TEST_STATE
 const state = await readFile(statePath, 'utf8').then(JSON.parse).catch(() => ({ calls: [], networks: [], containers: [] }))
@@ -70,6 +71,8 @@ const save = () => writeFile(statePath, JSON.stringify(state))
 const option = (name) => args[args.indexOf(name) + 1]
 const filterLabel = (prefix) => (option('--filter') ?? '').replace(prefix, '')
 state.calls.push([command, ...args])
+state.events ??= []
+state.events.push(command === 'run' ? 'run:' + args.at(-1) : command + ':' + (args[0] ?? ''))
 
 if (command === 'network' && args[0] === 'create') {
   const name = args.at(-1)
@@ -101,7 +104,12 @@ if (command === 'network' && args[0] === 'create') {
   await save()
   if (process.env.CADDY_TEST_HOLD === '1') setInterval(() => {}, 1000)
 } else if (command === 'cp') {
-  await writeFile(args[1], '{"scriptHashes":[]}')
+  if (args[0]?.endsWith(':/data/cookbook.db')) await writeFile(args[1], 'cold-caddy-sqlite-fixture')
+  else if (args[1]?.endsWith(':/data/cookbook.db')) {
+    assert.equal((await stat(args[0])).mode & 0o777, 0o666)
+    assert.equal(await readFile(args[0], 'utf8'), 'cold-caddy-sqlite-fixture')
+  }
+  else if (args[0]?.endsWith(':/srv/static-csp.json')) await writeFile(args[1], '{"scriptHashes":[]}')
 } else if (command === 'ps') {
   const label = filterLabel('label=')
   for (const item of state.containers.filter((entry) => entry.label === label)) console.log(item.id + ' ' + item.name)
@@ -187,6 +195,10 @@ assert.equal((await stat(dirname(process.env.E2E_EMAIL_CAPTURE))).mode & 0o777, 
 const helper = await readFile(join(dirname(process.env.E2E_EMAIL_CAPTURE), 'capture-email'), 'utf8')
 assert.ok(helper.includes('cat > /smoke-mail/capture.json'))
 assert.ok(helper.includes('chmod 644'))
+const state = JSON.parse(await readFile(process.env.CADDY_TEST_STATE, 'utf8'))
+state.events ??= []
+state.events.push('playwright')
+await writeFile(process.env.CADDY_TEST_STATE, JSON.stringify(state))
 await writeFile(process.env.CADDY_BROWSER_STATE, JSON.stringify({
   baseUrl: process.env.PLAYWRIGHT_BASE_URL,
   dist: process.env.PLAYWRIGHT_DIST,
@@ -272,14 +284,35 @@ console.error('Error: unrelated stderr with /private/secret/e2e/static-host.spec
 if (process.env.CADDY_BROWSER_ZERO_EXIT !== '1' && (failed || process.env.CADDY_BROWSER_NONZERO_EXIT === '1')) process.exit(9)
 `
 
-async function runBrowserFixture({ directory, statePath, engine }, port, { fail = false, grep, reportMode = '', zeroExit = false, nonzeroExit = false, actionability = '', malformedSteps = false, privateReport = false, runnerFailure = fail || Boolean(reportMode) || nonzeroExit } = {}) {
+const fakeGoSource = `#!/usr/bin/env node
+import assert from 'node:assert/strict'
+import { readFile, stat, writeFile } from 'node:fs/promises'
+import { basename } from 'node:path'
+assert.deepEqual(process.argv.slice(2), ['test', '-run', '^TestPrepareE2EAdminActorFixture$', '-count=1', '.'])
+assert.equal(process.env.COOKBOOK_E2E_ADMIN_ACTOR_FIXTURE, '1')
+assert.match(basename(process.env.COOKBOOK_E2E_RUN_DIR), /^cookbook-e2e-/)
+assert.equal(process.env.COOKBOOK_DATABASE, process.env.COOKBOOK_E2E_RUN_DIR + '/cookbook.db')
+assert.equal((await stat(process.env.COOKBOOK_E2E_RUN_DIR)).mode & 0o777, 0o700)
+assert.equal((await stat(process.env.COOKBOOK_DATABASE)).mode & 0o777, 0o600)
+assert.equal(await readFile(process.env.COOKBOOK_DATABASE, 'utf8'), 'cold-caddy-sqlite-fixture')
+const state = JSON.parse(await readFile(process.env.CADDY_TEST_STATE, 'utf8'))
+state.events ??= []
+state.events.push('fixture')
+await writeFile(process.env.CADDY_TEST_STATE, JSON.stringify(state))
+if (process.env.CADDY_BROWSER_FIXTURE_FAIL === '1') process.exit(9)
+`
+
+async function runBrowserFixture({ directory, statePath, engine }, port, { fail = false, grep, reportMode = '', zeroExit = false, nonzeroExit = false, actionability = '', malformedSteps = false, privateReport = false, fixtureFail = false, runnerFailure = fail || Boolean(reportMode) || nonzeroExit || fixtureFail } = {}) {
   const browserCache = join(directory, 'browser-cache')
   const playwright = join(directory, 'fake-playwright.mjs')
+  const go = join(directory, 'go')
   const browserState = join(directory, 'browser-state.json')
   const privateReportDirectory = privateReport ? join(directory, 'private-report') : undefined
   const expectedReportPath = join(directory, 'expected-report.json')
   await writeFile(playwright, fakePlaywrightSource, { encoding: 'utf8', mode: 0o700 })
   await chmod(playwright, 0o700)
+  await writeFile(go, fakeGoSource, { encoding: 'utf8', mode: 0o700 })
+  await chmod(go, 0o700)
   const syntaxCheck = spawn(process.execPath, ['--check', playwright], { stdio: ['ignore', 'pipe', 'pipe'] })
   let syntaxStderr = ''
   syntaxCheck.stderr.setEncoding('utf8').on('data', (chunk) => { syntaxStderr += chunk })
@@ -305,8 +338,10 @@ async function runBrowserFixture({ directory, statePath, engine }, port, { fail 
     CADDY_BROWSER_MALFORMED_STEPS: malformedSteps ? '1' : '0',
     CADDY_BROWSER_ZERO_EXIT: zeroExit ? '1' : '0',
     CADDY_BROWSER_NONZERO_EXIT: nonzeroExit ? '1' : '0',
+    CADDY_BROWSER_FIXTURE_FAIL: fixtureFail ? '1' : '0',
     COOKBOOK_CADDY_SMOKE_PLAYWRIGHT_CLI: playwright,
     PLAYWRIGHT_BROWSERS_PATH: browserCache,
+    PATH: `${directory}:${process.env.PATH}`,
     TMPDIR: directory,
   })
   assert.equal(result.code, runnerFailure ? 1 : 0, result.stdout + result.stderr)
@@ -324,20 +359,43 @@ async function runBrowserFixture({ directory, statePath, engine }, port, { fail 
   const frontend = state.calls.find((record) => record[0] === 'run' && record.includes('frontend:browser-fixture'))
   assert.ok(frontend)
   assert.ok(frontend.includes('127.0.0.1::8080/tcp'))
-  assert.ok(state.calls.some((record) => record[0] === 'cp' && record[1].endsWith(':/srv/static-csp.json')))
+  if (!fixtureFail) assert.ok(state.calls.some((record) => record[0] === 'cp' && record[1].endsWith(':/srv/static-csp.json')))
+  if (fixtureFail) {
+    assert.equal(state.events?.includes('playwright'), false, 'Playwright ran after fixture failure')
+    assert.ok(state.calls.some((record) => record[0] === 'stop'))
+    assert.ok(state.calls.some((record) => record[0] === 'cp' && record[1].endsWith(':/data/cookbook.db')), 'fixture failure happened before the cold database was copied out')
+    assert.ok(!state.calls.some((record) => record[0] === 'start'), 'backend restarted after fixture failure')
+    assert.ok(!state.calls.some((record) => record[0] === 'cp' && record[2]?.endsWith(':/data/cookbook.db')), 'failed fixture was copied back into the backend')
+    assert.equal(state.containers.length, 0, 'fixture failure left owned containers behind')
+    assert.equal(state.networks.length, 0, 'fixture failure left owned network behind')
+    assert.ok(state.events?.includes('fixture'), 'fixture failure did not occur after the fixture ran')
+  } else {
+    const stop = state.calls.findIndex((record) => record[0] === 'stop')
+    const copyOut = state.calls.findIndex((record) => record[0] === 'cp' && record[1].endsWith(':/data/cookbook.db'))
+    const copyIn = state.calls.findIndex((record) => record[0] === 'cp' && record[2]?.endsWith(':/data/cookbook.db'))
+    const start = state.calls.findIndex((record) => record[0] === 'start')
+    assert.ok(stop >= 0 && copyOut > stop && copyIn > copyOut && start > copyIn, 'fixture must mutate only the stopped backend database')
+    const events = state.events
+    assert.ok(events.findIndex((event) => event.startsWith('stop:')) < events.indexOf('fixture') && events.indexOf('fixture') < events.findIndex((event) => event.startsWith('start:')) && events.findIndex((event) => event.startsWith('start:')) < events.indexOf('playwright'), 'fixture must finish before the backend restart and Playwright')
+    assert.equal(state.containers.length, 0)
+    assert.equal(state.networks.length, 0)
+  }
   assert.equal(state.containers.length, 0)
   assert.equal(state.networks.length, 0)
-  const allowed = ['browser-cache', 'fake-engine.mjs', 'fake-playwright.mjs', 'state.json', 'browser-state.json']
+  const allowed = ['browser-cache', 'fake-engine.mjs', 'fake-playwright.mjs', 'go', 'state.json']
+  if (!fixtureFail) allowed.push('browser-state.json')
   if ((await readdir(directory)).includes('expected-report.json')) allowed.push('expected-report.json')
   if (privateReportDirectory) allowed.push('private-report')
   assert.deepEqual((await readdir(directory)).sort(), allowed.sort())
-  const browser = JSON.parse(await readFile(browserState, 'utf8'))
-  assert.equal(browser.baseUrl, `http://localhost:${port}`)
-  assert.equal(browser.browsers, browserCache)
-  assert.match(browser.report, /playwright-output\/playwright-report\.json$/)
-  assert.match(browser.dist, /playwright-dist$/)
-  assert.match(browser.output, /playwright-output$/)
-  assert.match(browser.capture, /\/mail\/capture\.json$/)
+  if (!fixtureFail) {
+    const browser = JSON.parse(await readFile(browserState, 'utf8'))
+    assert.equal(browser.baseUrl, `http://localhost:${port}`)
+    assert.equal(browser.browsers, browserCache)
+    assert.match(browser.report, /playwright-output\/playwright-report\.json$/)
+    assert.match(browser.dist, /playwright-dist$/)
+    assert.match(browser.output, /playwright-output$/)
+    assert.match(browser.capture, /\/mail\/capture\.json$/)
+  }
   if (privateReportDirectory) {
     assert.equal((await stat(privateReportDirectory)).mode & 0o777, 0o700)
     const captured = join(privateReportDirectory, 'playwright-report.json')
@@ -631,6 +689,16 @@ await withHttpFixture(async (port) => withFakeEngine(async (context) => {
   assert.equal(result.code, 0, result.stdout + result.stderr)
   assert.match(result.stdout, /Private Playwright report: captured/)
   assert.match(result.stdout, /Caddy\/Go proxy smoke passed/)
+}))
+
+await withHttpFixture(async (port) => withFakeEngine(async (context) => {
+  const result = await runBrowserFixture(context, port, { fixtureFail: true })
+  assert.equal(result.code, 1, result.stdout + result.stderr)
+  assert.match(result.stderr, /go test failed \(9\)/)
+  const state = await loadState(context.statePath)
+  assert.equal(state.events.includes('playwright'), false)
+  assert.equal(state.containers.length, 0, 'fixture failure left owned containers behind')
+  assert.equal(state.networks.length, 0, 'fixture failure left owned network behind')
 }))
 
 for (const reportMode of ['missing', 'malformed', 'oversized']) {

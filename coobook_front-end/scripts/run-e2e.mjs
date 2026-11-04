@@ -167,6 +167,17 @@ try {
     }
     if (!ready) throw new Error(`service did not become ready: ${new URL(url).pathname}`)
   }
+  await run('go', ['test', '-run', '^TestPrepareE2EAdminActorFixture$', '-count=1', '.'], {
+    cwd: join(root, 'cookbook_back-end'),
+    env: {
+      ...env,
+      COOKBOOK_E2E_ADMIN_ACTOR_FIXTURE: '1',
+      COOKBOOK_E2E_RUN_DIR: runDir,
+      GOCACHE: process.env.GOCACHE ?? join(runDir, 'go-cache'),
+      GOMODCACHE: process.env.GOMODCACHE ?? join(runDir, 'go-mod-cache'),
+      GOPATH: process.env.GOPATH ?? join(runDir, 'go-path'),
+    },
+  })
   if (privateSnapshotOptIn) {
     await run('go', ['test', '-run', '^TestPreparePrivateSnapshotBrowserFixture$', '-count=1', '.'], {
       cwd: join(root, 'cookbook_back-end'),

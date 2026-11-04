@@ -41,7 +41,9 @@ test("administrators can explicitly change an isolated disabled peer profile", a
       .filter({ hasText: peerOrigin });
     await expect(peerDetails).toHaveCount(1);
     await peerDetails.locator("summary").click();
-    const profileSelect = peerDetails.getByLabel(`Profile for ${peerOrigin}`);
+    const profileSelect = peerDetails.locator("label")
+      .filter({ hasText: `Profile for ${peerOrigin}` })
+      .getByRole("combobox");
     await expect(profileSelect).toHaveValue("v1");
     await profileSelect.selectOption("exchange-v2-retention");
 
@@ -54,6 +56,7 @@ test("administrators can explicitly change an isolated disabled peer profile", a
       new URL(response.url()).pathname === "/api/admin/federation/peers");
     await peerDetails.getByRole("button", { name: "Save exchange profile" }).click();
     expect((await upgrade).status()).toBe(200);
+    await peerDetails.locator("summary").click();
     await expect(peerDetails.getByText("Current exchange profile: Exchange v2 with retention")).toBeVisible();
     const upgraded = await page.request.get("/api/admin/federation/peers");
     expect(upgraded.status()).toBe(200);
@@ -62,7 +65,7 @@ test("administrators can explicitly change an isolated disabled peer profile", a
 
     await profileSelect.selectOption("v1");
     page.once("dialog", async (dialog) => {
-      expect(dialog.message()).toMatch(/New private snapshot capture eligibility.*public state.*Private copies already retained remain.*in flight/i);
+      expect(dialog.message()).toMatch(/New private snapshot capture eligibility.*Private copies already retained remain.*in flight.*public state/i);
       await dialog.accept();
     });
     const downgrade = page.waitForResponse((response) =>
@@ -70,6 +73,7 @@ test("administrators can explicitly change an isolated disabled peer profile", a
       new URL(response.url()).pathname === "/api/admin/federation/peers");
     await peerDetails.getByRole("button", { name: "Save exchange profile" }).click();
     expect((await downgrade).status()).toBe(200);
+    await peerDetails.locator("summary").click();
     await expect(peerDetails.getByText("Current exchange profile: v1")).toBeVisible();
     const downgraded = await page.request.get("/api/admin/federation/peers");
     expect(downgraded.status()).toBe(200);

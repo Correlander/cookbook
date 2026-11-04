@@ -25,8 +25,7 @@ test("owner sees retention eligibility and API refuses a private recipe version"
     );
     await recipeForm.getByLabel("Step 1", { exact: true }).fill("Rinse the beans.");
     await recipeForm.getByLabel("Visibility").selectOption("private");
-    const anyoneCanRead = recipeForm.getByRole("checkbox", { name: /anyone can read/i });
-    if (await anyoneCanRead.isChecked()) await anyoneCanRead.uncheck();
+    await recipeForm.getByLabel("Creator credit").selectOption("local_profile");
 
     const createResponsePromise = page.waitForResponse(
       (response) =>

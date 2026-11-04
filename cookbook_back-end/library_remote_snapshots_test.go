@@ -415,6 +415,9 @@ func TestDirectImportedUnverifiedPersistenceKeepsPinsAndClaimsUntrusted(t *testi
 	if _, err := db.Exec(`INSERT INTO recipe_bookmarks(id,user_id,target_kind,remote_object_uri,created_at) VALUES('imported-pin','viewer','remote',?,'created')`, objectURI); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`INSERT INTO recipe_bookmarks(id,user_id,target_kind,remote_object_uri,created_at) VALUES('reference-pin','viewer','remote',?,'created')`, testFederationOrigin+"/federation/recipes/2123456789abcdef0123456789abcdef"); err != nil {
+		t.Fatal(err)
+	}
 	payload := []byte(`{"title":"Imported copy","description":"","ingredients":[],"steps":[],"servings":1,"prep_time_minutes":0,"cook_time_minutes":0,"tags":[]}`)
 	claim := []byte(strings.Repeat("archive-evidence-byte-", 6000))
 	var captured remoteSnapshotVersion
@@ -446,9 +449,29 @@ func TestDirectImportedUnverifiedPersistenceKeepsPinsAndClaimsUntrusted(t *testi
 		t.Fatalf("unverified list synthesized an absent source sequence: view=%+v err=%v", listed["imported-pin"], err)
 	}
 	detail := doBookmarkRequest(t, apiHandler{db: db}, "viewer", http.MethodGet, "/api/library/bookmarks/imported-pin/snapshot", "")
-	if detail.Code != http.StatusOK || strings.Contains(detail.Body.String(), `"sequence"`) || strings.Contains(detail.Body.String(), `"untrusted_claim"`) || strings.Contains(detail.Body.String(), `"event_body"`) {
+	if detail.Code != http.StatusOK || detail.Header().Get("Cache-Control") != "private, no-store" || detail.Header().Get("Vary") != "Cookie" || detail.Header().Get("Referrer-Policy") != "no-referrer" || strings.Contains(detail.Body.String(), `"sequence"`) || strings.Contains(detail.Body.String(), `"untrusted_claim"`) || strings.Contains(detail.Body.String(), `"event_body"`) {
 		t.Fatalf("unverified detail exposed absent or private facts: status=%d body=%s", detail.Code, detail.Body)
 	}
+	assertDetailError := func(actor, bookmarkID, wantCode string) {
+		t.Helper()
+		response := doBookmarkRequest(t, apiHandler{db: db}, actor, http.MethodGet, "/api/library/bookmarks/"+bookmarkID+"/snapshot", "")
+		var body map[string]any
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || response.Code != http.StatusNotFound || len(body) != 1 || body["error"] != wantCode {
+			t.Fatalf("snapshot detail actor=%q bookmark=%q: status=%d body=%s, want 404 %q", actor, bookmarkID, response.Code, response.Body, wantCode)
+		}
+		if response.Header().Get("Cache-Control") != "private, no-store" || response.Header().Get("Vary") != "Cookie" || response.Header().Get("Referrer-Policy") != "no-referrer" {
+			t.Fatalf("snapshot detail actor=%q bookmark=%q lost private headers: %v", actor, bookmarkID, response.Header())
+		}
+		for _, privateField := range []string{"title", "untrusted_claim", "event_body", "signature_input", "signature_value", "public_key", "moderation_reason", "moderation_outcome"} {
+			if strings.Contains(response.Body.String(), `"`+privateField+`"`) {
+				t.Fatalf("snapshot detail error exposed field %q: %s", privateField, response.Body)
+			}
+		}
+	}
+	assertDetailError("other", "imported-pin", "not_found")
+	assertDetailError("admin", "imported-pin", "not_found")
+	assertDetailError("viewer", "missing-pin", "not_found")
+	assertDetailError("viewer", "reference-pin", "not_found")
 	if _, err := readEligibleFederationRetentionReceipt(context.Background(), db, objectURI); !errors.Is(err, errRemoteSnapshotNotEligible) {
 		t.Fatalf("untrusted import became live capture eligibility: %v", err)
 	}
@@ -484,6 +507,15 @@ func TestDirectImportedUnverifiedPersistenceKeepsPinsAndClaimsUntrusted(t *testi
 	if _, err := readOwnedActiveSnapshotForExport(context.Background(), db, "viewer", "imported-pin"); !errors.Is(err, errRemoteSnapshotRestricted) {
 		t.Fatalf("restricted imported copy lost blocked status: %v", err)
 	}
+	assertDetailError("viewer", "imported-pin", "snapshot_restricted")
+	assertDetailError("other", "imported-pin", "not_found")
+	assertDetailError("admin", "imported-pin", "not_found")
+	if _, err := db.Exec(`UPDATE library_remote_snapshot_pins SET state='removed',removed_version_id=version_id,version_id=NULL,moderated_by='admin',moderated_at='later',moderation_reason='privacy',moderation_outcome='removed' WHERE bookmark_id='imported-pin'`); err != nil {
+		t.Fatal(err)
+	}
+	assertDetailError("viewer", "imported-pin", "snapshot_removed")
+	assertDetailError("other", "imported-pin", "not_found")
+	assertDetailError("admin", "imported-pin", "not_found")
 	if _, err := db.Exec(`DELETE FROM users WHERE id='viewer'`); err != nil {
 		t.Fatal(err)
 	}

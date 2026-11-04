@@ -563,6 +563,36 @@ func readRemoteSnapshotForBookmark(ctx context.Context, queryer interface {
 	return item, nil
 }
 
+// requireOwnedActiveRemoteSnapshotPin checks bookmark ownership and pin state in the caller's read transaction.
+// Blocked-state errors are safe to return only after the owner-scoped bookmark row is found.
+func requireOwnedActiveRemoteSnapshotPin(ctx context.Context, queryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, accountID, bookmarkID string) error {
+	var state sql.NullString
+	err := queryer.QueryRowContext(ctx, `SELECT p.state
+		FROM recipe_bookmarks b LEFT JOIN library_remote_snapshot_pins p ON p.bookmark_id=b.id
+		WHERE b.id=? AND b.user_id=? AND b.target_kind='remote'`, bookmarkID, accountID).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errRemoteSnapshotNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if !state.Valid {
+		return errRemoteSnapshotNotFound
+	}
+	switch state.String {
+	case "active":
+		return nil
+	case "restricted":
+		return errRemoteSnapshotRestricted
+	case "removed":
+		return errRemoteSnapshotRemoved
+	default:
+		return errRemoteSnapshotNotFound
+	}
+}
+
 type remoteSnapshotBookmarkStatus struct {
 	State, VersionID, SourceState, Provenance string
 	ModeratedAt, Reason, Outcome              string

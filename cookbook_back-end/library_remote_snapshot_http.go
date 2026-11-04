@@ -284,6 +284,16 @@ func (h apiHandler) remoteSnapshotByBookmark(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	defer tx.Rollback()
+	if err := requireOwnedActiveRemoteSnapshotPin(r.Context(), tx, userID, bookmarkID); err != nil {
+		if errors.Is(err, errRemoteSnapshotRestricted) {
+			writeError(w, http.StatusNotFound, "snapshot_restricted")
+		} else if errors.Is(err, errRemoteSnapshotRemoved) {
+			writeError(w, http.StatusNotFound, "snapshot_removed")
+		} else {
+			writeError(w, http.StatusNotFound, "not_found")
+		}
+		return
+	}
 	item, err := readRemoteSnapshotForBookmark(r.Context(), tx, userID, bookmarkID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found")

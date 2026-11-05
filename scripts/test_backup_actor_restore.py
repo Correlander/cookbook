@@ -684,11 +684,12 @@ func TestBackupActorFixture(t *testing.T) {
             connection.close()
 
             finalize_backup(cold_archive, engine=engine, image=image_id)
-            cold_expected = validate_backup(cold_archive, engine=engine, image=image_id)["person_actor_manifest"]
+            cold_actor_manifest = validate_backup(cold_archive, engine=engine, image=image_id)["person_actor_manifest"]
             finalize_backup(hot_archive, engine=engine, image=image_id)
-            expected = validate_backup(hot_archive, engine=engine, image=image_id)["person_actor_manifest"]
-            self.assertEqual(cold_expected, expected, "cold and hot snapshots changed the actor manifest")
-            states = {actor["state"] for actor in expected["actors"]}
+            hot_actor_manifest = validate_backup(hot_archive, engine=engine, image=image_id)["person_actor_manifest"]
+            self.assertEqual(cold_actor_manifest, hot_actor_manifest,
+                             "cold and hot snapshots changed the actor manifest")
+            states = {actor["state"] for actor in hot_actor_manifest["actors"]}
             if states != {"active", "retired"}:
                 self.fail("generated fixture did not contain active and WAL-retired actors")
 
@@ -756,7 +757,7 @@ volumes:
                 raise AssertionError(f"fixture service did not become ready ({category})")
             recovered = json.loads(run([engine, "compose", "exec", "-T", "cookbook", "cookbook", "instance", "recovery", "describe",
                                         "--database", "/data/cookbook.db"]))
-            self.assertEqual(recovered, expected)
+            self.assertEqual(recovered, hot_actor_manifest)
             recovered_database = copy_restored_database("recovered-snapshot", stop_service=True)
             with closing(sqlite3.connect(recovered_database)) as restored_db:
                 marker = restored_db.execute("SELECT value FROM proof_marker").fetchone()
@@ -822,7 +823,7 @@ volumes:
                     "accepted_at": "2026-11-04T00:00:00Z", "evidence_bytes": len(snapshot_event) + 128,
                 }
                 for index, state in ((0, "active"), (3, "restricted")):
-                    expected = {
+                    expected_snapshot = {
                         "id": "snapshot-" + state, "state": state, "removed_version_id": None,
                         "moderated_by": "fixture-admin" if state == "restricted" else None,
                         "moderated_at": "2026-11-04T00:00:00Z" if state == "restricted" else None,
@@ -838,8 +839,11 @@ volumes:
                         "encoded_capture_bytes": len(snapshot_payload) + len(snapshot_event) + 256,
                         "untrusted_claim": None,
                     }
-                    expected.update(verified_evidence)
-                    self.assertEqual(persisted[index], expected, state + " capture evidence or moderation data changed")
+                    expected_snapshot.update(verified_evidence)
+                    self.assertEqual(
+                        persisted[index], expected_snapshot,
+                        state + " capture evidence or moderation data changed",
+                    )
 
                 imported = persisted[1]
                 # The synthetic imported-unverified row above deliberately seeds
@@ -923,7 +927,7 @@ volumes:
                                        text=True, capture_output=True, timeout=10)
                 if probe.returncode == 0:
                     restart_ready = True
-                    self.assertEqual(json.loads(probe.stdout), expected)
+                    self.assertEqual(json.loads(probe.stdout), hot_actor_manifest)
                     break
                 time.sleep(1)
             if not restart_ready:

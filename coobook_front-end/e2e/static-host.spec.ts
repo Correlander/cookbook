@@ -386,11 +386,13 @@ test('signed-in instance administrators can open settings directly and through t
     public_instance: boolean
     anonymous_home_preset?: string
     site_name?: string
+    palette?: string
   }
   const originalPreset = initialSettings.anonymous_home_preset === 'discovery_first'
     ? 'discovery_first'
     : 'library_first'
   const originalSiteName = initialSettings.site_name ?? 'Cookbook'
+  const originalPalette = initialSettings.palette === 'plum' ? 'plum' : 'garden'
   let guestContext: BrowserContext | undefined
   let primaryFailure: unknown
   let primaryFailed = false
@@ -427,6 +429,25 @@ test('signed-in instance administrators can open settings directly and through t
     await expect(page.getByRole('status').filter({ hasText: 'Instance settings saved.' })).toBeVisible()
     const resetSettings = await page.request.get('/api/admin/settings')
     expect((await resetSettings.json()).site_name).toBe('Cookbook')
+
+    const palette = page.getByRole('combobox', { name: 'Appearance' })
+    await palette.selectOption('plum')
+    await page.getByRole('button', { name: 'Save instance settings' }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'Instance settings saved.' })).toBeVisible()
+    const plumSettings = await page.request.get('/api/admin/settings')
+    expect((await plumSettings.json()).palette).toBe('plum')
+    await page.goto('/discover')
+    await expect(page.locator('html')).toHaveAttribute('data-palette', 'plum')
+    await expect(page.locator('html')).toHaveCSS('--green', '#56375f')
+    await expect(page.getByRole('contentinfo').getByRole('link', { name: 'Cookbook', exact: true })).toHaveText('Cookbook')
+    expect(await page.locator('html').evaluate((root) => root.getAttribute('data-palette'))).toBe('plum')
+
+    await page.goto('/admin/settings')
+    await page.getByRole('button', { name: 'Reset appearance' }).click()
+    await page.getByRole('button', { name: 'Save instance settings' }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'Instance settings saved.' })).toBeVisible()
+    const gardenSettings = await page.request.get('/api/admin/settings')
+    expect((await gardenSettings.json()).palette).toBe('garden')
 
     const homePreset = page.getByRole('combobox', { name: /homepage presentation/i })
     await homePreset.selectOption('discovery_first')
@@ -487,6 +508,7 @@ test('signed-in instance administrators can open settings directly and through t
         public_instance: initialSettings.public_instance,
         anonymous_home_preset: originalPreset,
         site_name: originalSiteName,
+        palette: originalPalette,
         confirm_publication: true,
       },
     })

@@ -13,7 +13,7 @@ function Probe() {
         <button onClick={retry}>Retry</button>
       </>
     );
-  return <p>{state.config.auth_methods.email_link ? "Email enabled" : "Email disabled"} · course attribution {state.config.course_creator_attribution ? "enabled" : "disabled"} · menus {state.config.menu_api ? "enabled" : "disabled"} · Home {state.config.anonymous_home_preset} · brand {state.config.branding?.site_name}</p>;
+  return <p>{state.config.auth_methods.email_link ? "Email enabled" : "Email disabled"} · course attribution {state.config.course_creator_attribution ? "enabled" : "disabled"} · menus {state.config.menu_api ? "enabled" : "disabled"} · Home {state.config.anonymous_home_preset} · brand {state.config.branding?.site_name} · palette {state.config.branding?.palette}</p>;
 }
 
 function configResponse(data: unknown, status = 200): Response {
@@ -170,4 +170,25 @@ it("trims and preserves a valid Unicode instance name while ignoring unknown pal
   }))));
   render(<Probe />);
   expect(await screen.findByText(/brand Crème 🍲/)).toBeTruthy();
+  expect(screen.getByText(/palette garden/)).toBeTruthy();
+});
+
+it.each([
+  ["garden", "garden"],
+  ["plum", "plum"],
+  ["missing", "garden"],
+  ["malformed", "garden"],
+])("normalizes the %s palette to the finite local value %s", async (input, expected) => {
+  const branding: Record<string, unknown> = { site_name: "Kitchen" };
+  if (input === "garden" || input === "plum") branding.palette = input;
+  if (input === "malformed") branding.palette = { selector: "body" };
+  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(configResponse({
+    auth_methods: { email_link: true, passkey: false },
+    registration_policy: "invite_only",
+    public_instance: true,
+    courses_enabled: false,
+    branding,
+  }))));
+  render(<Probe />);
+  expect(await screen.findByText(new RegExp(`palette ${expected}$`))).toBeTruthy();
 });

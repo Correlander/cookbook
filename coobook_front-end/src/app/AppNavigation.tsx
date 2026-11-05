@@ -56,6 +56,15 @@ export default function AppNavigation({
   const name = resolvedPublicConfigState.status === "ready"
     ? resolvedPublicConfigState.config.branding?.site_name ?? "Cookbook"
     : "Cookbook";
+  const palette = resolvedPublicConfigState.status === "ready"
+    ? resolvedPublicConfigState.config.branding?.palette ?? "garden"
+    : "garden";
+  useEffect(() => {
+    document.documentElement.dataset.palette = palette;
+    return () => {
+      document.documentElement.dataset.palette = "garden";
+    };
+  }, [palette]);
   const [showSessionPending, setShowSessionPending] = useState(false);
   useEffect(() => {
     if (sessionStatus !== "loading") { setShowSessionPending(false); return; }

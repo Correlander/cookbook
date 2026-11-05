@@ -282,6 +282,58 @@ it("omits the site name field and reset control when an older settings API omits
   expect(patchBody).toEqual({});
 });
 
+it.each([undefined, "autumn", { value: "plum" }])("omits unsupported palette settings (%s)", async (palette) => {
+  const oldSettings = { ...settings, ...(palette === undefined ? {} : { palette }) };
+  let patchBody: Record<string, unknown> | undefined;
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === "/api/admin/settings" && init?.method === "PATCH") {
+      patchBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return Promise.resolve(jsonResponse(oldSettings));
+    }
+    if (String(input) === "/api/admin/settings") return Promise.resolve(jsonResponse(oldSettings));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<AdminSettings />);
+  const appearance = await screen.findByRole("combobox", { name: "Appearance" });
+  expect(appearance).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: "Reset appearance" })).toHaveProperty("disabled", true);
+  fireEvent.click(screen.getByRole("button", { name: "Save instance settings" }));
+  await screen.findByRole("status");
+  expect(patchBody).toEqual({});
+});
+
+it("saves only a changed supported palette and explicitly resets it to garden", async () => {
+  let current = { ...settings, site_name: "My Kitchen", palette: "garden" };
+  const patchBodies: Record<string, unknown>[] = [];
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === "/api/admin/settings" && init?.method === "PATCH") {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      patchBodies.push(body);
+      current = { ...current, ...body };
+      return Promise.resolve(jsonResponse(current));
+    }
+    if (String(input) === "/api/admin/settings") return Promise.resolve(jsonResponse(current));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<AdminSettings />);
+  const appearance = await screen.findByRole("combobox", { name: "Appearance" });
+  fireEvent.change(appearance, { target: { value: "plum" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save instance settings" }));
+  await screen.findByRole("status");
+  expect(patchBodies[0]).toEqual({ palette: "plum" });
+  expect(screen.getByRole("combobox", { name: "Appearance" })).toHaveProperty("value", "plum");
+
+  fireEvent.click(screen.getByRole("button", { name: "Reset appearance" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save instance settings" }));
+  await screen.findByRole("status");
+  expect(patchBodies[1]).toEqual({ palette: "garden" });
+  expect(screen.getByRole("combobox", { name: "Appearance" })).toHaveProperty("value", "garden");
+});
+
 it("does not show publisher setup guidance when the server uses that code with a non-409 status", async () => {
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
     String(input) === "/api/admin/settings" && init?.method === "PATCH"

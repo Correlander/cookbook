@@ -58,6 +58,7 @@ export interface BrowserSession {
 
 export type RegistrationPolicy = "invite_only" | "open" | "disabled";
 export type AnonymousHomePreset = "library_first" | "discovery_first";
+export type InstancePalette = "garden" | "plum";
 
 export interface AuthMethods {
   email_link: boolean;
@@ -77,7 +78,7 @@ export interface PublicAuthConfig {
 
 export interface PublicBranding {
   site_name: string;
-  palette: "garden";
+  palette: InstancePalette;
 }
 
 export interface AdminSettingsModel {

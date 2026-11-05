@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AdminSettingsModel, RegistrationPolicy } from "./apiModels";
+import type { AdminSettingsModel, InstancePalette, RegistrationPolicy } from "./apiModels";
 
 function isAnonymousHomePreset(
   value: unknown,
 ): value is "library_first" | "discovery_first" {
   return value === "library_first" || value === "discovery_first";
+}
+
+function isInstancePalette(value: unknown): value is InstancePalette {
+  return value === "garden" || value === "plum";
 }
 
 function validSiteName(value: unknown): value is string {
@@ -38,6 +42,8 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
   const [supportsAnonymousHomePreset, setSupportsAnonymousHomePreset] = useState(false);
   const [siteName, setSiteName] = useState("Cookbook");
   const [supportsSiteName, setSupportsSiteName] = useState(false);
+  const [palette, setPalette] = useState<InstancePalette>("garden");
+  const [supportsPalette, setSupportsPalette] = useState(false);
   const [confirmPublication, setConfirmPublication] = useState(false);
   const [loadingSettings, setLoadingSettings] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -59,6 +65,8 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
     setSupportsAnonymousHomePreset(false);
     setSiteName("Cookbook");
     setSupportsSiteName(false);
+    setPalette("garden");
+    setSupportsPalette(false);
     setConfirmPublication(false);
     setError("");
     setNotice("");
@@ -87,6 +95,8 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
       setSettings({ ...data, anonymous_home_preset: anonymousHomePreset });
       setSiteName(displaySiteName(data.site_name));
       setSupportsSiteName(typeof data.site_name === "string");
+      setPalette(isInstancePalette(data.palette) ? data.palette : "garden");
+      setSupportsPalette(isInstancePalette(data.palette));
       setPublicInstance(data.public_instance);
       setCoursesEnabled(data.courses_enabled);
       setRegistrationPolicy(data.registration_policy);
@@ -127,6 +137,8 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
           throw new Error("Use a name with 1 to 48 characters and no control characters.");
         payload.site_name = siteName.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
       }
+      if (supportsPalette && palette !== settings.palette)
+        payload.palette = palette;
       if (supportsAnonymousHomePreset && anonymousHomePreset !== settings.anonymous_home_preset)
         payload.anonymous_home_preset = anonymousHomePreset;
       if (publicInstance !== settings.public_instance)
@@ -200,6 +212,8 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
       setSettings({ ...updated, anonymous_home_preset: updatedPreset });
       setSiteName(displaySiteName(updated.site_name));
       setSupportsSiteName(typeof updated.site_name === "string");
+      setPalette(isInstancePalette(updated.palette) ? updated.palette : "garden");
+      setSupportsPalette(isInstancePalette(updated.palette));
       setPublicInstance(updated.public_instance);
       setCoursesEnabled(updated.courses_enabled);
       setRegistrationPolicy(updated.registration_policy);
@@ -341,6 +355,28 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
                 This server does not support choosing an anonymous homepage presentation.
               </p>
             )}
+            <div className="admin-settings-field">
+              <label htmlFor="instance-palette">Appearance</label>
+              <select
+                id="instance-palette"
+                value={palette}
+                disabled={!supportsPalette || saving}
+                onChange={(event) => setPalette(event.currentTarget.value as InstancePalette)}
+              >
+                <option value="garden">Garden</option>
+                <option value="plum">Plum</option>
+              </select>
+              <button
+                type="button"
+                className="text-link"
+                disabled={!supportsPalette || saving || palette === "garden"}
+                onClick={() => setPalette("garden")}
+              >
+                Reset appearance
+              </button>
+              {!supportsPalette && <p className="admin-settings-note">This server does not support changing the appearance.</p>}
+              <p className="admin-settings-note">Changes the instance accent colors. Status, security, and product colors stay fixed.</p>
+            </div>
           </section>
           <section className="instance-settings-section" id="visibility" aria-labelledby="visibility-heading">
           <h3 id="visibility-heading">Public browsing</h3>

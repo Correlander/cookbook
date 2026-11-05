@@ -34,6 +34,14 @@ async function createPrivateRecipe(page: Page, title: string): Promise<{ id: str
   return { id: value.id };
 }
 
+async function tabTo(page: Page, target: import("@playwright/test").Locator): Promise<void> {
+  for (let step = 0; step < 20; step++) {
+    if (await target.evaluate((element) => element === document.activeElement)) return;
+    await page.keyboard.press("Tab");
+  }
+  await expect(target).toBeFocused();
+}
+
 test("ordinary owners create, order, reopen, and cook from private menus while others remain denied", async ({ browser }) => {
   const creator = await openContext(browser);
   let reader: { context: BrowserContext; page: Page } | undefined;
@@ -63,9 +71,25 @@ test("ordinary owners create, order, reopen, and cook from private menus while o
     });
     menuTitle = `Dinner menu ${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const menuForm = creator.page.getByRole("dialog").locator("form");
+    const menuNote = menuForm.getByLabel("Note", { exact: true });
+    const creatorCredit = creator.page.getByRole("combobox", { name: "Creator credit" });
+    await tabTo(creator.page, menuNote);
+    await expect(menuNote).toBeVisible();
+    await expect(menuNote).toBeInViewport();
+    await expect(menuNote).toHaveCSS("outline-width", "3px");
+    await expect(menuNote).toHaveCSS("outline-color", "rgb(0, 0, 0)");
+    await expect(menuNote).toHaveCSS("outline-offset", "3px");
+    await expect(menuNote).toHaveCSS("box-shadow", "rgb(255, 255, 255) 0px 0px 0px 3px");
+    await tabTo(creator.page, creatorCredit);
+    await expect(creatorCredit).toBeVisible();
+    await expect(creatorCredit).toBeInViewport();
+    await expect(creatorCredit).toHaveCSS("outline-width", "3px");
+    await expect(creatorCredit).toHaveCSS("outline-color", "rgb(0, 0, 0)");
+    await expect(creatorCredit).toHaveCSS("outline-offset", "3px");
+    await expect(creatorCredit).toHaveCSS("box-shadow", "rgb(255, 255, 255) 0px 0px 0px 3px");
     await menuForm.getByLabel("Title", { exact: true }).fill(menuTitle);
-    await menuForm.getByLabel("Note", { exact: true }).fill("Keep the courses in order.");
-    await creator.page.getByRole("combobox", { name: "Creator credit" }).selectOption("local_profile");
+    await menuNote.fill("Keep the courses in order.");
+    await creatorCredit.selectOption("local_profile");
     await creator.page.getByRole("button", { name: "Create menu" }).click();
     await expect(creator.page).toHaveURL(/\/menu\?id=[a-f0-9]{32}$/);
     menuID = new URL(creator.page.url()).searchParams.get("id") ?? "";
@@ -123,15 +147,35 @@ test("ordinary owners create, order, reopen, and cook from private menus while o
     const recipeLink = firstCourse.getByRole("link", { name: /Private menu recipe/ });
     await expect(recipeLink).toHaveCount(1);
     await recipeLink.click();
-    await expect(creator.page.getByRole("button", { name: "Start cooking mode" })).toBeVisible();
-    await creator.page.getByRole("button", { name: "Start cooking mode" }).click();
+    const cookingOpener = creator.page.getByRole("button", { name: "Start cooking mode" });
+    await expect(cookingOpener).toBeVisible();
+    await cookingOpener.click();
     const cookingDialog = creator.page.getByRole("dialog").filter({
       has: creator.page.getByText("Cooking mode", { exact: true }),
     });
     await expect(cookingDialog).toBeVisible();
+    expect(await cookingDialog.evaluate((dialog) => dialog.closest('.cooking-backdrop')?.parentElement === document.body)).toBe(true);
     await expect(cookingDialog).toHaveAccessibleName(/Private menu recipe/);
     await expect(cookingDialog.getByText("Cooking mode", { exact: true })).toBeVisible();
     await expect(cookingDialog.getByRole("button", { name: "Next step" })).toBeVisible();
+    await creator.page.keyboard.press("Tab");
+    const portaledFocusedControl = creator.page.locator(":focus");
+    await expect(portaledFocusedControl).toBeVisible();
+    expect(await portaledFocusedControl.evaluate((control) => control.closest('[role="dialog"]') !== null)).toBe(true);
+    const portaledFocusStyle = await portaledFocusedControl.evaluate((control) => {
+      const style = getComputedStyle(control);
+      return { outlineWidth: style.outlineWidth, outlineColor: style.outlineColor, outlineOffset: style.outlineOffset, boxShadow: style.boxShadow };
+    });
+    expect(portaledFocusStyle).toEqual({
+      outlineWidth: "3px",
+      outlineColor: "rgb(0, 0, 0)",
+      outlineOffset: "3px",
+      boxShadow: "rgb(255, 255, 255) 0px 0px 0px 3px",
+    });
+    await cookingDialog.getByRole("button", { name: "Close cooking mode" }).click();
+    await expect(cookingOpener).toBeFocused();
+    await cookingOpener.click();
+    await expect(cookingDialog).toBeVisible();
     await cookingDialog.getByRole("button", { name: "Next step" }).click();
     await expect(cookingDialog.getByRole("status")).toHaveText("Step 2 of 2");
     await expect(cookingDialog.getByRole("heading", { name: "Season with salt." })).toBeVisible();

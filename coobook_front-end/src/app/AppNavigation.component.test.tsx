@@ -202,6 +202,31 @@ it("renders a supplied instance name as escaped text without a second config req
   await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input) === "/api/public/config")).toBe(false));
 });
 
+it("sets the document palette from shared public config and restores garden on unmount", () => {
+  const view = renderNavigation({ user: null, publicConfigState: {
+    status: "ready",
+    config: {
+      auth_methods: { email_link: true, passkey: false },
+      registration_policy: "invite_only",
+      public_instance: false,
+      courses_enabled: false,
+      anonymous_home_preset: "library_first",
+      branding: { site_name: "Kitchen", palette: "plum" },
+    },
+  } });
+  expect(document.documentElement.dataset.palette).toBe("plum");
+  view.unmount();
+  expect(document.documentElement.dataset.palette).toBe("garden");
+});
+
+it.each([
+  ["loading", { status: "loading" }],
+  ["error", { status: "error", message: "offline" }],
+] as const)("uses garden while public config is %s", (_label, publicConfigState) => {
+  renderNavigation({ user: null, publicConfigState });
+  expect(document.documentElement.dataset.palette).toBe("garden");
+});
+
 it("uses its existing config hook once when no route owner supplies state", async () => {
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     if (String(input) === "/api/public/config") return Promise.resolve(response({

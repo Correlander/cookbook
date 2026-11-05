@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   AnonymousHomePreset,
+  InstancePalette,
   PublicAuthConfig,
   PublicBranding,
   RegistrationPolicy,
@@ -21,10 +22,13 @@ function normalizedBranding(value: unknown): PublicBranding {
     ? trimUnicodeWhitespace(branding.site_name)
     : "";
   const valid = candidate.length > 0 && Array.from(candidate).length <= 48 && !/\p{Cc}/u.test(candidate);
+  const palette: InstancePalette = isRecord(branding) &&
+    (branding.palette === "garden" || branding.palette === "plum")
+    ? branding.palette
+    : "garden";
   return {
     site_name: valid ? candidate : "Cookbook",
-    // Palette is persisted independently; the current client intentionally renders only garden.
-    palette: "garden",
+    palette,
   };
 }
 

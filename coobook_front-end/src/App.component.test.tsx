@@ -29,12 +29,15 @@ function publicConfig(
   emailLink: boolean,
   passkey: boolean,
   registrationPolicy: "invite_only" | "open" | "disabled" = "invite_only",
+  publicInstance = false,
+  anonymousHomePreset: "library_first" | "discovery_first" = "library_first",
 ) {
   return {
     auth_methods: { email_link: emailLink, passkey },
     registration_policy: registrationPolicy,
-    public_instance: false,
+    public_instance: publicInstance,
     courses_enabled: false,
+    anonymous_home_preset: anonymousHomePreset,
   };
 }
 
@@ -93,7 +96,7 @@ it("shows authenticated typed credits in Home cards as plain text and links them
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     if (url === "/api/public/config")
-      return Promise.resolve(jsonResponse(publicConfig(true, true)));
+      return Promise.resolve(jsonResponse(publicConfig(true, true, "invite_only", true)));
     if (url === "/api/auth/me") return Promise.resolve(jsonResponse(reader));
     if (url === "/api/recipes?limit=24&offset=0")
       return Promise.resolve(jsonResponse([recipe]));
@@ -135,13 +138,77 @@ it("keeps the anonymous Home hero out of view until the session check resolves",
   const pending = deferred<Response>();
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
     if (String(input) === "/api/auth/me") return pending.promise;
+    if (String(input) === "/api/public/config")
+      return Promise.resolve(jsonResponse(publicConfig(true, true)));
     return Promise.resolve(jsonResponse({}, 404));
   }));
   renderApp();
   expect(screen.getByText("Checking your session…")).toBeTruthy();
   expect(screen.queryByRole("heading", { name: /A little more/ })).toBeNull();
   await act(async () => pending.resolve(jsonResponse({}, 401)));
-  expect(await screen.findByRole("heading", { name: /A little more/ })).toBeTruthy();
+  expect(await screen.findByRole("heading", { name: /A home for the recipes/i })).toBeTruthy();
+});
+
+it("keeps private-instance catalog requests off even when discovery-first is stored", async () => {
+  const requestedCatalog: string[] = [];
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse({}, 401));
+    if (url === "/api/public/config")
+      return Promise.resolve(jsonResponse(publicConfig(true, true, "invite_only", false, "discovery_first")));
+    if (/^\/api\/(?:public\/)?(?:recipes|remote-recipes|cookbooks|courses)/.test(url)) {
+      requestedCatalog.push(url);
+    }
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+
+  expect(await screen.findByText(/this instance keeps its recipes private/i)).toBeTruthy();
+  expect(screen.getByRole("button", { name: /sign in or create an account/i })).toBeTruthy();
+  expect(screen.queryByRole("link", { name: "Browse recipes" })).toBeNull();
+  expect(requestedCatalog).toEqual([]);
+});
+
+it("uses discovery-first only on a public instance and links to existing Browse", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse({}, 401));
+    if (url === "/api/public/config")
+      return Promise.resolve(jsonResponse(publicConfig(true, true, "invite_only", true, "discovery_first")));
+    if (url === "/api/public/recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    if (url === "/api/public/remote-recipes?limit=24&offset=0")
+      return Promise.resolve(jsonResponse([]));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+
+  expect(await screen.findByRole("heading", { name: /find something good to make/i })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Browse recipes" }).getAttribute("href")).toBe("/discover");
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/public/recipes?limit=24&offset=0"));
+});
+
+it("holds anonymous Home neutral until public configuration resolves", async () => {
+  const config = deferred<Response>();
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse({}, 401));
+    if (url === "/api/public/config") return config.promise;
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+
+  expect(await screen.findByText("Loading Home…")).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: /home for the recipes/i })).toBeNull();
+  await act(async () => config.resolve(jsonResponse(publicConfig(true, false))));
+  expect(await screen.findByRole("heading", { name: /home for the recipes/i })).toBeTruthy();
+  expect(fetchMock.mock.calls.some(([input]) => /\/api\/(?:public\/)?(?:recipes|cookbooks|courses)/.test(String(input)))).toBe(false);
 });
 
 it("keeps public Home cards on the legacy byline even if a response has a typed field", async () => {
@@ -178,7 +245,7 @@ it("keeps public Home cards on the legacy byline even if a response has a typed 
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     if (url === "/api/public/config")
-      return Promise.resolve(jsonResponse(publicConfig(true, true)));
+      return Promise.resolve(jsonResponse(publicConfig(true, true, "invite_only", true)));
     if (url === "/api/auth/me") return Promise.resolve(jsonResponse({}, 401));
     if (url === "/api/public/recipes?limit=24&offset=0")
       return Promise.resolve(jsonResponse([recipe]));
@@ -471,6 +538,8 @@ it("hides publication controls from guests even when a projection has an owner i
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     if (url === "/api/auth/me") return Promise.resolve(jsonResponse({}, 401));
+    if (url === "/api/public/config")
+      return Promise.resolve(jsonResponse(publicConfig(true, true, "invite_only", true)));
     if (url === "/api/public/recipes?limit=24&offset=0")
       return Promise.resolve(jsonResponse([recipe]));
     if (url === "/api/public/remote-recipes?limit=24&offset=0")

@@ -57,6 +57,7 @@ export interface BrowserSession {
 }
 
 export type RegistrationPolicy = "invite_only" | "open" | "disabled";
+export type AnonymousHomePreset = "library_first" | "discovery_first";
 
 export interface AuthMethods {
   email_link: boolean;
@@ -68,11 +69,13 @@ export interface PublicAuthConfig {
   registration_policy: RegistrationPolicy;
   public_instance: boolean;
   courses_enabled: boolean;
+  anonymous_home_preset: AnonymousHomePreset;
   course_creator_attribution?: boolean;
   menu_api?: boolean;
 }
 
 export interface AdminSettingsModel {
+  anonymous_home_preset?: AnonymousHomePreset;
   public_instance: boolean;
   courses_enabled: boolean;
   registration_policy: RegistrationPolicy;

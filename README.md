@@ -106,6 +106,10 @@ The endpoint accepts optional `q`, a trimmed literal substring query over title,
 
 On existing instances, saved remote recipes remain unavailable until their cached search fields pass local validation and backfill. Blank queries keep the redacted saved reference during backfill; nonblank queries omit it. Backfill reads the local cache and never contacts peers.
 
+## Anonymous Home
+
+Instance settings let the owner or an administrator choose the signed-out Home presentation: `library_first` emphasizes a personal kitchen and sign-in, while `discovery_first` leads to this instance's existing Browse page. The default is `library_first`. The choice affects presentation only. Public browsing remains controlled separately, and recipes, cookbooks, and courses are still filtered by their current visibility and feature policies. A private instance keeps its Home catalog hidden even when `discovery_first` is selected. Signed-in Home continues to show the person's existing kitchen. Older APIs without this setting use the library-first presentation and do not receive an unsupported settings update.
+
 `GET /api/library/recipes/remote?remote_object_uri=<encoded-object-uri>` returns one exact validated cached public remote recipe snapshot to a signed-in account, including on a private instance. The reader verifies the canonical object URI and its cached source identity/body in a read-only transaction. The endpoint does not scan bookmarks, require a saved bookmark as access, or fetch from a peer; missing, deleted, or source-mismatched snapshots return `not_found`, malformed selectors/URIs return `400`, and cache/storage failures return `500`. The response is private/no-store and contains only remote snapshot metadata and public recipe content.
 
 ### Private meal menus

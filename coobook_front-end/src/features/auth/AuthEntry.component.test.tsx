@@ -27,9 +27,10 @@ function deferred<T>() {
 function config(passkey: boolean) {
   return {
     auth_methods: { email_link: true, passkey },
-    registration_policy: "invite_only",
+    registration_policy: "invite_only" as const,
     public_instance: false,
     courses_enabled: false,
+    anonymous_home_preset: "library_first",
   };
 }
 
@@ -479,6 +480,35 @@ it("keeps Home modal focus and invitation query behavior in the shared presentat
   });
   expect(dialog.getAttribute("aria-modal")).toBe("true");
   expect(document.activeElement).toBeTruthy();
+});
+
+it("reuses Home's resolved public configuration without requesting it again", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    if (String(input) === "/api/auth/me") return Promise.resolve(response({}, 401));
+    return Promise.resolve(response({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(
+    <AppSessionProvider>
+      <AuthEntry
+        mode="home"
+        open
+        pathname="/"
+        onClose={() => undefined}
+        publicConfigState={{
+          status: "ready",
+          config: {
+            ...config(false),
+            anonymous_home_preset: "library_first",
+          },
+        }}
+      />
+    </AppSessionProvider>,
+  );
+
+  expect(await screen.findByLabelText("Email address")).toBeTruthy();
+  expect(fetchMock.mock.calls.some(([input]) => String(input) === "/api/public/config")).toBe(false);
 });
 
 it("traps Home auth focus and restores it when Escape closes the dialog", async () => {

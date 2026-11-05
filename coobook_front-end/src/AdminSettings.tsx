@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AdminSettingsModel, RegistrationPolicy } from "./apiModels";
 
+function isAnonymousHomePreset(
+  value: unknown,
+): value is "library_first" | "discovery_first" {
+  return value === "library_first" || value === "discovery_first";
+}
+
 type SettingsAccessFailure = "session" | "recent-authentication" | "permission";
 
 interface AdminSettingsProps {
@@ -16,6 +22,8 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
   const [revisionRetention, setRevisionRetention] = useState(365);
   const [auditRetention, setAuditRetention] = useState(365);
   const [federationEnabled, setFederationEnabled] = useState(false);
+  const [anonymousHomePreset, setAnonymousHomePreset] = useState<"library_first" | "discovery_first">("library_first");
+  const [supportsAnonymousHomePreset, setSupportsAnonymousHomePreset] = useState(false);
   const [confirmPublication, setConfirmPublication] = useState(false);
   const [loadingSettings, setLoadingSettings] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -33,6 +41,8 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
     setRevisionRetention(365);
     setAuditRetention(365);
     setFederationEnabled(false);
+    setAnonymousHomePreset("library_first");
+    setSupportsAnonymousHomePreset(false);
     setConfirmPublication(false);
     setError("");
     setNotice("");
@@ -55,13 +65,18 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
       if (!response.ok) throw new Error("Could not load instance settings.");
       const data = (await response.json()) as AdminSettingsModel;
       if (!isCurrent()) return;
-      setSettings(data);
+      const anonymousHomePreset = isAnonymousHomePreset(data.anonymous_home_preset)
+        ? data.anonymous_home_preset
+        : undefined;
+      setSettings({ ...data, anonymous_home_preset: anonymousHomePreset });
       setPublicInstance(data.public_instance);
       setCoursesEnabled(data.courses_enabled);
       setRegistrationPolicy(data.registration_policy);
       setRevisionRetention(data.revision_retention_days);
       setAuditRetention(data.audit_retention_days);
       setFederationEnabled(data.federation_enabled);
+      setAnonymousHomePreset(anonymousHomePreset ?? "library_first");
+      setSupportsAnonymousHomePreset(anonymousHomePreset !== undefined);
     } catch (loadError) {
       if (isCurrent())
         setLoadError(
@@ -88,17 +103,27 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
     setError("");
     setNotice("");
     try {
+      const payload: Record<string, unknown> = {};
+      if (supportsAnonymousHomePreset && anonymousHomePreset !== settings.anonymous_home_preset)
+        payload.anonymous_home_preset = anonymousHomePreset;
+      if (publicInstance !== settings.public_instance)
+        payload.public_instance = publicInstance;
+      if (coursesEnabled !== settings.courses_enabled)
+        payload.courses_enabled = coursesEnabled;
+      if (registrationPolicy !== settings.registration_policy)
+        payload.registration_policy = registrationPolicy;
+      if (Number(revisionRetention) !== settings.revision_retention_days)
+        payload.revision_retention_days = Number(revisionRetention);
+      if (Number(auditRetention) !== settings.audit_retention_days)
+        payload.audit_retention_days = Number(auditRetention);
+      if (federationEnabled !== settings.federation_enabled)
+        payload.federation_enabled = federationEnabled;
+      if (confirmPublication) payload.confirm_publication = true;
       const response = await fetch("/api/admin/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          public_instance: publicInstance,
-          courses_enabled: coursesEnabled,
-          registration_policy: registrationPolicy,
-          revision_retention_days: Number(revisionRetention),
-          audit_retention_days: Number(auditRetention),
-          federation_enabled: federationEnabled,
-          confirm_publication: confirmPublication,
+          ...payload,
         }),
       });
       let updated: (AdminSettingsModel & { error?: string }) | null = null;
@@ -146,13 +171,18 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
         );
       }
       if (!updated) throw new Error("Could not save instance settings.");
-      setSettings(updated);
+      const updatedPreset = isAnonymousHomePreset(updated.anonymous_home_preset)
+        ? updated.anonymous_home_preset
+        : undefined;
+      setSettings({ ...updated, anonymous_home_preset: updatedPreset });
       setPublicInstance(updated.public_instance);
       setCoursesEnabled(updated.courses_enabled);
       setRegistrationPolicy(updated.registration_policy);
       setRevisionRetention(updated.revision_retention_days);
       setAuditRetention(updated.audit_retention_days);
       setFederationEnabled(updated.federation_enabled);
+      setAnonymousHomePreset(updatedPreset ?? "library_first");
+      setSupportsAnonymousHomePreset(updatedPreset !== undefined);
       setConfirmPublication(false);
       setNotice("Instance settings saved.");
       onSaved?.(updated);
@@ -235,6 +265,7 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
         </div>
       </div>
       <nav className="instance-section-nav" aria-label="Instance settings sections">
+        <a href="#homepage">Homepage</a>
         <a href="#visibility">Public browsing</a>
         <a href="#courses">Courses</a>
         <a href="#accounts">Accounts</a>
@@ -248,6 +279,29 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
       )}
       {settings && (
         <form className="admin-settings-form" onSubmit={save}>
+          <section className="instance-settings-section" id="homepage" aria-labelledby="homepage-heading">
+            <h3 id="homepage-heading">Anonymous homepage</h3>
+            {supportsAnonymousHomePreset ? (
+              <>
+                <label htmlFor="anonymous-home-preset">Homepage presentation for signed-out visitors</label>
+                <select
+                  id="anonymous-home-preset"
+                  value={anonymousHomePreset}
+                  onChange={(event) => setAnonymousHomePreset(event.target.value as "library_first" | "discovery_first")}
+                >
+                  <option value="library_first">Personal kitchen first</option>
+                  <option value="discovery_first">Browse this instance first</option>
+                </select>
+                <p className="admin-settings-note">
+                  This changes the signed-out Home presentation only. Public browsing and each recipe, cookbook, or course’s visibility remain controlled by their existing settings.
+                </p>
+              </>
+            ) : (
+              <p className="admin-settings-note">
+                This server does not support choosing an anonymous homepage presentation.
+              </p>
+            )}
+          </section>
           <section className="instance-settings-section" id="visibility" aria-labelledby="visibility-heading">
           <h3 id="visibility-heading">Public browsing</h3>
           <label className="admin-settings-option" htmlFor="public-instance">

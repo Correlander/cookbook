@@ -1,4 +1,4 @@
-import { test, expect, type Route } from '@playwright/test'
+import { test, expect, type BrowserContext, type Route } from '@playwright/test'
 import { readFile, stat, unlink } from 'node:fs/promises'
 import { openAccountMenu, signInWithSyntheticEmail } from './auth'
 
@@ -371,23 +371,88 @@ test('signed-in instance administrators can open settings directly and through t
   const user = await signInWithSyntheticEmail(page, request, 'admin-static-host@example.test', 'E2E Admin')
   expect(user.is_admin).toBe(true)
 
-  for (const path of ['/admin/settings', '/admin/settings.html']) {
-    const response = await page.goto(path)
-    expect(response?.status()).toBe(200)
-    expect(response?.headers()['cache-control']).toBe('no-store')
-    await expect(page).toHaveTitle(/Instance settings/)
-    await expect(page.getByRole('heading', { name: 'Instance administration', level: 1 })).toBeVisible()
-    await expect(page.getByText('Enable public browsing')).toBeVisible()
-    await openAccountMenu(page)
-    await expect(page.getByRole('link', { name: 'Instance', exact: true })).toBeVisible()
-    await expect(page.getByRole('link', { name: 'Administration' })).toHaveCount(0)
+  const initialSettingsResponse = await page.request.get('/api/admin/settings')
+  expect(initialSettingsResponse.status()).toBe(200)
+  const initialSettings = await initialSettingsResponse.json() as {
+    public_instance: boolean
+    anonymous_home_preset?: string
   }
+  const originalPreset = initialSettings.anonymous_home_preset === 'discovery_first'
+    ? 'discovery_first'
+    : 'library_first'
+  let guestContext: BrowserContext | undefined
 
-  await page.goto('/admin')
-  await expect(page.getByRole('heading', { name: 'People and permissions', level: 1 })).toBeVisible()
-  await page.getByRole('link', { name: 'Settings', exact: true }).click()
-  await expect(page).toHaveURL(/\/admin\/settings#visibility$/)
-  await expect(page.getByRole('heading', { name: 'Instance administration', level: 1 })).toBeVisible()
+  try {
+    for (const path of ['/admin/settings', '/admin/settings.html']) {
+      const response = await page.goto(path)
+      expect(response?.status()).toBe(200)
+      expect(response?.headers()['cache-control']).toBe('no-store')
+      await expect(page).toHaveTitle(/Instance settings/)
+      await expect(page.getByRole('heading', { name: 'Instance administration', level: 1 })).toBeVisible()
+      await expect(page.getByText('Enable public browsing')).toBeVisible()
+      await openAccountMenu(page)
+      await expect(page.getByRole('link', { name: 'Instance', exact: true })).toBeVisible()
+      await expect(page.getByRole('link', { name: 'Administration' })).toHaveCount(0)
+    }
+
+    const homePreset = page.getByRole('combobox', { name: /homepage presentation/i })
+    await homePreset.selectOption('discovery_first')
+    await page.getByRole('button', { name: 'Save instance settings' }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'Instance settings saved.' })).toBeVisible()
+    const savedSettings = await page.request.get('/api/admin/settings')
+    expect((await savedSettings.json()).anonymous_home_preset).toBe('discovery_first')
+
+    const privateSettings = await page.request.patch('/api/admin/settings', {
+      data: { public_instance: false },
+    })
+    expect(privateSettings.status()).toBe(200)
+    guestContext = await page.context().browser()!.newContext()
+    const guest = await guestContext.newPage()
+    const privateCatalogRequests: string[] = []
+    guest.on('request', (browserRequest) => {
+      const pathname = new URL(browserRequest.url()).pathname
+      if (/^\/api\/(?:public\/)?(?:recipes|remote-recipes|cookbooks|courses)(?:\/|$)/.test(pathname))
+        privateCatalogRequests.push(pathname)
+    })
+    await guest.goto('/')
+    await expect(guest.getByText(/this instance keeps its recipes private/i)).toBeVisible()
+    await expect(guest.getByRole('button', { name: /sign in or create an account/i })).toBeVisible()
+    await expect(guest.getByRole('link', { name: 'Browse recipes' })).toHaveCount(0)
+    expect(privateCatalogRequests).toEqual([])
+
+    const publicSettings = await page.request.patch('/api/admin/settings', {
+      data: { public_instance: true, confirm_publication: true },
+    })
+    expect(publicSettings.status()).toBe(200)
+    const publicCatalogRequests: string[] = []
+    guest.on('request', (browserRequest) => {
+      const pathname = new URL(browserRequest.url()).pathname
+      if (/^\/api\/public\/(?:recipes|cookbooks|remote-recipes)(?:\/|$)/.test(pathname))
+        publicCatalogRequests.push(pathname)
+    })
+    await guest.reload()
+    await expect(guest.getByRole('heading', { name: /find something good to make/i })).toBeVisible()
+    await expect(guest.getByRole('link', { name: 'Browse recipes' })).toHaveAttribute('href', '/discover')
+    await expect.poll(() => publicCatalogRequests.length).toBeGreaterThan(0)
+
+    await page.goto('/admin')
+    await expect(page.getByRole('heading', { name: 'People and permissions', level: 1 })).toBeVisible()
+    await page.getByRole('link', { name: 'Settings', exact: true }).click()
+    await expect(page).toHaveURL(/\/admin\/settings#visibility$/)
+    await expect(page.getByRole('heading', { name: 'Instance administration', level: 1 })).toBeVisible()
+  } finally {
+    try {
+      await page.request.patch('/api/admin/settings', {
+        data: {
+          public_instance: initialSettings.public_instance,
+          anonymous_home_preset: originalPreset,
+          confirm_publication: true,
+        },
+      })
+    } finally {
+      await guestContext?.close()
+    }
+  }
 })
 
 test('email sign-in remains explicit, establishes a session, and rejects replay', async ({ page, request }) => {

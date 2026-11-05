@@ -13,7 +13,7 @@ function Probe() {
         <button onClick={retry}>Retry</button>
       </>
     );
-  return <p>{state.config.auth_methods.email_link ? "Email enabled" : "Email disabled"} · course attribution {state.config.course_creator_attribution ? "enabled" : "disabled"} · menus {state.config.menu_api ? "enabled" : "disabled"}</p>;
+  return <p>{state.config.auth_methods.email_link ? "Email enabled" : "Email disabled"} · course attribution {state.config.course_creator_attribution ? "enabled" : "disabled"} · menus {state.config.menu_api ? "enabled" : "disabled"} · Home {state.config.anonymous_home_preset}</p>;
 }
 
 function configResponse(data: unknown, status = 200): Response {
@@ -97,6 +97,35 @@ it("enables menus only for an explicit supported protocol response", async () =>
   }))));
   render(<Probe />);
   expect(await screen.findByText(/menus enabled/)).toBeTruthy();
+});
+
+it.each([
+  ["missing", undefined],
+  ["unknown", "publication_first"],
+  ["malformed", { value: "discovery_first" }],
+])("defaults %s anonymous homepage config to library-first", async (_label, preset) => {
+  const config: Record<string, unknown> = {
+    auth_methods: { email_link: true, passkey: false },
+    registration_policy: "invite_only",
+    public_instance: true,
+    courses_enabled: false,
+  };
+  if (preset !== undefined) config.anonymous_home_preset = preset;
+  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(configResponse(config))));
+  render(<Probe />);
+  expect(await screen.findByText(/Home library_first/)).toBeTruthy();
+});
+
+it("accepts the explicit discovery-first preset", async () => {
+  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(configResponse({
+    auth_methods: { email_link: true, passkey: false },
+    registration_policy: "invite_only",
+    public_instance: true,
+    courses_enabled: false,
+    anonymous_home_preset: "discovery_first",
+  }))));
+  render(<Probe />);
+  expect(await screen.findByText(/Home discovery_first/)).toBeTruthy();
 });
 
 it("rejects malformed capability data instead of fabricating availability", async () => {

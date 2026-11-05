@@ -20,6 +20,8 @@ import type {
 import { errorMessage } from "./apiModels";
 import { SessionCheckError } from "./app/AppSession.tsx";
 import AuthEntry from "./features/auth/AuthEntry.tsx";
+import AnonymousHome from "./features/home/AnonymousHome.tsx";
+import usePublicAuthConfig from "./features/auth/usePublicAuthConfig.ts";
 
 const Courses = lazy(() => import("./Courses.tsx"));
 type RecipeCardItem = {
@@ -93,12 +95,19 @@ function HomeApp({ pathname }: { pathname: string }) {
     refreshSession,
     clearSession,
   } = useAppSession();
+  const { state: publicConfigState, retry: retryPublicConfig } =
+    usePublicAuthConfig();
   const currentUserIDRef = useRef<string | null>(currentUser?.id ?? null);
   currentUserIDRef.current = currentUser?.id ?? null;
   const signedIn = Boolean(currentUser);
+  const canLoadPublicHome =
+    sessionState.status === "authenticated" ||
+    (sessionState.status === "anonymous" &&
+      publicConfigState.status === "ready" &&
+      publicConfigState.config.public_instance);
   const formActorID = currentUser?.id ?? null;
   const activeEditRecipe = editActorID === formActorID ? editRecipe : null;
-  const feed = useRecipeFeed({ signedIn, query });
+  const feed = useRecipeFeed({ signedIn, query, enabled: canLoadPublicHome });
   useEffect(() => {
     if (editRecipe && editActorID !== formActorID) {
       setEditRecipe(null);
@@ -126,6 +135,11 @@ function HomeApp({ pathname }: { pathname: string }) {
       );
   }, [pathname]);
   useEffect(() => {
+    if (!canLoadPublicHome) {
+      setRemoteVisible(false);
+      setRemoteRecipes([]);
+      return undefined;
+    }
     let active = true;
     fetch("/api/public/remote-recipes?limit=24&offset=0")
       .then(async (response) => {
@@ -150,7 +164,7 @@ function HomeApp({ pathname }: { pathname: string }) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [canLoadPublicHome]);
   return (
     <div className="app-content">
       <AppNavigation
@@ -170,9 +184,15 @@ function HomeApp({ pathname }: { pathname: string }) {
             onRetry={() => void refreshSession()}
           />
         )}
-        {sessionState.status === "loading" ? (
+        {sessionState.status === "loading" ||
+        (sessionState.status === "anonymous" &&
+          publicConfigState.status === "loading") ? (
           <section className="home-session-pending" aria-label="Home">
-            <p role="status">Checking your session…</p>
+            <p role="status">
+              {sessionState.status === "loading"
+                ? "Checking your session…"
+                : "Loading Home…"}
+            </p>
           </section>
         ) : sessionState.status === "error" ? null : <>
         {signedIn ? (
@@ -189,84 +209,54 @@ function HomeApp({ pathname }: { pathname: string }) {
               Add a recipe <Icon name="arrow" size={16} />
             </button>
           </section>
+        ) : publicConfigState.status === "ready" ? (
+          <AnonymousHome
+            preset={publicConfigState.config.anonymous_home_preset}
+            publicInstance={publicConfigState.config.public_instance}
+            onSignIn={() => setAuthOpen(true)}
+          />
         ) : (
-          <>
-            <section className="hero">
-              <div className="hero__copy">
-                <span className="eyebrow">
-                  <Icon name="leaf" size={15} /> Good food, gathered
-                </span>
-                <h1>
-                  A little more
-                  <br />
-                  <em>home</em> in every meal.
-                </h1>
-                <p>
-                  Keep the recipes you love, organize them into cookbooks, and
-                  pass the good ones along.
-                </p>
-                <a className="button button--light" href="#recipes">
-                  Explore recipes <Icon name="arrow" size={16} />
-                </a>
-              </div>
-              <div
-                className="hero__image"
-                role="img"
-                aria-label="A table filled with a fresh seasonal meal"
-              >
-                <div className="hero__caption">
-                  Made to be shared <span>✳</span>
-                </div>
-              </div>
-              <div className="hero__stamp">
-                <span>THE JOY OF</span>
-                <strong>
-                  home
-                  <br />
-                  cooking
-                </strong>
-                <Icon name="leaf" size={22} />
-              </div>
-            </section>
-            <section className="intro-row" id="about">
-              <div>
-                <span className="eyebrow">From the kitchen</span>
-                <h2>
-                  Recipes worth
-                  <br />
-                  coming back to.
-                </h2>
-              </div>
+          <section className="anonymous-home" aria-labelledby="home-config-error">
+            <div className="anonymous-home__copy">
+              <span className="eyebrow">Your kitchen</span>
+              <h1 id="home-config-error">Sign in to open your personal kitchen.</h1>
               <p>
-                Start with a favorite, find something new, and make each recipe
-                your own. Your kitchen notebook is waiting.
+                Public browsing could not be checked, so this Home is keeping
+                instance content hidden. You can still sign in to your account.
               </p>
-            </section>
-          </>
+              <button className="button button--green" type="button" onClick={() => setAuthOpen(true)}>
+                Sign in or create an account
+              </button>
+            </div>
+          </section>
         )}
         {signedIn && (
           <FeatureIsland name="Courses" loading="courses">
             <Courses onOpenRecipe={setSelected} />
           </FeatureIsland>
         )}
-        <CookbookCollection
+        {(signedIn || canLoadPublicHome) && <CookbookCollection
           mode={
             sessionState.status === "authenticated" ? "accessible" : "public"
           }
           surface="home"
           user={currentUser}
           enabled={
-            sessionState.status === "authenticated" ||
-            sessionState.status === "anonymous"
+            sessionState.status === "authenticated" || canLoadPublicHome
           }
         >
           {sessionState.status === "authenticated" && (
             <RecipeTrash onRestored={(recipe) => feed.restoreRecipe(recipe)} />
           )}
-        </CookbookCollection>
-        <FeatureIsland name="Public courses" loading="public courses">
-          <PublicCourses />
-        </FeatureIsland>
+        </CookbookCollection>}
+        {(signedIn ||
+          (publicConfigState.status === "ready" &&
+            publicConfigState.config.public_instance &&
+            publicConfigState.config.courses_enabled)) && (
+          <FeatureIsland name="Public courses" loading="public courses">
+            <PublicCourses />
+          </FeatureIsland>
+        )}
         {remoteVisible && (
           <section
             className="recipe-section"
@@ -294,7 +284,7 @@ function HomeApp({ pathname }: { pathname: string }) {
             )}
           </section>
         )}
-        <RecipeCollection
+        {(signedIn || canLoadPublicHome) && <RecipeCollection
           signedIn={signedIn}
           query={query}
           feed={feed}
@@ -310,7 +300,7 @@ function HomeApp({ pathname }: { pathname: string }) {
               currentUserID={currentUser?.id}
             />
           )}
-        />
+        />}
         {!signedIn && (
           <section className="notebook-banner">
             <div className="notebook-banner__icon">
@@ -416,6 +406,8 @@ function HomeApp({ pathname }: { pathname: string }) {
         open={authOpen}
         pathname={pathname}
         onClose={() => setAuthOpen(false)}
+        publicConfigState={publicConfigState}
+        retryPublicConfig={retryPublicConfig}
       />
     </div>
   );

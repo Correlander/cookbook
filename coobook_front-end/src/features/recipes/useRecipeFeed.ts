@@ -5,6 +5,7 @@ import type { RecipeFeedEntry } from "./recipeFeedApi.ts";
 export interface RecipeFeedOptions {
   signedIn: boolean;
   query: string;
+  enabled?: boolean;
 }
 
 export interface RecipeFeed {
@@ -24,6 +25,7 @@ export interface RecipeFeed {
 export default function useRecipeFeed({
   signedIn,
   query,
+  enabled = true,
 }: RecipeFeedOptions): RecipeFeed {
   const [items, setItems] = useState<RecipeFeedEntry[]>([]);
   const [loadedCount, setLoadedCount] = useState(0);
@@ -40,6 +42,18 @@ export default function useRecipeFeed({
   useEffect(() => {
     const requestGeneration = ++requestGenerationRef.current;
     let active = true;
+    if (!enabled) {
+      setItems([]);
+      setLoadedCount(0);
+      setHasMore(false);
+      setLoading(false);
+      setLoadingMore(false);
+      setLoadError(false);
+      setLoadMoreError("");
+      return () => {
+        active = false;
+      };
+    }
     setLoading(true);
     setLoadingMore(false);
     setLoadMoreError("");
@@ -65,10 +79,10 @@ export default function useRecipeFeed({
     return () => {
       active = false;
     };
-  }, [signedIn, query]);
+  }, [enabled, signedIn, query]);
 
   async function loadMore(): Promise<void> {
-    if (loadingMore) return;
+    if (!enabled || loadingMore) return;
     const requestedListKey = listKey;
     const requestGeneration = requestGenerationRef.current;
     const isCurrent = () =>

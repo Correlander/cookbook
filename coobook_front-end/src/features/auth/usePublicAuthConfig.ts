@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PublicAuthConfig, RegistrationPolicy } from "../../apiModels";
+import type {
+  AnonymousHomePreset,
+  PublicAuthConfig,
+  RegistrationPolicy,
+} from "../../apiModels";
 
 export type PublicAuthConfigState =
   | { status: "loading" }
@@ -23,8 +27,13 @@ function isPublicAuthConfig(value: unknown): value is PublicAuthConfig {
 
 function publicAuthConfig(value: unknown): PublicAuthConfig {
   const config = value as PublicAuthConfig;
+  const preset: AnonymousHomePreset =
+    isRecord(value) && config.anonymous_home_preset === "discovery_first"
+      ? "discovery_first"
+      : "library_first";
   return {
     ...config,
+    anonymous_home_preset: preset,
     // Capability negotiation is deliberately fail-closed and optional for older APIs.
     course_creator_attribution: isRecord(value) && value.course_creator_attribution === true,
     // This is protocol support, not an instance policy toggle. Only literal true enables menu UI.
@@ -36,7 +45,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-export default function usePublicAuthConfig(): {
+export default function usePublicAuthConfig({ enabled = true }: { enabled?: boolean } = {}): {
   state: PublicAuthConfigState;
   retry: () => void;
 } {
@@ -46,6 +55,7 @@ export default function usePublicAuthConfig(): {
   });
 
   const load = useCallback(async () => {
+    if (!enabled) return;
     const currentRequest = ++requestID.current;
     setState({ status: "loading" });
     try {
@@ -63,14 +73,18 @@ export default function usePublicAuthConfig(): {
           message: "Could not load sign-in options. Try again.",
         });
     }
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
+    if (!enabled) {
+      requestID.current += 1;
+      return undefined;
+    }
     void load();
     return () => {
       requestID.current += 1;
     };
-  }, [load]);
+  }, [enabled, load]);
 
   return { state, retry: () => void load() };
 }

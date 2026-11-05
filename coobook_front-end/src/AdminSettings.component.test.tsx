@@ -188,6 +188,50 @@ it("keeps audience settings and confirmation after a generic publisher-profile d
   expect(writes).toBe(1);
 });
 
+it("saves a presentation-only change without sending access or federation settings", async () => {
+  const presetSettings = { ...settings, anonymous_home_preset: "library_first" as const };
+  let patchBody: Record<string, unknown> | undefined;
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === "/api/admin/settings" && init?.method === "PATCH") {
+      patchBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return Promise.resolve(jsonResponse({ ...presetSettings, ...patchBody }));
+    }
+    if (String(input) === "/api/admin/settings")
+      return Promise.resolve(jsonResponse(presetSettings));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<AdminSettings />);
+  const preset = await screen.findByRole("combobox", { name: /homepage presentation/i });
+  fireEvent.change(preset, { target: { value: "discovery_first" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save instance settings" }));
+
+  expect(await screen.findByRole("status")).toBeTruthy();
+  expect(patchBody).toEqual({ anonymous_home_preset: "discovery_first" });
+  expect(screen.getByRole("combobox", { name: /homepage presentation/i })).toHaveProperty("value", "discovery_first");
+});
+
+it("does not send an unsupported homepage preset to an older settings API", async () => {
+  let patchBody: Record<string, unknown> | undefined;
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === "/api/admin/settings" && init?.method === "PATCH") {
+      patchBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return Promise.resolve(jsonResponse(settings));
+    }
+    if (String(input) === "/api/admin/settings")
+      return Promise.resolve(jsonResponse(settings));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<AdminSettings />);
+  expect(await screen.findByText(/does not support choosing an anonymous homepage/i)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Save instance settings" }));
+  await screen.findByRole("status");
+  expect(patchBody).toEqual({});
+});
+
 it("does not show publisher setup guidance when the server uses that code with a non-409 status", async () => {
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
     String(input) === "/api/admin/settings" && init?.method === "PATCH"

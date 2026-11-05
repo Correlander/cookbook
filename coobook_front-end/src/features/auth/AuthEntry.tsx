@@ -5,6 +5,7 @@ import { useAppSession } from "../../app/AppSession.tsx";
 import useModalFocus from "../../useModalFocus.ts";
 import { signInWithPasskey, registerPasskey } from "../../passkeys.ts";
 import usePublicAuthConfig from "./usePublicAuthConfig.ts";
+import type { PublicAuthConfigState } from "./usePublicAuthConfig.ts";
 import FeatureIsland from "../../components/FeatureIsland.tsx";
 const PasskeySetupPrompt = lazy(() => import("../../PasskeySetupPrompt.tsx"));
 
@@ -19,6 +20,8 @@ type AuthEntryProps =
       open: boolean;
       pathname?: string;
       onClose: () => void;
+      publicConfigState?: PublicAuthConfigState;
+      retryPublicConfig?: () => void;
     }
   | { mode: "confirm"; onContinueHome: () => void };
 
@@ -49,8 +52,18 @@ export default function AuthEntry(props: AuthEntryProps) {
     mode === "confirm" ? "/auth/confirm" : (props.pathname ?? "/");
   const [intent, setIntent] = useAuthIntent(mode, pathname);
   const { currentUser, state: sessionState, refreshSession } = useAppSession();
-  const { state: authConfigState, retry: retryAuthConfig } =
-    usePublicAuthConfig();
+  const hasProvidedHomeConfig =
+    mode === "home" && props.publicConfigState !== undefined;
+  const { state: fetchedAuthConfigState, retry: retryFetchedAuthConfig } =
+    usePublicAuthConfig({ enabled: !hasProvidedHomeConfig });
+  const authConfigState =
+    mode === "home" && props.publicConfigState
+      ? props.publicConfigState
+      : fetchedAuthConfigState;
+  const retryAuthConfig =
+    mode === "home" && props.retryPublicConfig
+      ? props.retryPublicConfig
+      : retryFetchedAuthConfig;
   const [email, setEmail] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);

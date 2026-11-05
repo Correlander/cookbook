@@ -21,6 +21,12 @@ assert.equal(browserDefaults.commandTimeoutMs, 120000)
 const workerTemplatePath = fileURLToPath(new URL('../../deploy/cloudflare/worker.js.template', import.meta.url))
 const workerTemplate = await readFile(workerTemplatePath, 'utf8')
 const workerModule = await import(`data:text/javascript;base64,${Buffer.from(workerTemplate).toString('base64')}`)
+const backendDockerfile = await readFile(new URL('../../Dockerfile', import.meta.url), 'utf8')
+const backendRuntimeStage = backendDockerfile.split(/^FROM alpine:3\.22\s*$/m)[1]
+assert.ok(backendRuntimeStage, 'backend runtime image stage is missing')
+assert.match(backendRuntimeStage, /USER cookbook/)
+assert.match(backendRuntimeStage, /ENV COOKBOOK_ADDR=0\.0\.0\.0:8000 COOKBOOK_DATABASE=\/data\/cookbook\.db/)
+assert.match(backendRuntimeStage, /ENTRYPOINT \["\/usr\/local\/bin\/cookbook"\]/)
 assert.ok(workerTemplate.indexOf("if (url.pathname.startsWith('/api/')") < workerTemplate.indexOf('const assetPath = staticDocuments.get(url.pathname)'), 'Worker must proxy API and health routes before static document mapping')
 const playwrightConfig = await readFile(new URL('../e2e/playwright.config.ts', import.meta.url), 'utf8')
 const creatorProfileSpec = await readFile(new URL('../e2e/creator-profile.spec.ts', import.meta.url), 'utf8')
@@ -66,7 +72,8 @@ import assert from 'node:assert/strict'
 import { readFile, stat, writeFile } from 'node:fs/promises'
 const [command, ...args] = process.argv.slice(2)
 const statePath = process.env.CADDY_TEST_STATE
-const state = await readFile(statePath, 'utf8').then(JSON.parse).catch(() => ({ calls: [], networks: [], containers: [] }))
+const state = await readFile(statePath, 'utf8').then(JSON.parse).catch(() => ({ calls: [], networks: [], containers: [], volumes: [] }))
+state.volumes ??= []
 const save = () => writeFile(statePath, JSON.stringify(state))
 const option = (name) => args[args.indexOf(name) + 1]
 const filterLabel = (prefix) => (option('--filter') ?? '').replace(prefix, '')
@@ -83,6 +90,10 @@ if (command === 'network' && args[0] === 'create') {
   }
   state.networks.push({ id: 'owned-network-id', name, label: option('--label') })
   if (process.env.CADDY_TEST_UNEXPECTED_OWNED === '1') state.networks.push({ id: 'unexpected-owned-network-id', name: 'unexpected-owned-network', label: option('--label') })
+} else if (command === 'volume' && args[0] === 'create') {
+  const name = args.at(-1)
+  state.volumes.push({ name, label: option('--label') })
+  console.log(name)
 } else if (command === 'run') {
   const name = option('--name')
   const label = option('--label')
@@ -104,7 +115,15 @@ if (command === 'network' && args[0] === 'create') {
   await save()
   if (process.env.CADDY_TEST_HOLD === '1') setInterval(() => {}, 1000)
 } else if (command === 'cp') {
-  if (args[0]?.endsWith(':/data/cookbook.db')) await writeFile(args[1], 'cold-caddy-sqlite-fixture')
+  if (args[0]?.endsWith(':/data/cookbook.db')) {
+    const backend = state.calls.find((record) => record[0] === 'run' && record.includes('backend:browser-fixture'))
+    const mount = backend?.[backend.indexOf('--mount') + 1]
+    const volumeName = mount?.startsWith('type=volume,src=') && mount?.endsWith(',dst=/data')
+      ? mount.slice('type=volume,src='.length, -',dst=/data'.length)
+      : undefined
+    assert.ok(volumeName && state.volumes.some((item) => item.name === volumeName), 'stopped backend database must remain in its owned volume')
+    await writeFile(args[1], 'cold-caddy-sqlite-fixture')
+  }
   else if (args[1]?.endsWith(':/data/cookbook.db')) {
     assert.equal((await stat(args[0])).mode & 0o777, 0o666)
     assert.equal(await readFile(args[0], 'utf8'), 'cold-caddy-sqlite-fixture')
@@ -116,12 +135,18 @@ if (command === 'network' && args[0] === 'create') {
 } else if (command === 'network' && args[0] === 'ls') {
   const label = filterLabel('label=')
   for (const item of state.networks.filter((entry) => entry.label === label)) console.log(item.id + ' ' + item.name)
+} else if (command === 'volume' && args[0] === 'ls') {
+  const label = filterLabel('label=')
+  for (const item of state.volumes.filter((entry) => entry.label === label)) console.log(item.name)
 } else if (command === 'rm') {
   const id = args.at(-1)
   state.containers = state.containers.filter((entry) => entry.id !== id)
 } else if (command === 'network' && args[0] === 'rm') {
   const id = args.at(-1)
   state.networks = state.networks.filter((entry) => entry.id !== id)
+} else if (command === 'volume' && args[0] === 'rm') {
+  const name = args.at(-1)
+  state.volumes = state.volumes.filter((entry) => entry.name !== name)
 }
 
 await save()
@@ -348,7 +373,16 @@ async function runBrowserFixture({ directory, statePath, engine }, port, { fail 
   const state = await loadState(statePath)
   const backend = state.calls.find((record) => record[0] === 'run' && record.includes('backend:browser-fixture'))
   assert.ok(backend)
-  assert.ok(backend.includes('--tmpfs') && backend.some((arg) => arg.startsWith('/data:')))
+  const volumeCreate = state.calls.findIndex((record) => record[0] === 'volume' && record[1] === 'create')
+  const volumeVerify = state.calls.findIndex((record, index) => index > volumeCreate && record[0] === 'volume' && record[1] === 'ls')
+  const backendRun = state.calls.findIndex((record) => record === backend)
+  const dataMount = backend[backend.indexOf('--mount') + 1]
+  const volumeName = dataMount?.match(/^type=volume,src=([^,]+),dst=\/data$/)?.[1]
+  assert.ok(volumeCreate >= 0 && volumeVerify > volumeCreate && backendRun > volumeVerify, 'browser database volume must be created and ownership-checked before backend startup')
+  assert.ok(volumeName && state.calls[volumeCreate].at(-1) === volumeName, 'backend must mount the created browser database volume at /data')
+  assert.ok(state.calls[volumeCreate].includes('--label') && state.calls[volumeCreate][state.calls[volumeCreate].indexOf('--label') + 1] === backend[backend.indexOf('--label') + 1], 'database volume must share the run ownership label')
+  assert.equal(backend.includes('--tmpfs'), false, 'browser database must survive backend stop in the owned volume')
+  assert.ok(backend.includes('COOKBOOK_DATABASE=/data/cookbook.db'), 'browser backend must use the image-configured canonical database path')
   assert.ok(backend.some((arg) => arg === `COOKBOOK_PUBLIC_URL=http://localhost:${port}`))
   assert.ok(backend.some((arg) => arg === `COOKBOOK_RP_ORIGIN=http://localhost:${port}`))
   assert.ok(backend.includes('COOKBOOK_EMAIL_COMMAND=/smoke-mail/capture-email'))
@@ -368,6 +402,7 @@ async function runBrowserFixture({ directory, statePath, engine }, port, { fail 
     assert.ok(!state.calls.some((record) => record[0] === 'cp' && record[2]?.endsWith(':/data/cookbook.db')), 'failed fixture was copied back into the backend')
     assert.equal(state.containers.length, 0, 'fixture failure left owned containers behind')
     assert.equal(state.networks.length, 0, 'fixture failure left owned network behind')
+    assert.equal(state.volumes.length, 0, 'fixture failure left owned database volume behind')
     assert.ok(state.events?.includes('fixture'), 'fixture failure did not occur after the fixture ran')
   } else {
     const stop = state.calls.findIndex((record) => record[0] === 'stop')
@@ -379,9 +414,15 @@ async function runBrowserFixture({ directory, statePath, engine }, port, { fail 
     assert.ok(events.findIndex((event) => event.startsWith('stop:')) < events.indexOf('fixture') && events.indexOf('fixture') < events.findIndex((event) => event.startsWith('start:')) && events.findIndex((event) => event.startsWith('start:')) < events.indexOf('playwright'), 'fixture must finish before the backend restart and Playwright')
     assert.equal(state.containers.length, 0)
     assert.equal(state.networks.length, 0)
+    assert.equal(state.volumes.length, 0)
   }
   assert.equal(state.containers.length, 0)
   assert.equal(state.networks.length, 0)
+  assert.equal(state.volumes.length, 0)
+  const volumeRemoval = state.calls.findIndex((record) => record[0] === 'volume' && record[1] === 'rm')
+  const lastContainerRemoval = state.calls.findLastIndex((record) => record[0] === 'rm')
+  assert.ok(volumeRemoval > lastContainerRemoval, 'owned database volume must be removed after its container')
+  assert.equal(state.calls[volumeRemoval].at(-1), volumeName)
   const allowed = ['browser-cache', 'fake-engine.mjs', 'fake-playwright.mjs', 'go', 'state.json']
   if (!fixtureFail) allowed.push('browser-state.json')
   if ((await readdir(directory)).includes('expected-report.json')) allowed.push('expected-report.json')
@@ -491,6 +532,7 @@ await withFakeEngine(async ({ statePath, engine }) => {
   assert.ok(backend, 'backend image argument was not forwarded')
   assert.ok(frontend.includes('--pull=never'), 'frontend image was not protected from pulls')
   assert.ok(backend.includes('--tmpfs') && backend.some((arg) => arg.startsWith('/data:')))
+  assert.equal(state.volumes.length, 0, 'non-browser smoke must not create a database volume')
   assert.ok(frontend.includes('--label') && backend.includes('--label'))
   assert.equal(frontend[frontend.indexOf('--label') + 1], backend[backend.indexOf('--label') + 1])
   assert.equal(state.containers.length, 0, 'partially started owned containers were not removed')
@@ -536,6 +578,7 @@ await withHttpFixture(async (port) => withFakeEngine(async ({ statePath, engine 
   const state = await loadState(statePath)
   assert.equal(state.containers.length, 0, 'successful run left owned containers behind')
   assert.equal(state.networks.length, 0, 'successful run left owned network behind')
+  assert.equal(state.volumes.length, 0, 'non-browser smoke must not create a database volume')
 }))
 
 await withFakeEngine(async ({ statePath, engine }) => {

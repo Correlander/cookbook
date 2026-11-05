@@ -7,6 +7,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const labelKey = 'io.cookbook.caddy-smoke'
+const backendDatabasePath = '/data/cookbook.db'
 const requestTimeoutMs = 2500
 const activeChildren = new Set()
 
@@ -546,6 +547,7 @@ let runLabel
 let cleanupInProgress = false
 let overallTimeout
 let containerNames = []
+let databaseVolumeName
 let runDirectory
 
 async function cleanup() {
@@ -612,6 +614,30 @@ async function cleanup() {
       } else if (remainingNetworks.stdout.trim()) {
         failures.push(`${selectedEngine} network ls verification found leftover run-labeled networks: ${remainingNetworks.stdout.trim()}`)
       }
+      const ownedVolumes = await runCommand(selectedEngine, [
+        'volume', 'ls', '--filter', `label=${runLabel}`, '--format', '{{.Name}}',
+      ], { allowFailure: true })
+      if (ownedVolumes.code !== 0) {
+        failures.push(`${selectedEngine} volume ls: ${ownedVolumes.stderr || ownedVolumes.stdout || `exit ${ownedVolumes.code}`}`)
+      } else {
+        for (const name of ownedVolumes.stdout.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean)) {
+          if (name !== databaseVolumeName) {
+            failures.push(`${selectedEngine} volume ls found unexpected volume ${name} with this run's ownership label; left untouched`)
+            continue
+          }
+          const result = await runCommand(selectedEngine, ['volume', 'rm', name], { allowFailure: true })
+          if (result.code !== 0) failures.push(`${selectedEngine} volume rm ${name}: ${result.stderr || result.stdout || `exit ${result.code}`}`)
+        }
+      }
+
+      const remainingVolumes = await runCommand(selectedEngine, [
+        'volume', 'ls', '--filter', `label=${runLabel}`, '--format', '{{.Name}}',
+      ], { allowFailure: true })
+      if (remainingVolumes.code !== 0) {
+        failures.push(`${selectedEngine} volume ls verification: ${remainingVolumes.stderr || remainingVolumes.stdout || `exit ${remainingVolumes.code}`}`)
+      } else if (remainingVolumes.stdout.trim()) {
+        failures.push(`${selectedEngine} volume ls verification found leftover run-labeled volumes: ${remainingVolumes.stdout.trim()}`)
+      }
       if (runDirectory) {
         try {
           await rm(runDirectory, { recursive: true, force: true })
@@ -665,11 +691,11 @@ async function seedCaddyBrowserAdmins(backendName, browserArtifacts) {
   await mkdir(fixtureDirectory, { mode: 0o700 })
   await chmod(fixtureDirectory, 0o700)
 
-  // SQLite must be cold while the fixture mutates it. The Caddy backend owns
-  // a disposable tmpfs database; stop it before copying that database to the
-  // private host fixture directory, then return the seeded file before start.
+  // SQLite must be cold while the fixture mutates it. Browser mode mounts an
+  // owned volume at the image's /data path so the canonical database survives
+  // stop; copy it out only after the backend has exited, then copy it back.
   await runCommand(selectedEngine, ['stop', backendName])
-  await runCommand(selectedEngine, ['cp', `${backendName}:/data/cookbook.db`, fixtureDatabase])
+  await runCommand(selectedEngine, ['cp', `${backendName}:${backendDatabasePath}`, fixtureDatabase])
   await chmod(fixtureDatabase, 0o600)
   const backendRoot = resolve(import.meta.dirname, '../../cookbook_back-end')
   await runCommand('go', ['test', '-run', '^TestPrepareE2EAdminActorFixture$', '-count=1', '.'], {
@@ -681,11 +707,10 @@ async function seedCaddyBrowserAdmins(backendName, browserArtifacts) {
       COOKBOOK_DATABASE: fixtureDatabase,
     },
   })
-  // Engine copy into the container is root-owned. The disposable /data tmpfs
-  // is already mode 1777, so make this one database writable to the cookbook
-  // UID while the host-side source remains protected by the 0700 parent.
+  // Engine copy into the volume is root-owned. Keep the host copy protected
+  // by its 0700 parent, and make the database writable to the cookbook UID.
   await chmod(fixtureDatabase, 0o666)
-  await runCommand(selectedEngine, ['cp', fixtureDatabase, `${backendName}:/data/cookbook.db`])
+  await runCommand(selectedEngine, ['cp', fixtureDatabase, `${backendName}:${backendDatabasePath}`])
   await runCommand(selectedEngine, ['start', backendName])
 }
 
@@ -735,11 +760,21 @@ async function main() {
   const frontendName = `${networkName}-frontend`
   const backendName = `${networkName}-backend`
   containerNames = [frontendName, backendName]
+  if (browserArtifacts) databaseVolumeName = `cookbook-caddy-${runId}-data`
   overallTimeout = setTimeout(() => { void halt(1, `Caddy smoke exceeded its ${options.timeoutMs}ms overall timeout`) }, options.timeoutMs)
   overallTimeout.unref()
 
   try {
     await runCommand(selectedEngine, ['network', 'create', '--label', label, networkName])
+    if (databaseVolumeName) {
+      // tmpfs contents vanish when the stopped container exits; the browser
+      // fixture needs an owned volume to preserve its cold database handoff.
+      await runCommand(selectedEngine, ['volume', 'create', '--label', label, databaseVolumeName])
+      const createdDatabaseVolume = await runCommand(selectedEngine, [
+        'volume', 'ls', '--filter', `label=${runLabel}`, '--format', '{{.Name}}',
+      ])
+      assert(createdDatabaseVolume.stdout === databaseVolumeName, 'database volume must be newly owned by this Caddy run')
+    }
 
     await runCommand(selectedEngine, [
       'run', '--detach', '--pull=never', '--name', frontendName,
@@ -754,9 +789,9 @@ async function main() {
     await runCommand(selectedEngine, [
       'run', '--detach', '--pull=never', '--name', backendName,
       '--label', label, '--network', networkName, '--network-alias', 'cookbook',
-      '--tmpfs', '/data:rw,size=64m,mode=1777',
+      ...(browserArtifacts ? ['--mount', `type=volume,src=${databaseVolumeName},dst=/data`] : ['--tmpfs', '/data:rw,size=64m,mode=1777']),
       '--env', 'COOKBOOK_ADDR=0.0.0.0:8000',
-      '--env', 'COOKBOOK_DATABASE=/data/cookbook.db',
+      '--env', `COOKBOOK_DATABASE=${backendDatabasePath}`,
       '--env', 'COOKBOOK_MEDIA_DIR=/data/media',
       '--env', `COOKBOOK_PUBLIC_URL=${origin}`,
       '--env', `COOKBOOK_RP_ORIGIN=${origin}`,

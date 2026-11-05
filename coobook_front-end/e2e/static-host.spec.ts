@@ -416,7 +416,10 @@ test('signed-in instance administrators can open settings directly and through t
     const namedSettings = await page.request.get('/api/admin/settings')
     expect((await namedSettings.json()).site_name).toBe('E2E Kitchen')
     await page.goto('/discover')
-    await expect(page.locator('.brand')).toContainText('E2E Kitchen')
+    const headerBrand = page.getByRole('link', { name: 'Cookbook home' })
+    const footerBrand = page.getByRole('contentinfo').getByRole('link', { name: 'Cookbook', exact: true })
+    await expect(headerBrand).toContainText('E2E Kitchen')
+    await expect(footerBrand).toHaveText('Cookbook')
 
     await page.goto('/admin/settings')
     await page.getByRole('button', { name: 'Reset site name' }).click()

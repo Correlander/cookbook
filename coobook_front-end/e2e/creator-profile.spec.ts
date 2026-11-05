@@ -42,7 +42,12 @@ test("creator profile static roots are private shells and require a confirmed se
   expect(calls.some((path) => path.startsWith("/api/creator-profiles/"))).toBe(
     false,
   );
-  expect(calls.some((path) => path.startsWith("/api/public/"))).toBe(false);
+  expect(calls).toContain("/api/public/config");
+  expect(
+    calls.filter(
+      (path) => path.startsWith("/api/public/") && path !== "/api/public/config",
+    ),
+  ).toEqual([]);
 });
 
 test("authenticated instance profile renders typed attribution and a 404 stays generic", async ({

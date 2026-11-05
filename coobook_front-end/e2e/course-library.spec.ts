@@ -8,7 +8,16 @@ test("static course page checks access before lessons and saves an explicit refe
   await page.route("**/api/**", async (route) => {
     const request = route.request(); const url = new URL(request.url()); calls.push(`${request.method()} ${url.pathname}${url.search}`);
     if (url.pathname === "/api/auth/me") return route.fulfill({ json: actor });
-    if (url.pathname === "/api/public/config") return route.fulfill({ json: { courses_enabled: true } });
+    if (url.pathname === "/api/public/config") return route.fulfill({ json: {
+      auth_methods: { email_link: true, passkey: false },
+      registration_policy: "invite_only",
+      public_instance: true,
+      courses_enabled: true,
+      anonymous_home_preset: "library_first",
+      course_creator_attribution: true,
+      menu_api: true,
+      branding: { site_name: "Cookbook", palette: "garden" },
+    } });
     if (url.pathname === "/api/courses/course-e2e" && request.method() === "GET") return route.fulfill({ json: course });
     if (url.pathname === "/api/courses/course-e2e/lessons") return route.fulfill({ json: [{ id: "lesson-1", course_id: course.id, title: "Mix dough", content: "Combine flour and water.", position: 0 }] });
     if (url.pathname === "/api/library/course-bookmarks/status") return route.fulfill({ json: saved ? { saved: true, bookmark_id: "bookmark-course" } : { saved: false } });

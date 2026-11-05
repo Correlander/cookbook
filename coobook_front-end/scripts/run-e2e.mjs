@@ -9,9 +9,31 @@ import { X_OK } from 'node:constants'
 const root = resolve(import.meta.dirname, '../..')
 const frontend = join(root, 'coobook_front-end')
 const privateSnapshotOptIn = process.env.COOKBOOK_E2E_PRIVATE_SNAPSHOT === '1'
-// Set E2E_API_BINARY=/absolute/path/to/cookbook-api to use a trusted local build; its provenance belongs to the caller's proof record.
+const defaultBackendSourceDir = join(root, 'cookbook_back-end')
+// Supply a trusted API and its matching source directory together; record both artifacts' provenance in the caller's proof.
 const suppliedApiBinary = process.env.E2E_API_BINARY
+const suppliedBackendSourceDir = process.env.E2E_BACKEND_SOURCE_DIR
 let apiBinary
+let backendSourceDir = defaultBackendSourceDir
+if (suppliedApiBinary !== undefined && suppliedBackendSourceDir === undefined) {
+  throw new Error('E2E_API_BINARY requires E2E_BACKEND_SOURCE_DIR pointing to its matching backend source directory')
+}
+if (suppliedBackendSourceDir !== undefined) {
+  if (!suppliedBackendSourceDir || !isAbsolute(suppliedBackendSourceDir)) {
+    throw new Error('E2E_BACKEND_SOURCE_DIR must be an absolute path to a backend source directory')
+  }
+  try {
+    const sourceInfo = await stat(suppliedBackendSourceDir)
+    if (!sourceInfo.isDirectory()) throw new Error('not a directory')
+    for (const marker of ['go.mod', 'main.go', 'api.go', 'e2e_admin_fixture_test.go']) {
+      const markerInfo = await stat(join(suppliedBackendSourceDir, marker))
+      if (!markerInfo.isFile()) throw new Error(`${marker} is not a file`)
+    }
+  } catch (error) {
+    throw new Error(`E2E_BACKEND_SOURCE_DIR is not a valid backend source directory: ${suppliedBackendSourceDir}`, { cause: error })
+  }
+  backendSourceDir = suppliedBackendSourceDir
+}
 if (suppliedApiBinary !== undefined) {
   if (!suppliedApiBinary || !isAbsolute(suppliedApiBinary)) {
     throw new Error('E2E_API_BINARY must be an absolute path to an executable API binary')
@@ -164,7 +186,7 @@ try {
   if (apiBinary === undefined) {
     apiBinary = join(runDir, 'cookbook-api')
     await run('go', ['build', '-mod=mod', '-o', apiBinary, '.'], {
-      cwd: join(root, 'cookbook_back-end'),
+      cwd: backendSourceDir,
       env: {
         ...env,
         GOCACHE: process.env.GOCACHE ?? join(runDir, 'go-cache'),
@@ -187,7 +209,7 @@ try {
     if (!ready) throw new Error(`service did not become ready: ${new URL(url).pathname}`)
   }
   await run('go', ['test', '-run', '^TestPrepareE2EAdminActorFixture$', '-count=1', '.'], {
-    cwd: join(root, 'cookbook_back-end'),
+    cwd: backendSourceDir,
     env: {
       ...env,
       COOKBOOK_E2E_ADMIN_ACTOR_FIXTURE: '1',
@@ -199,7 +221,7 @@ try {
   })
   if (privateSnapshotOptIn) {
     await run('go', ['test', '-run', '^TestPreparePrivateSnapshotBrowserFixture$', '-count=1', '.'], {
-      cwd: join(root, 'cookbook_back-end'),
+        cwd: backendSourceDir,
       env: {
         ...env,
         COOKBOOK_E2E_PRIVATE_SNAPSHOT_FIXTURE: '1',

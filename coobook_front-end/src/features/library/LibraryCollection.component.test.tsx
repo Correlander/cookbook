@@ -6,7 +6,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 it("renders private menus as owner-only links without save or sharing actions", () => {
   const menu = { id: "a".repeat(32), title: "Dinner plan", note: "Friday", version: 1, created_at: "2026-11-04T20:00:00Z", updated_at: "2026-11-04T21:00:00Z", entries: [] };
-  render(<LibraryCollection type="menus" page={{ items: [{ menu }], total: 1, limit: 24, offset: 0, type: "menus", actorID: "owner", query: "" }} userID="owner" busyBookmarkID="" onBookmarkChange={vi.fn()} onMutationUncertain={vi.fn()} onRemoveUnavailable={vi.fn()} />);
+  render(<LibraryCollection type="menus" page={{ items: [{ menu }], total: 1, limit: 24, offset: 0 }} userID="owner" busyBookmarkID="" onBookmarkChange={vi.fn()} onMutationUncertain={vi.fn()} onRemoveUnavailable={vi.fn()} />);
   expect(screen.getByRole("link", { name: "Open Dinner plan" }).getAttribute("href")).toBe(`/menu?id=${menu.id}`);
   expect(screen.getByText("Owned by you · 0 recipes")).toBeTruthy();
   expect(screen.queryByRole("button")).toBeNull();

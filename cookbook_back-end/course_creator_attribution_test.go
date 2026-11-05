@@ -80,15 +80,18 @@ func TestCourseCreatorAttributionCreateReadPrivacyAndPatchImmutability(t *testin
 		VALUES('22222222222222222222222222222222',?,'local','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','creator','self_asserted_at_creation','now')`, publicCourse.ID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`UPDATE creator_profiles SET visibility='instance' WHERE creator_id='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'`); err != nil {
+		t.Fatal(err)
+	}
 	publicRead := callAPI(handler, http.MethodGet, "/api/public/courses/"+publicCourse.ID, nil, nil)
 	var anonymous course
-	if publicRead.Code != http.StatusOK || json.Unmarshal(publicRead.Body.Bytes(), &anonymous) != nil || anonymous.CreatorName != "Claimed chef" || len(anonymous.CreatorAttributions) != 1 || anonymous.CreatorAttributions[0].NameClaim != "Remote creator" || anonymous.CreatorAttributions[0].Role != "contributor" || anonymous.CreatorAttributions[0].Provenance != "original_provenance" || anonymous.CreatorAttributions[0].Profile != nil {
+	if publicRead.Code != http.StatusOK || json.Unmarshal(publicRead.Body.Bytes(), &anonymous) != nil || anonymous.CreatorName != "Claimed chef" || len(anonymous.CreatorAttributions) != 1 || anonymous.CreatorAttributions[0].SubjectKind != "external_claim" || anonymous.CreatorAttributions[0].NameClaim != "Remote creator" || anonymous.CreatorAttributions[0].Role != "contributor" || anonymous.CreatorAttributions[0].Provenance != "original_provenance" || anonymous.CreatorAttributions[0].Profile != nil {
 		t.Fatalf("anonymous public projection status=%d body=%s", publicRead.Code, publicRead.Body)
 	}
 	readerRead := callAPI(handler, http.MethodGet, "/api/courses/"+publicCourse.ID, nil, reader)
 	var readerProjection course
-	if readerRead.Code != http.StatusOK || json.Unmarshal(readerRead.Body.Bytes(), &readerProjection) != nil || len(readerProjection.CreatorAttributions) != 1 || readerProjection.CreatorAttributions[0].SubjectKind != "external_claim" {
-		t.Fatalf("foreign reader saw private profile credit: status=%d body=%s", readerRead.Code, readerRead.Body)
+	if readerRead.Code != http.StatusOK || json.Unmarshal(readerRead.Body.Bytes(), &readerProjection) != nil || len(readerProjection.CreatorAttributions) != 2 || readerProjection.CreatorAttributions[0].SubjectKind != "local" || readerProjection.CreatorAttributions[0].Profile == nil || readerProjection.CreatorAttributions[0].Profile.ID != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || readerProjection.CreatorAttributions[0].Profile.PublicName != "Private identity" || readerProjection.CreatorAttributions[1].SubjectKind != "external_claim" {
+		t.Fatalf("authenticated instance reader did not see instance profile credit: status=%d body=%s", readerRead.Code, readerRead.Body)
 	}
 	publicList := callAPI(handler, http.MethodGet, "/api/public/courses", nil, nil)
 	var listed []course
@@ -115,7 +118,7 @@ func TestCourseCreatorAttributionCreateReadPrivacyAndPatchImmutability(t *testin
 	foundAvailable, foundUnavailable := false, false
 	for _, item := range page.Items {
 		if item.Availability == "available" {
-			foundAvailable = item.Course != nil && item.Course.ID == publicCourse.ID && len(item.Course.CreatorAttributions) == 1
+			foundAvailable = item.Course != nil && item.Course.ID == publicCourse.ID && len(item.Course.CreatorAttributions) == 2 && item.Course.CreatorAttributions[0].Profile != nil
 		} else if item.Availability == "unavailable" {
 			foundUnavailable = item.Course == nil
 		}

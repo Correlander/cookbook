@@ -68,13 +68,14 @@ func readCreatorAttributions(ctx context.Context, queryer contentQueryer, actorI
 		args = append(args, actorID)
 	}
 	args = append(args, actorID)
+	args = append(args, actorID)
 	query := `SELECT ` + targetColumn + `,a.subject_kind,a.role,a.provenance,
 		p.creator_id,p.public_name,p.visibility,a.claim_name
 		FROM content_attributions a ` + resourceJoin + `
 		LEFT JOIN creator_profiles p ON a.subject_kind='local' AND p.creator_id=a.creator_id
 		WHERE ` + targetColumn + ` IN (` + placeholders.String() + `)
 		AND ` + resourceACL + `
-		AND (a.subject_kind='external_claim' OR (a.subject_kind='local' AND p.creator_id IS NOT NULL AND (p.user_id=? OR p.visibility='instance')))
+		AND (a.subject_kind='external_claim' OR (a.subject_kind='local' AND p.creator_id IS NOT NULL AND (p.user_id=? OR (?<>'' AND p.visibility='instance'))))
 		ORDER BY ` + targetColumn + `,CASE a.role WHEN 'creator' THEN 0 WHEN 'contributor' THEN 1 ELSE 2 END,
 		a.subject_kind,COALESCE(p.public_name,a.claim_name,''),a.id`
 	rows, err := queryer.QueryContext(ctx, query, args...)

@@ -15,6 +15,7 @@ import uuid
 import tarfile
 import sqlite3
 import time
+from contextlib import closing
 from pathlib import Path
 
 from validate_backup import finalize_backup, validate_backup
@@ -123,6 +124,67 @@ def seed_snapshot_recovery_fixtures(connection):
     if connection.execute("DELETE FROM federation_peers WHERE origin=?", (source,)).rowcount != 1:
         raise AssertionError("synthetic peer was not present for removal")
     return claim, payload, event, payload_hash, event_hash
+
+
+def read_menu_recovery_state(connection, menu_ids):
+    """Return the exact persisted menu contract fields for a recovery fixture."""
+    placeholders = ",".join("?" for _ in menu_ids)
+    menus = connection.execute(
+        "SELECT id,owner_id,title,note,creator_name,version,created_at,updated_at "
+        "FROM meal_menus WHERE id IN (" + placeholders + ") ORDER BY id",
+        menu_ids,
+    ).fetchall()
+    entries = connection.execute(
+        "SELECT id,menu_id,position,local_instance_id,local_recipe_id,label,note,serving_note "
+        "FROM meal_menu_entries WHERE menu_id IN (" + placeholders + ") ORDER BY menu_id,position,id",
+        menu_ids,
+    ).fetchall()
+    attributions = connection.execute(
+        "SELECT id,recipe_id,cookbook_id,course_id,menu_id,subject_kind,creator_id,"
+        "claim_source_instance_id,claim_creator_id,claim_name,role,provenance,created_at "
+        "FROM content_attributions WHERE menu_id IN (" + placeholders + ") ORDER BY id",
+        menu_ids,
+    ).fetchall()
+    return menus, entries, attributions
+
+
+def create_sqlite_online_snapshot(source, destination):
+    """Create and check one coherent, closed SQLite online-backup snapshot."""
+    target = sqlite3.connect(destination)
+    try:
+        target.execute("PRAGMA journal_mode=DELETE")
+        source.backup(target)
+        integrity = target.execute("PRAGMA integrity_check").fetchone()
+        if integrity != ("ok",):
+            raise AssertionError(f"online backup integrity check failed: {integrity!r}")
+        foreign_keys = target.execute("PRAGMA foreign_key_check").fetchall()
+        if foreign_keys:
+            raise AssertionError(f"online backup foreign-key check failed: {foreign_keys!r}")
+    finally:
+        target.close()
+
+
+def write_sqlite_backup_archive(database_snapshot, archive_path, key):
+    """Package a closed SQLite backup snapshot without copying live DB sidecars."""
+    with tarfile.open(archive_path, "w:gz") as output:
+        data = database_snapshot.read_bytes()
+        database_entry = tarfile.TarInfo("cookbook.db")
+        database_entry.mode = 0o600
+        database_entry.size = len(data)
+        output.addfile(database_entry, io.BytesIO(data))
+        media = tarfile.TarInfo("media/")
+        media.type = tarfile.DIRTYPE
+        media.mode = 0o700
+        output.addfile(media)
+        secrets = tarfile.TarInfo("secrets/")
+        secrets.type = tarfile.DIRTYPE
+        secrets.mode = 0o700
+        output.addfile(secrets)
+        key_info = tarfile.TarInfo("secrets/federation-ed25519.pk8.pem")
+        key_info.mode = 0o600
+        key_info.size = len(key)
+        output.addfile(key_info, io.BytesIO(key))
+    archive_path.chmod(0o600)
 
 
 def cleanup_owned_images(image_tag, image_id, layer_label, run_command, *, engine="podman"):
@@ -293,6 +355,57 @@ class OwnedImageCleanupTests(unittest.TestCase):
         self.assertNotIn("--network=none", docker_args)
 
 
+class SQLiteOnlineBackupHelperTests(unittest.TestCase):
+    def test_online_snapshot_captures_committed_wal_and_archive_uses_closed_snapshot(self):
+        with tempfile.TemporaryDirectory(prefix="cookbook-sqlite-backup-helper-") as directory:
+            root = Path(directory)
+            source_path = root / "source.db"
+            cold_path = root / "cold.db"
+            hot_path = root / "hot.db"
+            archive_path = root / "backup.tar.gz"
+            source = sqlite3.connect(source_path)
+            try:
+                self.assertEqual(source.execute("PRAGMA journal_mode=WAL").fetchone(), ("wal",))
+                source.execute("PRAGMA wal_autocheckpoint=0")
+                source.execute("CREATE TABLE menu_fixture(value TEXT NOT NULL)")
+                source.execute("INSERT INTO menu_fixture VALUES('checkpointed')")
+                source.commit()
+                self.assertEqual(source.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone(), (0, 0, 0))
+                create_sqlite_online_snapshot(source, cold_path)
+
+                source.execute("UPDATE menu_fixture SET value='committed-in-wal'")
+                source.commit()
+                wal_path = Path(str(source_path) + "-wal")
+                self.assertTrue(wal_path.is_file())
+                self.assertGreater(wal_path.stat().st_size, 0)
+                with closing(sqlite3.connect(cold_path)) as cold:
+                    self.assertEqual(cold.execute("SELECT value FROM menu_fixture").fetchone(), ("checkpointed",))
+                create_sqlite_online_snapshot(source, hot_path)
+            finally:
+                source.close()
+
+            with closing(sqlite3.connect(hot_path)) as hot:
+                self.assertEqual(hot.execute("SELECT value FROM menu_fixture").fetchone(), ("committed-in-wal",))
+
+            key = b"synthetic private key fixture"
+            write_sqlite_backup_archive(hot_path, archive_path, key)
+            with tarfile.open(archive_path, "r:gz") as archive:
+                members = {member.name: member for member in archive.getmembers()}
+                self.assertEqual(set(members), {
+                    "cookbook.db", "media", "secrets", "secrets/federation-ed25519.pk8.pem",
+                })
+                self.assertEqual(members["cookbook.db"].mode & 0o777, 0o600)
+                self.assertEqual(members["secrets/federation-ed25519.pk8.pem"].mode & 0o777, 0o600)
+                self.assertEqual(archive.extractfile("secrets/federation-ed25519.pk8.pem").read(), key)
+                extracted_db = root / "extracted.db"
+                extracted_db.write_bytes(archive.extractfile("cookbook.db").read())
+            with closing(sqlite3.connect(extracted_db)) as extracted:
+                self.assertEqual(
+                    extracted.execute("SELECT value FROM menu_fixture").fetchone(),
+                    ("committed-in-wal",),
+                )
+
+
 @unittest.skipUnless(os.environ.get("COOKBOOK_RUN_BACKUP_ACTOR_RESTORE") == "1",
                      "set COOKBOOK_RUN_BACKUP_ACTOR_RESTORE=1 to run the disposable container proof")
 class ActorColdRestoreProof(unittest.TestCase):
@@ -312,8 +425,11 @@ class ActorColdRestoreProof(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="cookbook-actor-proof-")
         root = Path(temporary.name)
         compose_file = root / "compose.yaml"
-        archive = root / "actor-backup.tar.gz"
+        cold_archive = root / "actor-backup-cold.tar.gz"
+        hot_archive = root / "actor-backup-hot-wal.tar.gz"
         database = root / "generated.db"
+        cold_database = root / "cold-online-backup.db"
+        hot_database = root / "hot-wal-online-backup.db"
         build_context = root / "build-context"
         build_context.mkdir()
         committed_backend = build_context / "cookbook_back-end"
@@ -336,6 +452,15 @@ class ActorColdRestoreProof(unittest.TestCase):
             if result.returncode:
                 raise AssertionError(f"command failed ({args[0]}): {result.stderr[-2000:]}")
             return result.stdout.strip()
+
+        def copy_restored_database(snapshot_name, *, stop_service=False):
+            snapshot = root / snapshot_name
+            snapshot.mkdir(mode=0o700)
+            if stop_service:
+                run([engine, "compose", "stop", "cookbook"])
+            container_id = run([engine, "compose", "ps", "-a", "-q", "cookbook"])
+            run([engine, "cp", f"{container_id}:/data/cookbook.db", str(snapshot / "cookbook.db")])
+            return snapshot / "cookbook.db"
 
         try:
             if owns_image:
@@ -380,14 +505,14 @@ func TestBackupActorFixture(t *testing.T) {
                 source_db.close()
             if source_schema_version is None or source_schema_version[0] is None:
                 self.fail("generated source database has no migration version")
+            if source_schema_version[0] != 15:
+                self.fail(f"generated source database schema version is {source_schema_version[0]}, expected 15")
 
-            # Add an uncheckpointed WAL-only marker; the archive deliberately omits SQLite's transient -shm.
+            # Seed a checkpointed baseline, then prove a later committed menu edit is in WAL.
             connection = sqlite3.connect(database)
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA wal_autocheckpoint=0")
             connection.execute("PRAGMA foreign_keys=ON")
-            connection.execute("CREATE TABLE proof_marker(value TEXT NOT NULL)")
-            connection.execute("INSERT INTO proof_marker VALUES('cold-restore-proof')")
             connection.execute("UPDATE person_actor_ids SET state='retired',retired_at='proof' WHERE actor_id=(SELECT actor_id FROM person_actors WHERE user_id='fixture-retired')")
             profile_id = "a" * 32
             local_attribution_id = "b" * 32
@@ -431,27 +556,137 @@ func TestBackupActorFixture(t *testing.T) {
                  "foreign-saved-book", "fixture-user", library_foreign_instance,
                  "foreign-source-book", saved_foreign_time),
             )
+            fixture_instance_id = connection.execute(
+                "SELECT instance_id FROM library_instance_identity WHERE singleton_id=1"
+            ).fetchone()[0]
+            if not re.fullmatch(r"[0-9a-f]{32}", fixture_instance_id):
+                self.fail("fixture database did not contain its real library instance identity")
+            local_menu_id = "f" * 32
+            external_menu_id = "0" * 32
+            menu_ids = (external_menu_id, local_menu_id)
+            connection.execute(
+                """INSERT INTO meal_menus
+                   (id,owner_id,title,note,creator_name,version,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?)""",
+                (external_menu_id, "fixture-user", "Guest supper", "Keep the source note",
+                 "Guest Author", 2, "menu-created-guest", "menu-updated-guest",
+                 local_menu_id, "fixture-user", "Winter table", "Serve the courses in order",
+                 "", 3, "menu-created-local", "menu-updated-local"),
+            )
+            local_entries = (
+                ("1" * 32, local_menu_id, 0, fixture_instance_id, "profile-proof-recipe",
+                 "Starter", "First serving note", "Serve warm"),
+                ("2" * 32, local_menu_id, 1, None, None,
+                 "Unresolved", "Keep this unavailable slot", "Choose a replacement later"),
+                ("3" * 32, local_menu_id, 2, fixture_instance_id, "profile-proof-recipe",
+                 "Second serving", "Same recipe, separate course", "Serve after the starter"),
+                ("4" * 32, external_menu_id, 0, None, None,
+                 "Guest slot", "Preserve this private note", "Ask the source"),
+            )
+            connection.executemany(
+                """INSERT INTO meal_menu_entries
+                   (id,menu_id,position,local_instance_id,local_recipe_id,label,note,serving_note)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                local_entries,
+            )
+            connection.execute(
+                """INSERT INTO content_attributions
+                   (id,menu_id,subject_kind,creator_id,role,provenance,created_at)
+                   VALUES(?,?,'local',?,'creator','self_asserted_at_creation','menu-local-credit')""",
+                ("5" * 32, local_menu_id, profile_id),
+            )
+            connection.execute(
+                """INSERT INTO content_attributions
+                   (id,menu_id,subject_kind,claim_source_instance_id,claim_creator_id,claim_name,
+                    role,provenance,created_at)
+                   VALUES(?,?, 'external_claim',?,?,?,'creator','portable_import','menu-external-credit')""",
+                ("6" * 32, external_menu_id, foreign_source_id, foreign_creator_id, "Guest Author"),
+            )
             snapshot_claim, snapshot_payload, snapshot_event, snapshot_payload_hash, snapshot_event_hash = seed_snapshot_recovery_fixtures(connection)
             connection.commit()
-            if not Path(str(database) + "-wal").is_file():
-                self.fail("fixture did not produce the required SQLite WAL")
+
+            checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if checkpoint != (0, 0, 0):
+                self.fail(f"fixture baseline did not checkpoint cleanly: {checkpoint!r}")
+            cold_menu_expected = (
+                [
+                    (external_menu_id, "fixture-user", "Guest supper", "Keep the source note", "Guest Author", 2,
+                     "menu-created-guest", "menu-updated-guest"),
+                    (local_menu_id, "fixture-user", "Winter table", "Serve the courses in order", "", 3,
+                     "menu-created-local", "menu-updated-local"),
+                ],
+                [
+                    local_entries[3], local_entries[0], local_entries[1], local_entries[2],
+                ],
+                [
+                    ("5" * 32, None, None, None, local_menu_id, "local", profile_id, None, None, None,
+                     "creator", "self_asserted_at_creation", "menu-local-credit"),
+                    ("6" * 32, None, None, None, external_menu_id, "external_claim", None,
+                     foreign_source_id, foreign_creator_id, "Guest Author", "creator", "portable_import",
+                     "menu-external-credit"),
+                ],
+            )
+            create_sqlite_online_snapshot(connection, cold_database)
+            with closing(sqlite3.connect(cold_database)) as cold_source:
+                cold_menu_state = read_menu_recovery_state(cold_source, menu_ids)
+                self.assertEqual(cold_menu_state, cold_menu_expected)
+                self.assertEqual(
+                    cold_source.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='proof_marker'").fetchone(),
+                    (0,),
+                )
 
             key = b"-----BEGIN PRIVATE KEY-----\n" + base64.b64encode(bytes.fromhex("302e020100300506032b657004220420" + "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")) + b"\n-----END PRIVATE KEY-----\n"
-            with tarfile.open(archive, "w:gz") as output:
-                for name, source in (("cookbook.db", database), ("cookbook.db-wal", Path(str(database) + "-wal"))):
-                    if source.exists():
-                        data = source.read_bytes()
-                        entry = tarfile.TarInfo(name); entry.mode = 0o600; entry.size = len(data)
-                        output.addfile(entry, io.BytesIO(data))
-                media = tarfile.TarInfo("media/"); media.type = tarfile.DIRTYPE; media.mode = 0o700; output.addfile(media)
-                secrets = tarfile.TarInfo("secrets/"); secrets.type = tarfile.DIRTYPE; secrets.mode = 0o700; output.addfile(secrets)
-                key_info = tarfile.TarInfo("secrets/federation-ed25519.pk8.pem"); key_info.mode = 0o600; key_info.size = len(key)
-                output.addfile(key_info, io.BytesIO(key))
-            archive.chmod(0o600)
+            write_sqlite_backup_archive(cold_database, cold_archive, key)
+
+            connection.execute("CREATE TABLE proof_marker(value TEXT NOT NULL)")
+            connection.execute("INSERT INTO proof_marker VALUES('hot-wal-restore-proof')")
+            connection.execute(
+                "UPDATE meal_menus SET version=4,updated_at='menu-updated-hot' WHERE id=?",
+                (local_menu_id,),
+            )
+            connection.execute(
+                "UPDATE meal_menu_entries SET note='WAL-updated unresolved slot note' WHERE id=?",
+                ("2" * 32,),
+            )
+            connection.commit()
+            wal_path = Path(str(database) + "-wal")
+            if not wal_path.is_file() or wal_path.stat().st_size == 0:
+                self.fail("committed menu update did not remain in the source WAL")
+            hot_menu_expected = (
+                [
+                    cold_menu_expected[0][0],
+                    (local_menu_id, "fixture-user", "Winter table", "Serve the courses in order", "", 4,
+                     "menu-created-local", "menu-updated-hot"),
+                ],
+                [
+                    local_entries[3], local_entries[0],
+                    ("2" * 32, local_menu_id, 1, None, None,
+                     "Unresolved", "WAL-updated unresolved slot note", "Choose a replacement later"),
+                    local_entries[2],
+                ],
+                cold_menu_expected[2],
+            )
+            self.assertNotEqual(
+                read_menu_recovery_state(connection, menu_ids),
+                cold_menu_state,
+                "the committed hot menu edit must differ from checkpointed cold state",
+            )
+            self.assertEqual(read_menu_recovery_state(connection, menu_ids), hot_menu_expected)
+            create_sqlite_online_snapshot(connection, hot_database)
+            with closing(sqlite3.connect(hot_database)) as hot_source:
+                self.assertEqual(read_menu_recovery_state(hot_source, menu_ids), hot_menu_expected)
+                self.assertEqual(
+                    hot_source.execute("SELECT value FROM proof_marker").fetchone(),
+                    ("hot-wal-restore-proof",),
+                )
+            write_sqlite_backup_archive(hot_database, hot_archive, key)
             connection.close()
 
-            finalize_backup(archive, engine=engine, image=image_id)
-            expected = validate_backup(archive, engine=engine, image=image_id)["person_actor_manifest"]
+            finalize_backup(cold_archive, engine=engine, image=image_id)
+            cold_expected = validate_backup(cold_archive, engine=engine, image=image_id)["person_actor_manifest"]
+            finalize_backup(hot_archive, engine=engine, image=image_id)
+            expected = validate_backup(hot_archive, engine=engine, image=image_id)["person_actor_manifest"]
+            self.assertEqual(cold_expected, expected, "cold and hot snapshots changed the actor manifest")
             states = {actor["state"] for actor in expected["actors"]}
             if states != {"active", "retired"}:
                 self.fail("generated fixture did not contain active and WAL-retired actors")
@@ -467,7 +702,19 @@ volumes:
   data:
 ''', encoding="utf-8")
             run([engine, "compose", "up", "-d", "cookbook"])
-            run(["sh", str(ROOT / "scripts" / "restore-compose.sh"), str(archive)], timeout=300)
+            run(["sh", str(ROOT / "scripts" / "restore-compose.sh"), str(cold_archive)], timeout=300)
+            cold_restored_database = copy_restored_database("cold-restored-snapshot")
+            with closing(sqlite3.connect(cold_restored_database)) as cold_restored:
+                cold_restored.execute("PRAGMA foreign_keys=ON")
+                self.assertEqual(read_menu_recovery_state(cold_restored, menu_ids), cold_menu_expected)
+                self.assertEqual(cold_restored.execute("PRAGMA integrity_check").fetchone(), ("ok",))
+                self.assertEqual(cold_restored.execute("PRAGMA foreign_key_check").fetchall(), [])
+                self.assertEqual(
+                    cold_restored.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='proof_marker'").fetchone(),
+                    (0,),
+                )
+            run(["sh", str(ROOT / "scripts" / "restore-compose.sh"), str(hot_archive)], timeout=300)
+            run(["sh", str(ROOT / "scripts" / "restore-compose.sh"), str(hot_archive)], timeout=300)
             compose_file.write_text(f'''services:
   cookbook:
     image: {image_tag}
@@ -509,24 +756,23 @@ volumes:
             recovered = json.loads(run([engine, "compose", "exec", "-T", "cookbook", "cookbook", "instance", "recovery", "describe",
                                         "--database", "/data/cookbook.db"]))
             self.assertEqual(recovered, expected)
-            container_id = run([engine, "compose", "ps", "-q", "cookbook"])
-            recovered_snapshot = root / "recovered-snapshot"
-            recovered_snapshot.mkdir(mode=0o700)
-            run([engine, "cp", f"{container_id}:/data/cookbook.db", str(recovered_snapshot / "cookbook.db")])
-            for sidecar in ("cookbook.db-wal", "cookbook.db-shm", "cookbook.db-journal"):
-                exists = subprocess.run([engine, "exec", container_id, "test", "-f", f"/data/{sidecar}"],
-                                        cwd=ROOT, env=env, capture_output=True, timeout=10)
-                if exists.returncode == 0:
-                    run([engine, "cp", f"{container_id}:/data/{sidecar}", str(recovered_snapshot / sidecar)])
-            with sqlite3.connect(recovered_snapshot / "cookbook.db") as restored_db:
+            recovered_database = copy_restored_database("recovered-snapshot", stop_service=True)
+            with closing(sqlite3.connect(recovered_database)) as restored_db:
                 marker = restored_db.execute("SELECT value FROM proof_marker").fetchone()
-            self.assertEqual(marker, ("cold-restore-proof",))
-            with sqlite3.connect(recovered_snapshot / "cookbook.db") as restored_db:
+            self.assertEqual(marker, ("hot-wal-restore-proof",))
+            with closing(sqlite3.connect(recovered_database)) as restored_db:
                 restored_db.execute("PRAGMA foreign_keys=ON")
                 version = restored_db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
                 self.assertEqual(version, source_schema_version)
                 self.assertEqual(restored_db.execute("PRAGMA integrity_check").fetchone(), ("ok",))
                 self.assertEqual(restored_db.execute("PRAGMA foreign_key_check").fetchall(), [])
+                self.assertEqual(read_menu_recovery_state(restored_db, menu_ids), hot_menu_expected)
+                self.assertEqual(
+                    restored_db.execute(
+                        "SELECT COUNT(*) FROM pragma_foreign_key_list('meal_menu_entries') WHERE \"table\"='recipes'"
+                    ).fetchone(),
+                    (0,),
+                )
                 saved_references = restored_db.execute(
                     "SELECT id,user_id,local_instance_id,local_cookbook_id,created_at "
                     "FROM cookbook_bookmarks ORDER BY id"
@@ -668,6 +914,19 @@ volumes:
                     restored_db.execute("SELECT COUNT(*) FROM creator_profiles WHERE creator_id=?", (profile_id,)).fetchone(),
                     (1,),
                 )
+            run([engine, "compose", "up", "-d", "cookbook"])
+            restart_ready = False
+            for _ in range(30):
+                probe = subprocess.run([engine, "compose", "exec", "-T", "cookbook", "cookbook", "instance", "recovery", "describe",
+                                        "--database", "/data/cookbook.db"], cwd=ROOT, env=env,
+                                       text=True, capture_output=True, timeout=10)
+                if probe.returncode == 0:
+                    restart_ready = True
+                    self.assertEqual(json.loads(probe.stdout), expected)
+                    break
+                time.sleep(1)
+            if not restart_ready:
+                self.fail("restored database did not reopen after the closed-file comparison")
             self.assertEqual(run([engine, "compose", "ps", "--status", "running", "--services"]), "cookbook")
         finally:
             try:

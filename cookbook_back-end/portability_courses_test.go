@@ -34,7 +34,7 @@ INSERT INTO course_lessons(id,course_id,title,content,recipe_id,position,created
 	}
 	h := apiHandler{db: db}
 	manifest, bundle := exportPortableBookmarkManifest(t, h, "owner")
-	if bundle.Format != portableFormatV9 || bundle.Courses == nil || len(*bundle.Courses) != 2 || bundle.OmittedCourseRecipeLinks == nil || *bundle.OmittedCourseRecipeLinks != 3 {
+	if bundle.Format != portableFormatV10 || bundle.Courses == nil || len(*bundle.Courses) != 2 || bundle.OmittedCourseRecipeLinks == nil || *bundle.OmittedCourseRecipeLinks != 3 {
 		t.Fatalf("v9 export format/courses/omissions=%q/%d/%v", bundle.Format, len(*bundle.Courses), bundle.OmittedCourseRecipeLinks)
 	}
 	if (*bundle.Courses)[0].ID != "source-private" || (*bundle.Courses)[0].Visibility != "private" || (*bundle.Courses)[1].ID != "source-public" || (*bundle.Courses)[1].Visibility != "public" {

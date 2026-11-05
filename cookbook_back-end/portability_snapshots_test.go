@@ -136,7 +136,7 @@ func TestPortableSnapshotV9SamePersonImportPreservesOpaqueClaim(t *testing.T) {
 	db, h, _, objectURI, original, eventBody := createPortableSnapshotFixture(t)
 	sourceArchive := exportPortableSnapshotArchive(t, h, "viewer")
 	bundle, entries, files := portableSnapshotArchive(t, sourceArchive)
-	if bundle.Format != portableFormatV9 || len(entries) != 1 || len(files) != 1 {
+	if bundle.Format != portableFormatV10 || len(entries) != 1 || len(files) != 1 {
 		t.Fatalf("v9 snapshot export format/count=%q/%d files=%d", bundle.Format, len(entries), len(files))
 	}
 	entry := entries[0]
@@ -204,8 +204,17 @@ func TestPortableSnapshotV9SamePersonImportPreservesOpaqueClaim(t *testing.T) {
 func TestPortableSnapshotV8LegacyArchiveImportsReferenceAndUnverifiedCopy(t *testing.T) {
 	db, h, _, objectURI, original, _ := createPortableSnapshotFixture(t)
 	current := exportPortableSnapshotArchive(t, h, "viewer")
-	bundle, _, files := portableSnapshotArchive(t, current)
-	bundle.Format = portableFormatV8
+	currentBundle, _, files := portableSnapshotArchive(t, current)
+	emptyCourses := []portableCourse{}
+	omittedCourseLinks := 0
+	bundle := portableBundle{
+		Format: portableFormatV8, Exported: currentBundle.Exported,
+		Cookbooks: currentBundle.Cookbooks, Recipes: currentBundle.Recipes,
+		Bookmarks: currentBundle.Bookmarks, Attributions: currentBundle.Attributions,
+		CookbookBookmarks: currentBundle.CookbookBookmarks, CourseBookmarks: currentBundle.CourseBookmarks,
+		Courses: &emptyCourses, OmittedCourseRecipeLinks: &omittedCourseLinks,
+		SnapshotEntries: currentBundle.SnapshotEntries,
+	}
 	manifest, err := json.Marshal(bundle)
 	if err != nil {
 		t.Fatal(err)
@@ -217,6 +226,9 @@ func TestPortableSnapshotV8LegacyArchiveImportsReferenceAndUnverifiedCopy(t *tes
 	legacyBundle, entries, _ := portableSnapshotArchive(t, legacyArchive)
 	if legacyBundle.Format != portableFormatV8 || len(entries) != 1 {
 		t.Fatalf("legacy v8 archive format/references=%q/%d", legacyBundle.Format, len(entries))
+	}
+	if err := validatePortableBundle(legacyBundle); err != nil {
+		t.Fatalf("genuine v8 archive failed validation: %v", err)
 	}
 	entry := entries[0]
 	referenceOnly := importPortableSnapshotArchive(t, h, "reference-only", legacyArchive, "")
@@ -294,6 +306,8 @@ func TestPortableSnapshotV8BlockedExportAndTamperingFailClosed(t *testing.T) {
 		t.Fatal("tampered snapshot entry passed archive digest validation")
 	}
 	manifest.Format = portableFormatV7
+	manifest.Menus = nil
+	manifest.OmittedMenuRecipeLinks = nil
 	legacyWithSnapshot := mustZipPortableFiles(t, manifest, files)
 	if decoded, _, err := decodePortableArchive(legacyWithSnapshot); err != nil {
 		t.Fatal(err)

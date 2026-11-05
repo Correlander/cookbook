@@ -35,7 +35,7 @@ func TestPortableV9CourseClaimsExportAndImportAsExternalClaims(t *testing.T) {
 		VALUES('44444444444444444444444444444444','source-self','external_claim',?,?,'External claim','contributor','imported_source','now')`, foreignInstance, externalCreator)
 	h := apiHandler{db: db}
 	manifest, bundle := exportPortableBookmarkManifest(t, h, "owner")
-	if bundle.Format != portableFormatV9 || bundle.Courses == nil || len(*bundle.Courses) != 3 {
+	if bundle.Format != portableFormatV10 || bundle.Courses == nil || len(*bundle.Courses) != 3 {
 		t.Fatalf("v9 course export=%+v format=%q", bundle.Courses, bundle.Format)
 	}
 	courseNames := map[string]*string{}

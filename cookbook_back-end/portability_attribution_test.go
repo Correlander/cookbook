@@ -113,7 +113,7 @@ func TestPortableV4RedactsUnreadablePrivateRelationsAndRoundTripsClaims(t *testi
 		t.Fatalf("v4 export status=%d body=%s", export.Code, export.Body)
 	}
 	bundle := portableManifestFromResponse(t, export.Body.Bytes())
-	if bundle.Format != portableFormatV9 || len(bundle.Attributions) != 3 {
+	if bundle.Format != portableFormatV10 || len(bundle.Attributions) != 3 {
 		t.Fatalf("v5 export format/attributions=%q/%+v", bundle.Format, bundle.Attributions)
 	}
 	claims := make(map[string]portableAttribution, len(bundle.Attributions))
@@ -167,7 +167,7 @@ func TestPortableV4RedactsUnreadablePrivateRelationsAndRoundTripsClaims(t *testi
 		t.Fatalf("re-export status=%d body=%s", reExport.Code, reExport.Body)
 	}
 	reExported := portableManifestFromResponse(t, reExport.Body.Bytes())
-	if reExported.Format != portableFormatV9 || len(reExported.Attributions) != 3 {
+	if reExported.Format != portableFormatV10 || len(reExported.Attributions) != 3 {
 		t.Fatalf("re-export format/count=%q/%d", reExported.Format, len(reExported.Attributions))
 	}
 	originalByTitle := make(map[string]portableAttribution, len(claims))

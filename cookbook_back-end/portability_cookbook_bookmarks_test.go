@@ -32,7 +32,7 @@ func TestPortableV5ExportImportPreservesCookbookReferenceIdentityOnly(t *testing
 	}
 	h := apiHandler{db: db}
 	manifest, bundle := exportPortableBookmarkManifest(t, h, "reader")
-	if bundle.Format != portableFormatV9 || len(bundle.Cookbooks) != 1 {
+	if bundle.Format != portableFormatV10 || len(bundle.Cookbooks) != 1 {
 		t.Fatalf("v5 export format/cookbooks=%q/%d", bundle.Format, len(bundle.Cookbooks))
 	}
 	bookmarks, err := portableCookbookBookmarksFromBundle(bundle)
@@ -194,5 +194,86 @@ func TestPortableCookbookBookmarkDatabaseFailureRollsBackImportedCopy(t *testing
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM cookbook_bookmarks WHERE user_id='importer'`).Scan(&bookmarks); err != nil || bookmarks != 0 {
 		t.Fatalf("failed v5 import retained bookmarks count=%d err=%v", bookmarks, err)
+	}
+}
+
+func TestPortableV9V10CookbookRecipeAssociationsAreReciprocalAndAtomic(t *testing.T) {
+	db := testDatabase(t)
+	users := []string{"valid-v9", "valid-v10", "invalid-v9-recipe-side", "invalid-v9-cookbook-side", "invalid-v10-recipe-side", "invalid-v10-cookbook-side"}
+	for _, user := range users {
+		if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES(?,?,?,'now')`, user, user+"@example.test", user); err != nil {
+			t.Fatal(err)
+		}
+	}
+	makeBundle := func(format string, bookRecipes, recipeBooks []string) portableBundle {
+		bundle := portableBundle{
+			Format:    format,
+			Cookbooks: []portableCookbook{{ID: "source-book", Title: "Source cookbook", Visibility: "private", RecipeIDs: bookRecipes}},
+			Recipes:   []portableRecipe{{ID: "source-recipe", CreatorName: "Recipe creator", Title: "Source recipe", Ingredients: []ingredient{}, Steps: []recipeStep{}, Servings: 1, Tags: []string{}, Visibility: "private", EditPolicy: "owner_only", CookbookIDs: recipeBooks}},
+			Bookmarks: []portableBookmark{}, Attributions: []portableAttribution{},
+			CookbookBookmarks: json.RawMessage("[]"), CourseBookmarks: json.RawMessage("[]"),
+		}
+		if format == portableFormatV9 || format == portableFormatV10 {
+			courses := []portableCourse{}
+			omittedCourseLinks := 0
+			snapshots := []portableSnapshotReference{}
+			bundle.Courses, bundle.OmittedCourseRecipeLinks, bundle.SnapshotEntries = &courses, &omittedCourseLinks, &snapshots
+		}
+		if format == portableFormatV10 {
+			menus := []portableMenu{}
+			omittedMenuLinks := 0
+			bundle.Menus, bundle.OmittedMenuRecipeLinks = &menus, &omittedMenuLinks
+		}
+		return bundle
+	}
+
+	for _, format := range []string{portableFormatV9, portableFormatV10} {
+		validArchive := portableBookmarkArchive(t, makeBundle(format, []string{"source-recipe"}, []string{"source-book"}), nil)
+		validUser := "valid-v9"
+		if format == portableFormatV10 {
+			validUser = "valid-v10"
+		}
+		validImport := importPortableBookmarkArchive(t, apiHandler{db: db}, validUser, validArchive)
+		if validImport.Code != http.StatusCreated {
+			t.Fatalf("valid %s association import failed: %d %s", format, validImport.Code, validImport.Body)
+		}
+		var relationships int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM cookbook_recipes cr JOIN cookbooks c ON c.id=cr.cookbook_id JOIN recipes r ON r.id=cr.recipe_id WHERE c.owner_id=? AND r.owner_id=?`, validUser, validUser).Scan(&relationships); err != nil || relationships != 1 {
+			t.Fatalf("valid %s association was silently lost: count=%d err=%v", format, relationships, err)
+		}
+
+		invalidCases := []struct {
+			name        string
+			bookRecipes []string
+			recipeBooks []string
+		}{
+			{name: "recipe-side-only", recipeBooks: []string{"source-book"}},
+			{name: "cookbook-side-only", bookRecipes: []string{"source-recipe"}},
+		}
+		for _, invalid := range invalidCases {
+			direction := "recipe"
+			if invalid.name == "cookbook-side-only" {
+				direction = "cookbook"
+			}
+			user := "invalid-" + strings.TrimPrefix(format, "cookbook-export-") + "-" + direction + "-side"
+			archive := portableBookmarkArchive(t, makeBundle(format, invalid.bookRecipes, invalid.recipeBooks), nil)
+			response := importPortableBookmarkArchive(t, apiHandler{db: db}, user, archive)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("mismatched %s %s association accepted: %d %s", format, invalid.name, response.Code, response.Body)
+			}
+			var cookbooks, recipes, relationships int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM cookbooks WHERE owner_id=?`, user).Scan(&cookbooks); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRow(`SELECT COUNT(*) FROM recipes WHERE owner_id=?`, user).Scan(&recipes); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRow(`SELECT COUNT(*) FROM cookbook_recipes cr JOIN cookbooks c ON c.id=cr.cookbook_id WHERE c.owner_id=?`, user).Scan(&relationships); err != nil {
+				t.Fatal(err)
+			}
+			if cookbooks != 0 || recipes != 0 || relationships != 0 {
+				t.Fatalf("invalid %s %s archive partially imported: cookbooks=%d recipes=%d relationships=%d", format, invalid.name, cookbooks, recipes, relationships)
+			}
+		}
 	}
 }

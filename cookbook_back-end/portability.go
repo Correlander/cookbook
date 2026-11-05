@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"Cookbook_Database_Backend/internal/menus"
 )
 
 const maxImportBytes = 100 << 20
@@ -29,6 +31,7 @@ const maxPortableCourseBookmarks = 10000
 const portableFormatV6 = "cookbook-export-v6"
 const portableFormatV7 = "cookbook-export-v7"
 const portableFormatV9 = "cookbook-export-v9"
+const portableFormatV10 = "cookbook-export-v10"
 const portableFormatV5 = "cookbook-export-v5"
 const portableFormatV4 = "cookbook-export-v4"
 const portableFormatV3 = "cookbook-export-v3"
@@ -46,6 +49,8 @@ type portableBundle struct {
 	CourseBookmarks          json.RawMessage              `json:"course_bookmarks,omitempty"`
 	Courses                  *[]portableCourse            `json:"courses,omitempty"`
 	OmittedCourseRecipeLinks *int                         `json:"omitted_course_recipe_links,omitempty"`
+	Menus                    *[]portableMenu              `json:"menus,omitempty"`
+	OmittedMenuRecipeLinks   *int                         `json:"omitted_menu_recipe_links,omitempty"`
 	SnapshotEntries          *[]portableSnapshotReference `json:"snapshot_entries,omitempty"`
 	snapshotFiles            map[string][]byte
 }
@@ -92,11 +97,11 @@ type portableCourse struct {
 }
 
 func portableFormatHasCourses(format string) bool {
-	return format == portableFormatV7 || format == portableFormatV8 || format == portableFormatV9
+	return format == portableFormatV7 || format == portableFormatV8 || format == portableFormatV9 || format == portableFormatV10
 }
 
 func portableFormatHasSnapshots(format string) bool {
-	return format == portableFormatV8 || format == portableFormatV9
+	return format == portableFormatV8 || format == portableFormatV9 || format == portableFormatV10
 }
 
 func validPortableCourseCreatorName(name string) bool {
@@ -122,6 +127,41 @@ type portableCourseListVersionField struct {
 	Courses portableRawField `json:"courses"`
 }
 
+type portableMenuVersionFields struct {
+	CreatorName portableRawField `json:"creator_name"`
+}
+
+type portableMenuListVersionField struct {
+	Menus portableRawField `json:"menus"`
+}
+
+func validatePortableMenuFieldVersion(manifest []byte, format string) error {
+	var root portableMenuListVersionField
+	if err := json.Unmarshal(manifest, &root); err != nil {
+		return err
+	}
+	if !root.Menus.present {
+		return nil
+	}
+	if format != portableFormatV10 {
+		return errors.New("menus are only supported by v10 archives")
+	}
+	if bytes.Equal(bytes.TrimSpace(root.Menus.value), []byte("null")) {
+		return errors.New("v10 menus must be an array")
+	}
+	var values []portableMenuVersionFields
+	if err := json.Unmarshal(root.Menus.value, &values); err != nil {
+		return errors.New("invalid portable menus")
+	}
+	for _, menu := range values {
+		trimmed := bytes.TrimSpace(menu.CreatorName.value)
+		if !menu.CreatorName.present || len(trimmed) == 0 || trimmed[0] != '"' {
+			return errors.New("v10 menu is missing creator_name")
+		}
+	}
+	return nil
+}
+
 func validatePortableCourseFieldVersion(manifest []byte, format string) error {
 	var root portableCourseListVersionField
 	if err := json.Unmarshal(manifest, &root); err != nil {
@@ -131,7 +171,7 @@ func validatePortableCourseFieldVersion(manifest []byte, format string) error {
 		return nil
 	}
 	if !portableFormatHasCourses(format) {
-		return errors.New("courses are only supported by v7, v8 or v9 archives")
+		return errors.New("courses are only supported by v7 through v10 archives")
 	}
 	if bytes.Equal(bytes.TrimSpace(root.Courses.value), []byte("null")) {
 		return nil
@@ -141,13 +181,13 @@ func validatePortableCourseFieldVersion(manifest []byte, format string) error {
 		return errors.New("invalid portable courses")
 	}
 	for _, course := range courses {
-		if format == portableFormatV9 {
+		if format == portableFormatV9 || format == portableFormatV10 {
 			trimmed := bytes.TrimSpace(course.CreatorName.value)
 			if !course.CreatorName.present || len(trimmed) == 0 || trimmed[0] != '"' {
-				return errors.New("v9 course is missing creator_name")
+				return errors.New("v9 or v10 course is missing creator_name")
 			}
 		} else if course.CreatorName.present {
-			return errors.New("creator_name is only supported on v9 courses")
+			return errors.New("creator_name is only supported on v9 or v10 courses")
 		}
 	}
 	return nil
@@ -202,8 +242,10 @@ func (h apiHandler) exportData(w http.ResponseWriter, r *http.Request) {
 	uid := authenticatedUser(r)
 	omittedCourseLinks := 0
 	emptyCourses := []portableCourse{}
+	emptyMenus := []portableMenu{}
 	emptySnapshotEntries := []portableSnapshotReference{}
-	bundle := portableBundle{Format: portableFormatV9, Exported: time.Now().UTC().Format(time.RFC3339Nano), Cookbooks: []portableCookbook{}, Recipes: []portableRecipe{}, Bookmarks: []portableBookmark{}, Attributions: []portableAttribution{}, CookbookBookmarks: json.RawMessage("[]"), CourseBookmarks: json.RawMessage("[]"), Courses: &emptyCourses, OmittedCourseRecipeLinks: &omittedCourseLinks, SnapshotEntries: &emptySnapshotEntries}
+	omittedMenuLinks := 0
+	bundle := portableBundle{Format: portableFormatV10, Exported: time.Now().UTC().Format(time.RFC3339Nano), Cookbooks: []portableCookbook{}, Recipes: []portableRecipe{}, Bookmarks: []portableBookmark{}, Attributions: []portableAttribution{}, CookbookBookmarks: json.RawMessage("[]"), CourseBookmarks: json.RawMessage("[]"), Courses: &emptyCourses, OmittedCourseRecipeLinks: &omittedCourseLinks, Menus: &emptyMenus, OmittedMenuRecipeLinks: &omittedMenuLinks, SnapshotEntries: &emptySnapshotEntries}
 	manifestSize := 128
 	books, err := h.db.Query(`SELECT id,title,description,visibility FROM cookbooks WHERE owner_id=? ORDER BY id`, uid)
 	if err != nil {
@@ -383,6 +425,22 @@ func (h apiHandler) exportData(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
+	menus, menuAttributions, omittedMenuLinks, err := exportPortableMenus(r.Context(), h.db, uid, recipeSet, &manifestSize)
+	if err != nil {
+		if errors.Is(err, errPortableExportTooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "export_too_large")
+		} else {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+		}
+		return
+	}
+	bundle.Menus = &menus
+	bundle.OmittedMenuRecipeLinks = &omittedMenuLinks
+	if len(menuAttributions) > maxPortableRelationships-len(bundle.Attributions) {
+		writeError(w, http.StatusRequestEntityTooLarge, "export_too_large")
+		return
+	}
+	bundle.Attributions = append(bundle.Attributions, menuAttributions...)
 	bookmarkRows, err := h.db.Query(`SELECT id,target_kind,local_instance_id,local_recipe_id,remote_object_uri,created_at
 		FROM recipe_bookmarks WHERE user_id=? ORDER BY created_at DESC,id`, uid)
 	if err != nil {
@@ -900,7 +958,7 @@ func (h apiHandler) importData(w http.ResponseWriter, r *http.Request) {
 		for _, sourceCourse := range *bundle.Courses {
 			courseID, now := newID(), timestamp()
 			creatorName := ""
-			if bundle.Format == portableFormatV9 {
+			if bundle.Format == portableFormatV9 || bundle.Format == portableFormatV10 {
 				creatorName = *sourceCourse.CreatorName
 			}
 			if _, err := tx.Exec(`INSERT INTO courses(id,owner_id,title,description,creator_name,visibility,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, courseID, uid, sourceCourse.Title, sourceCourse.Description, creatorName, "private", now, now); err != nil {
@@ -916,6 +974,42 @@ func (h apiHandler) importData(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				importedCourseLessons++
+			}
+		}
+	}
+	menuIDs := map[string]string{}
+	if bundle.Format == portableFormatV10 {
+		instanceID, err := currentLibraryInstanceID(r.Context(), tx)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		store := menus.Store{}
+		for _, sourceMenu := range *bundle.Menus {
+			menuID := newID()
+			if _, err := store.Create(r.Context(), tx, menus.CreateInput{ID: menuID, OwnerID: uid, Title: sourceMenu.Title, Note: sourceMenu.Note, CreatorName: sourceMenu.CreatorName, Now: timestamp()}); err != nil {
+				if errors.Is(err, menus.ErrLimit) {
+					writeError(w, http.StatusConflict, "menu_limit_reached")
+					return
+				}
+				writeError(w, http.StatusInternalServerError, "storage_error")
+				return
+			}
+			menuIDs[sourceMenu.ID] = menuID
+			for _, sourceEntry := range sourceMenu.Entries {
+				recipeID := recipeIDs[sourceEntry.RecipeID]
+				entry := menus.EntryInput{ID: newID(), MenuID: menuID, Label: sourceEntry.Label, Note: sourceEntry.Note, ServingNote: sourceEntry.ServingNote}
+				if recipeID != "" {
+					entry.LocalInstanceID, entry.LocalRecipeID = instanceID, recipeID
+				}
+				if err := store.AddEntry(r.Context(), tx, entry); err != nil {
+					if errors.Is(err, menus.ErrLimit) {
+						writeError(w, http.StatusConflict, "menu_limit_reached")
+						return
+					}
+					writeError(w, http.StatusInternalServerError, "storage_error")
+					return
+				}
 			}
 		}
 	}
@@ -985,7 +1079,7 @@ func (h apiHandler) importData(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
-	if err := insertPortableAttributionImport(r.Context(), tx, bundle.Attributions, recipeIDs, bookIDs, courseIDs); err != nil {
+	if err := insertPortableAttributionImport(r.Context(), tx, bundle.Attributions, recipeIDs, bookIDs, courseIDs, menuIDs); err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
@@ -1000,6 +1094,10 @@ func (h apiHandler) importData(w http.ResponseWriter, r *http.Request) {
 		result["course_lessons"] = importedCourseLessons
 		result["omitted_course_recipe_links"] = *bundle.OmittedCourseRecipeLinks
 	}
+	if bundle.Format == portableFormatV10 {
+		result["menus"] = len(*bundle.Menus)
+		result["omitted_menu_recipe_links"] = *bundle.OmittedMenuRecipeLinks
+	}
 	if portableFormatHasSnapshots(bundle.Format) {
 		result["snapshot_copies"] = snapshotCopies
 		result["snapshot_references"] = len(snapshotEntries) - snapshotCopies
@@ -1007,7 +1105,7 @@ func (h apiHandler) importData(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, result)
 }
 
-func insertPortableAttributionImport(ctx context.Context, tx *sql.Tx, attributions []portableAttribution, recipeIDs, bookIDs, courseIDs map[string]string) error {
+func insertPortableAttributionImport(ctx context.Context, tx *sql.Tx, attributions []portableAttribution, recipeIDs, bookIDs, courseIDs, menuIDs map[string]string) error {
 	for _, item := range attributions {
 		var targetID string
 		switch item.TargetKind {
@@ -1017,6 +1115,8 @@ func insertPortableAttributionImport(ctx context.Context, tx *sql.Tx, attributio
 			targetID = bookIDs[item.TargetID]
 		case "course":
 			targetID = courseIDs[item.TargetID]
+		case "menu":
+			targetID = menuIDs[item.TargetID]
 		default:
 			return errors.New("invalid portable attribution target")
 		}
@@ -1255,50 +1355,57 @@ func portableCookbookBookmarksFromBundle(bundle portableBundle) ([]portableCookb
 }
 
 func validatePortableBundle(bundle portableBundle) error {
-	if (bundle.Format != portableFormatV9 && bundle.Format != portableFormatV8 && bundle.Format != portableFormatV7 && bundle.Format != portableFormatV6 && bundle.Format != portableFormatV5 && bundle.Format != portableFormatV4 && bundle.Format != portableFormatV3 && bundle.Format != portableFormat && bundle.Format != legacyPortableFormat) ||
-		len(bundle.Cookbooks) > 1000 || len(bundle.Recipes) > 10000 || len(bundle.Bookmarks) > maxRecipeBookmarksPerAccount || (bundle.Courses != nil && len(*bundle.Courses) > maxPortableCourses) {
+	if (bundle.Format != portableFormatV10 && bundle.Format != portableFormatV9 && bundle.Format != portableFormatV8 && bundle.Format != portableFormatV7 && bundle.Format != portableFormatV6 && bundle.Format != portableFormatV5 && bundle.Format != portableFormatV4 && bundle.Format != portableFormatV3 && bundle.Format != portableFormat && bundle.Format != legacyPortableFormat) ||
+		len(bundle.Cookbooks) > 1000 || len(bundle.Recipes) > 10000 || len(bundle.Bookmarks) > maxRecipeBookmarksPerAccount || (bundle.Courses != nil && len(*bundle.Courses) > maxPortableCourses) || (bundle.Menus != nil && len(*bundle.Menus) > maxPortableMenus) {
 		return errors.New("unsupported or oversized import")
 	}
-	if (bundle.Format == portableFormatV3 || bundle.Format == portableFormatV4 || bundle.Format == portableFormatV5 || bundle.Format == portableFormatV6 || bundle.Format == portableFormatV7 || bundle.Format == portableFormatV8 || bundle.Format == portableFormatV9) && bundle.Bookmarks == nil {
+	if (bundle.Format == portableFormatV3 || bundle.Format == portableFormatV4 || bundle.Format == portableFormatV5 || bundle.Format == portableFormatV6 || bundle.Format == portableFormatV7 || bundle.Format == portableFormatV8 || bundle.Format == portableFormatV9 || bundle.Format == portableFormatV10) && bundle.Bookmarks == nil {
 		return errors.New("versioned archive is missing bookmarks")
 	}
-	if bundle.Format != portableFormatV3 && bundle.Format != portableFormatV4 && bundle.Format != portableFormatV5 && bundle.Format != portableFormatV6 && bundle.Format != portableFormatV7 && bundle.Format != portableFormatV8 && bundle.Format != portableFormatV9 && len(bundle.Bookmarks) != 0 {
+	if bundle.Format != portableFormatV3 && bundle.Format != portableFormatV4 && bundle.Format != portableFormatV5 && bundle.Format != portableFormatV6 && bundle.Format != portableFormatV7 && bundle.Format != portableFormatV8 && bundle.Format != portableFormatV9 && bundle.Format != portableFormatV10 && len(bundle.Bookmarks) != 0 {
 		return errors.New("legacy archives cannot carry bookmarks")
 	}
-	if (bundle.Format == portableFormatV4 || bundle.Format == portableFormatV5 || bundle.Format == portableFormatV6 || bundle.Format == portableFormatV7 || bundle.Format == portableFormatV8 || bundle.Format == portableFormatV9) && bundle.Attributions == nil {
+	if (bundle.Format == portableFormatV4 || bundle.Format == portableFormatV5 || bundle.Format == portableFormatV6 || bundle.Format == portableFormatV7 || bundle.Format == portableFormatV8 || bundle.Format == portableFormatV9 || bundle.Format == portableFormatV10) && bundle.Attributions == nil {
 		return errors.New("versioned archive is missing attributions")
 	}
-	if bundle.Format != portableFormatV4 && bundle.Format != portableFormatV5 && bundle.Format != portableFormatV6 && bundle.Format != portableFormatV7 && bundle.Format != portableFormatV8 && bundle.Format != portableFormatV9 && len(bundle.Attributions) != 0 {
+	if bundle.Format != portableFormatV4 && bundle.Format != portableFormatV5 && bundle.Format != portableFormatV6 && bundle.Format != portableFormatV7 && bundle.Format != portableFormatV8 && bundle.Format != portableFormatV9 && bundle.Format != portableFormatV10 && len(bundle.Attributions) != 0 {
 		return errors.New("legacy archives cannot carry attributions")
 	}
 	if _, err := portableCookbookBookmarksFromBundle(bundle); err != nil {
 		return err
 	}
-	if (bundle.Format == portableFormatV5 || bundle.Format == portableFormatV6 || bundle.Format == portableFormatV7 || bundle.Format == portableFormatV8 || bundle.Format == portableFormatV9) && bundle.CookbookBookmarks == nil {
+	if (bundle.Format == portableFormatV5 || bundle.Format == portableFormatV6 || bundle.Format == portableFormatV7 || bundle.Format == portableFormatV8 || bundle.Format == portableFormatV9 || bundle.Format == portableFormatV10) && bundle.CookbookBookmarks == nil {
 		return errors.New("versioned archive is missing cookbook bookmarks")
 	}
-	if bundle.Format != portableFormatV5 && bundle.Format != portableFormatV6 && bundle.Format != portableFormatV7 && bundle.Format != portableFormatV8 && bundle.Format != portableFormatV9 && bundle.CookbookBookmarks != nil {
-		return errors.New("cookbook bookmarks are only supported by v5 through v9 archives")
+	if bundle.Format != portableFormatV5 && bundle.Format != portableFormatV6 && bundle.Format != portableFormatV7 && bundle.Format != portableFormatV8 && bundle.Format != portableFormatV9 && bundle.Format != portableFormatV10 && bundle.CookbookBookmarks != nil {
+		return errors.New("cookbook bookmarks are only supported by v5 through v10 archives")
 	}
-	if (bundle.Format == portableFormatV6 || bundle.Format == portableFormatV7 || bundle.Format == portableFormatV8 || bundle.Format == portableFormatV9) && bundle.CourseBookmarks == nil {
+	if (bundle.Format == portableFormatV6 || bundle.Format == portableFormatV7 || bundle.Format == portableFormatV8 || bundle.Format == portableFormatV9 || bundle.Format == portableFormatV10) && bundle.CourseBookmarks == nil {
 		return errors.New("versioned archive is missing course bookmarks")
 	}
-	if bundle.Format != portableFormatV6 && bundle.Format != portableFormatV7 && bundle.Format != portableFormatV8 && bundle.Format != portableFormatV9 && bundle.CourseBookmarks != nil {
-		return errors.New("course bookmarks are only supported by v6 through v9 archives")
+	if bundle.Format != portableFormatV6 && bundle.Format != portableFormatV7 && bundle.Format != portableFormatV8 && bundle.Format != portableFormatV9 && bundle.Format != portableFormatV10 && bundle.CourseBookmarks != nil {
+		return errors.New("course bookmarks are only supported by v6 through v10 archives")
 	}
 	if portableFormatHasCourses(bundle.Format) {
 		if bundle.Courses == nil || bundle.OmittedCourseRecipeLinks == nil || *bundle.OmittedCourseRecipeLinks < 0 {
 			return errors.New("archive is missing course data or omitted-link count")
 		}
 	} else if bundle.Courses != nil || bundle.OmittedCourseRecipeLinks != nil {
-		return errors.New("course data is only supported by v7 through v9 archives")
+		return errors.New("course data is only supported by v7 through v10 archives")
+	}
+	if bundle.Format == portableFormatV10 {
+		if bundle.Menus == nil || bundle.OmittedMenuRecipeLinks == nil || *bundle.OmittedMenuRecipeLinks < 0 {
+			return errors.New("v10 archive is missing menu data or omitted-link count")
+		}
+	} else if bundle.Menus != nil || bundle.OmittedMenuRecipeLinks != nil {
+		return errors.New("menu data is only supported by v10 archives")
 	}
 	if portableFormatHasSnapshots(bundle.Format) {
 		if bundle.SnapshotEntries == nil {
-			return errors.New("v8 or v9 archive is missing snapshot entries")
+			return errors.New("v8 through v10 archive is missing snapshot entries")
 		}
 	} else if bundle.SnapshotEntries != nil {
-		return errors.New("snapshot entries are only supported by v8 and v9 archives")
+		return errors.New("snapshot entries are only supported by v8 through v10 archives")
 	}
 	if _, err := portableCourseBookmarksFromBundle(bundle); err != nil {
 		return err
@@ -1385,7 +1492,7 @@ func validatePortableBundle(bundle portableBundle) error {
 		}
 		recipeIDsByBook[b.ID] = seenRecipes
 	}
-	if bundle.Format == portableFormat || bundle.Format == portableFormatV3 || bundle.Format == portableFormatV4 || bundle.Format == portableFormatV5 || bundle.Format == portableFormatV6 || bundle.Format == portableFormatV7 || bundle.Format == portableFormatV8 || bundle.Format == portableFormatV9 {
+	if bundle.Format == portableFormat || bundle.Format == portableFormatV3 || bundle.Format == portableFormatV4 || bundle.Format == portableFormatV5 || bundle.Format == portableFormatV6 || bundle.Format == portableFormatV7 || bundle.Format == portableFormatV8 || bundle.Format == portableFormatV9 || bundle.Format == portableFormatV10 {
 		if relationshipCount != recipeRelationshipCount {
 			return errors.New("inconsistent cookbook relationships")
 		}
@@ -1403,16 +1510,54 @@ func validatePortableBundle(bundle portableBundle) error {
 			courseIDs[course.ID] = true
 		}
 	}
-	if bundle.Format == portableFormatV4 || bundle.Format == portableFormatV5 || bundle.Format == portableFormatV6 || bundle.Format == portableFormatV7 || bundle.Format == portableFormatV8 || bundle.Format == portableFormatV9 {
+	menuIDs := make(map[string]bool)
+	if bundle.Menus != nil {
+		entryIDs := make(map[string]bool)
+		totalEntries := 0
+		omittedMenuLinks := 0
+		for _, item := range *bundle.Menus {
+			if !validLibraryInstanceID(item.ID) || menuIDs[item.ID] || menus.ValidateCreate(menus.CreateInput{ID: item.ID, OwnerID: "portable", Title: item.Title, Note: item.Note, CreatorName: item.CreatorName, Now: "portable"}) != nil || item.Entries == nil || len(item.Entries) > menus.MaxEntries {
+				return errors.New("invalid portable menu")
+			}
+			menuIDs[item.ID] = true
+			totalEntries += len(item.Entries)
+			for position, entry := range item.Entries {
+				if !validLibraryInstanceID(entry.ID) || entryIDs[entry.ID] || entry.Position != position || menus.ValidateEntry(menus.EntryInput{ID: entry.ID, MenuID: item.ID, LocalInstanceID: "", LocalRecipeID: "", Label: entry.Label, Note: entry.Note, ServingNote: entry.ServingNote}) != nil || entry.RecipeID != "" && (!recipes[entry.RecipeID] || entry.RecipeLinkOmitted) {
+					return errors.New("invalid portable menu entry")
+				}
+				if entry.RecipeLinkOmitted {
+					omittedMenuLinks++
+				}
+				entryIDs[entry.ID] = true
+			}
+		}
+		if totalEntries > maxPortableRelationships {
+			return errors.New("too many portable menu entries")
+		}
+		if *bundle.OmittedMenuRecipeLinks != omittedMenuLinks {
+			return errors.New("invalid omitted menu recipe link count")
+		}
+	}
+	if bundle.Format == portableFormatV4 || bundle.Format == portableFormatV5 || bundle.Format == portableFormatV6 || bundle.Format == portableFormatV7 || bundle.Format == portableFormatV8 || bundle.Format == portableFormatV9 || bundle.Format == portableFormatV10 {
 		if len(bundle.Attributions) > maxPortableRelationships {
 			return errors.New("too many attributions")
 		}
 		seen := make(map[string]struct{}, len(bundle.Attributions))
 		for _, item := range bundle.Attributions {
-			if item.TargetKind != "recipe" && item.TargetKind != "cookbook" && (bundle.Format != portableFormatV9 || item.TargetKind != "course") {
+			switch item.TargetKind {
+			case "recipe", "cookbook":
+			case "course":
+				if bundle.Format != portableFormatV9 && bundle.Format != portableFormatV10 {
+					return errors.New("invalid attribution target kind")
+				}
+			case "menu":
+				if bundle.Format != portableFormatV10 {
+					return errors.New("invalid attribution target kind")
+				}
+			default:
 				return errors.New("invalid attribution target kind")
 			}
-			if item.TargetID == "" || len(item.TargetID) > 80 || (item.TargetKind == "recipe" && !recipes[item.TargetID]) || (item.TargetKind == "cookbook" && !books[item.TargetID]) || (item.TargetKind == "course" && !courseIDs[item.TargetID]) {
+			if item.TargetID == "" || len(item.TargetID) > 80 || (item.TargetKind == "recipe" && !recipes[item.TargetID]) || (item.TargetKind == "cookbook" && !books[item.TargetID]) || (item.TargetKind == "course" && !courseIDs[item.TargetID]) || (item.TargetKind == "menu" && !menuIDs[item.TargetID]) {
 				return errors.New("unknown attribution target")
 			}
 			if !validLibraryInstanceID(item.SourceInstanceID) || !validLibraryInstanceID(item.CreatorID) {
@@ -1440,7 +1585,7 @@ func validatePortableBundle(bundle portableBundle) error {
 		totalLessons := 0
 		for courseIndex := range *bundle.Courses {
 			item := &(*bundle.Courses)[courseIndex]
-			if !validPortableCourseID(item.ID) || !utf8.ValidString(item.Title) || !utf8.ValidString(item.Description) || !validCourseFields(item.Title, item.Description, item.Visibility) || item.Lessons == nil || bundle.Format == portableFormatV9 && (item.CreatorName == nil || !validPortableCourseCreatorName(*item.CreatorName)) {
+			if !validPortableCourseID(item.ID) || !utf8.ValidString(item.Title) || !utf8.ValidString(item.Description) || !validCourseFields(item.Title, item.Description, item.Visibility) || item.Lessons == nil || (bundle.Format == portableFormatV9 || bundle.Format == portableFormatV10) && (item.CreatorName == nil || !validPortableCourseCreatorName(*item.CreatorName)) {
 				return errors.New("invalid portable course")
 			}
 			if _, exists := courseIDs[item.ID]; exists {
@@ -1632,6 +1777,9 @@ func decodePortableArchive(data []byte) (portableBundle, map[string][]byte, erro
 		if err := validatePortableCourseFieldVersion(data, bundle.Format); err != nil {
 			return portableBundle{}, nil, err
 		}
+		if err := validatePortableMenuFieldVersion(data, bundle.Format); err != nil {
+			return portableBundle{}, nil, err
+		}
 		if bundle.Format != legacyPortableFormat {
 			return portableBundle{}, nil, errors.New("expected a ZIP archive")
 		}
@@ -1736,7 +1884,10 @@ func decodePortableArchive(data []byte) (portableBundle, map[string][]byte, erro
 	if err := validatePortableCourseFieldVersion(manifest, bundle.Format); err != nil {
 		return portableBundle{}, nil, err
 	}
-	if bundle.Format != portableFormat && bundle.Format != portableFormatV3 && bundle.Format != portableFormatV4 && bundle.Format != portableFormatV5 && bundle.Format != portableFormatV6 && bundle.Format != portableFormatV7 && bundle.Format != portableFormatV8 && bundle.Format != portableFormatV9 {
+	if err := validatePortableMenuFieldVersion(manifest, bundle.Format); err != nil {
+		return portableBundle{}, nil, err
+	}
+	if bundle.Format != portableFormat && bundle.Format != portableFormatV3 && bundle.Format != portableFormatV4 && bundle.Format != portableFormatV5 && bundle.Format != portableFormatV6 && bundle.Format != portableFormatV7 && bundle.Format != portableFormatV8 && bundle.Format != portableFormatV9 && bundle.Format != portableFormatV10 {
 		return portableBundle{}, nil, errors.New("unsupported archive version")
 	}
 	bundle.snapshotFiles = snapshotFiles

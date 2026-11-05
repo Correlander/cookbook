@@ -1,13 +1,30 @@
 import { spawn } from 'node:child_process'
-import { cp, lstat, mkdtemp, mkdir, readdir, rm, writeFile, chmod, stat } from 'node:fs/promises'
+import { access, cp, lstat, mkdtemp, mkdir, readdir, rm, writeFile, chmod, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { createServer } from 'node:net'
 import { existsSync } from 'node:fs'
+import { X_OK } from 'node:constants'
 
 const root = resolve(import.meta.dirname, '../..')
 const frontend = join(root, 'coobook_front-end')
 const privateSnapshotOptIn = process.env.COOKBOOK_E2E_PRIVATE_SNAPSHOT === '1'
+// Set E2E_API_BINARY=/absolute/path/to/cookbook-api to use a trusted local build; its provenance belongs to the caller's proof record.
+const suppliedApiBinary = process.env.E2E_API_BINARY
+let apiBinary
+if (suppliedApiBinary !== undefined) {
+  if (!suppliedApiBinary || !isAbsolute(suppliedApiBinary)) {
+    throw new Error('E2E_API_BINARY must be an absolute path to an executable API binary')
+  }
+  try {
+    const binaryInfo = await stat(suppliedApiBinary)
+    if (!binaryInfo.isFile()) throw new Error('not a regular file')
+    await access(suppliedApiBinary, X_OK)
+  } catch (error) {
+    throw new Error(`E2E_API_BINARY is not an executable file: ${suppliedApiBinary}`, { cause: error })
+  }
+  apiBinary = suppliedApiBinary
+}
 const nodeVersion = process.versions.node.split('.').map(Number)
 if (nodeVersion[0] < 22 || (nodeVersion[0] === 22 && nodeVersion[1] < 23) || (nodeVersion[0] === 22 && nodeVersion[1] === 23 && nodeVersion[2] < 4)) {
   throw new Error('E2E requires the frontend/CI Node version 22.23.4 or newer')
@@ -144,16 +161,18 @@ try {
     await run('npm', ['run', 'build'], { cwd: frontend, env: { ...env, TMPDIR: buildScratch } })
   }
   await cp(join(frontend, 'dist'), env.PLAYWRIGHT_DIST, { recursive: true, errorOnExist: true })
-  const apiBinary = join(runDir, 'cookbook-api')
-  await run('go', ['build', '-mod=mod', '-o', apiBinary, '.'], {
-    cwd: join(root, 'cookbook_back-end'),
-    env: {
-      ...env,
-      GOCACHE: process.env.GOCACHE ?? join(runDir, 'go-cache'),
-      GOMODCACHE: process.env.GOMODCACHE ?? join(runDir, 'go-mod-cache'),
-      GOPATH: process.env.GOPATH ?? join(runDir, 'go-path'),
-    },
-  })
+  if (apiBinary === undefined) {
+    apiBinary = join(runDir, 'cookbook-api')
+    await run('go', ['build', '-mod=mod', '-o', apiBinary, '.'], {
+      cwd: join(root, 'cookbook_back-end'),
+      env: {
+        ...env,
+        GOCACHE: process.env.GOCACHE ?? join(runDir, 'go-cache'),
+        GOMODCACHE: process.env.GOMODCACHE ?? join(runDir, 'go-mod-cache'),
+        GOPATH: process.env.GOPATH ?? join(runDir, 'go-path'),
+      },
+    })
+  }
   const api = start(apiBinary, [], { cwd: runDir, env })
   const staticHost = start(process.execPath, [join(frontend, 'scripts/static-host.mjs')], {
     cwd: frontend,

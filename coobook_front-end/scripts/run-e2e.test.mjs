@@ -11,7 +11,7 @@ const frontend = fileURLToPath(new URL('..', import.meta.url))
 const repository = fileURLToPath(new URL('../..', import.meta.url))
 const scratchPrefix = '.cookbook-e2e-build-'
 
-async function makeFixture(t, { mode = 'fail' } = {}) {
+async function makeFixture(t, { mode = 'fail', createDist = false, createGo = false } = {}) {
   const testRoot = await mkdtemp(join(tmpdir(), 'cookbook-run-e2e-test-'))
   const runnerTemp = join(testRoot, 'runner-temp')
   const fakeBin = join(testRoot, 'fake-bin')
@@ -20,8 +20,11 @@ async function makeFixture(t, { mode = 'fail' } = {}) {
   const callerTemp = join(testRoot, 'caller-temp')
   await Promise.all([mkdir(runnerTemp), mkdir(fakeBin), mkdir(callerTmp), mkdir(callerTemp)])
   const fakeNpm = join(fakeBin, 'npm')
+  const fakeGo = join(fakeBin, 'go')
+  const dist = join(frontend, 'dist')
+  const ownsDist = createDist && !(await stat(dist).then(() => true, () => false))
   const script = `#!${process.execPath}
-import { writeFileSync, statSync } from 'node:fs'
+import { mkdirSync, writeFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 const scratch = process.env.TMPDIR
 const captured = {
@@ -43,6 +46,10 @@ const captured = {
   playwrightDist: process.env.PLAYWRIGHT_DIST,
 }
 writeFileSync(process.env.E2E_BUILD_TEST_CAPTURE, JSON.stringify(captured))
+if (process.env.E2E_BUILD_TEST_CREATE_DIST === '1') {
+  mkdirSync(join(process.env.E2E_BUILD_TEST_FRONTEND, 'dist'), { recursive: true })
+  writeFileSync(join(process.env.E2E_BUILD_TEST_FRONTEND, 'dist', 'index.html'), '<!doctype html>')
+}
 if (process.env.E2E_BUILD_TEST_MODE === 'signal') {
   process.on('SIGTERM', () => setTimeout(() => process.exit(0), 10))
   setInterval(() => {}, 1000)
@@ -50,14 +57,24 @@ if (process.env.E2E_BUILD_TEST_MODE === 'signal') {
   process.exit(17)
 }
 `
+  const fakeGoScript = `#!${process.execPath}
+import { writeFileSync } from 'node:fs'
+writeFileSync(process.env.E2E_BUILD_TEST_GO_CAPTURE, JSON.stringify(process.argv.slice(2)))
+process.exit(91)
+`
   await writeFile(fakeNpm, script, { mode: 0o700 })
   await chmod(fakeNpm, 0o700)
+  if (createGo) {
+    await writeFile(fakeGo, fakeGoScript, { mode: 0o700 })
+    await chmod(fakeGo, 0o700)
+  }
   t.after(async () => {
     const captureText = await readFile(capture, 'utf8').catch(() => '')
     if (captureText) {
       const { tmpdir: ownedScratch } = JSON.parse(captureText)
       if (ownedScratch.startsWith(join(frontend, scratchPrefix))) await rm(ownedScratch, { recursive: true, force: true })
     }
+    if (ownsDist) await rm(dist, { recursive: true, force: true })
     await rm(testRoot, { recursive: true, force: true })
   })
   const env = {
@@ -68,6 +85,8 @@ if (process.env.E2E_BUILD_TEST_MODE === 'signal') {
     TEMP: callerTemp,
     E2E_SKIP_BUILD: '0',
     E2E_BUILD_TEST_CAPTURE: capture,
+    E2E_BUILD_TEST_GO_CAPTURE: join(testRoot, 'go-capture.json'),
+    ...(createDist ? { E2E_BUILD_TEST_CREATE_DIST: '1' } : {}),
     E2E_BUILD_TEST_FRONTEND: frontend,
     E2E_BUILD_TEST_MODE: mode,
     E2E_BUILD_TEST_SENTINEL: 'caller-env-is-preserved',
@@ -165,6 +184,55 @@ test('cleans build scratch after the build succeeds and a later step fails', asy
   assert.equal(result.code, 1)
   assert.match(runnerProcess.stderr, /go could not start|ENOENT/)
   await assertBuildIsolation(fixture, await readCapture(fixture.capture))
+})
+
+test('uses a supplied executable path with spaces and skips the worktree Go build', async (t) => {
+  const fixture = await makeFixture(t, { mode: 'success', createDist: true, createGo: true })
+  const apiDir = join(fixture.testRoot, 'trusted local artifact')
+  await mkdir(apiDir)
+  const selectedApi = join(apiDir, 'cookbook api')
+  const selectedMarker = join(fixture.testRoot, 'selected-api.json')
+  await writeFile(selectedApi, `#!${process.execPath}\nimport { writeFileSync } from 'node:fs'\nwriteFileSync(${JSON.stringify(selectedMarker)}, process.execPath)\nsetInterval(() => {}, 1000)\n`, { mode: 0o700 })
+  await chmod(selectedApi, 0o700)
+  fixture.env.E2E_API_BINARY = selectedApi
+
+  const runnerProcess = trackRunner(t, fixture.env)
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && !(await stat(selectedMarker).then(() => true, () => false))) {
+    await new Promise((done) => setTimeout(done, 20))
+  }
+  assert.equal(await stat(selectedMarker).then(() => true, () => false), true, 'runner should execute the exact supplied path')
+  runnerProcess.child.kill('SIGTERM')
+  const result = await runnerProcess.closed
+  assert.equal(result.code, 143)
+  assert.equal(result.signal, null)
+  assert.equal(await stat(fixture.env.E2E_BUILD_TEST_GO_CAPTURE).then(() => true, () => false), false, 'supplied binary must skip Go build')
+  assert.deepEqual(await readdir(fixture.runnerTemp), [], 'private run directory should be removed')
+  const captured = await readCapture(fixture.capture)
+  await assertBuildIsolation(fixture, captured)
+})
+
+test('rejects an invalid supplied binary before creating private work', async (t) => {
+  const relativeFixture = await makeFixture(t)
+  relativeFixture.env.E2E_API_BINARY = 'relative/cookbook-api'
+  const relativeRunner = trackRunner(t, relativeFixture.env)
+  const relativeResult = await relativeRunner.closed
+  assert.equal(relativeResult.code, 1)
+  assert.match(relativeRunner.stderr, /E2E_API_BINARY must be an absolute path to an executable API binary/)
+  assert.deepEqual(await readdir(relativeFixture.runnerTemp), [], 'relative path must fail before creating a run directory')
+  assert.equal(await stat(relativeFixture.capture).then(() => true, () => false), false, 'invalid path must fail before building or starting workloads')
+
+  const modeFixture = await makeFixture(t)
+  const nonExecutable = join(modeFixture.testRoot, 'not-executable')
+  await writeFile(nonExecutable, 'not executable')
+  await chmod(nonExecutable, 0o600)
+  modeFixture.env.E2E_API_BINARY = nonExecutable
+  const modeRunner = trackRunner(t, modeFixture.env)
+  const modeResult = await modeRunner.closed
+  assert.equal(modeResult.code, 1)
+  assert.match(modeRunner.stderr, /E2E_API_BINARY is not an executable file/)
+  assert.deepEqual(await readdir(modeFixture.runnerTemp), [], 'non-executable file must fail before creating a run directory')
+  assert.equal(await stat(modeFixture.capture).then(() => true, () => false), false, 'non-executable path must fail before building or starting workloads')
 })
 
 test('cleans build scratch when the runner receives SIGTERM during build', async (t) => {

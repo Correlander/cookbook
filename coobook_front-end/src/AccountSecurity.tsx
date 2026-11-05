@@ -19,7 +19,9 @@ interface ImportSummary {
 function parseImportSummary(value: unknown): ImportSummary | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  if (!isCount(record.recipes) || !isCount(record.cookbooks)) return null;
+  const recipes = record.recipes;
+  const cookbooks = record.cookbooks;
+  if (!isCount(recipes) || !isCount(cookbooks)) return null;
 
   const countFields = [
     "courses",
@@ -35,11 +37,36 @@ function parseImportSummary(value: unknown): ImportSummary | null {
     if (field in record && !isCount(record[field])) return null;
   }
 
-  return record as ImportSummary;
+  const courses = optionalCount(record, "courses");
+  const courseLessons = optionalCount(record, "course_lessons");
+  const omittedCourseLinks = optionalCount(record, "omitted_course_recipe_links");
+  const courseBookmarks = optionalCount(record, "course_bookmarks");
+  const snapshotCopies = optionalCount(record, "snapshot_copies");
+  const snapshotReferences = optionalCount(record, "snapshot_references");
+  const menus = optionalCount(record, "menus");
+  const omittedMenuLinks = optionalCount(record, "omitted_menu_recipe_links");
+
+  return {
+    recipes,
+    cookbooks,
+    ...(courses === undefined ? {} : { courses }),
+    ...(courseLessons === undefined ? {} : { course_lessons: courseLessons }),
+    ...(omittedCourseLinks === undefined ? {} : { omitted_course_recipe_links: omittedCourseLinks }),
+    ...(courseBookmarks === undefined ? {} : { course_bookmarks: courseBookmarks }),
+    ...(snapshotCopies === undefined ? {} : { snapshot_copies: snapshotCopies }),
+    ...(snapshotReferences === undefined ? {} : { snapshot_references: snapshotReferences }),
+    ...(menus === undefined ? {} : { menus }),
+    ...(omittedMenuLinks === undefined ? {} : { omitted_menu_recipe_links: omittedMenuLinks }),
+  };
 }
 
 function isCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function optionalCount(record: Record<string, unknown>, field: string): number | undefined {
+  const value = record[field];
+  return isCount(value) ? value : undefined;
 }
 
 async function failureMessage(

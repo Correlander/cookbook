@@ -711,4 +711,21 @@ describe("RecipePublicationPanel", () => {
       ) as HTMLInputElement).disabled,
     ).toBe(true);
   });
+
+  it("keeps publication state and ETag after an exact publisher-profile denial", async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(makeView()))
+      .mockResolvedValueOnce(errorResponse(409, "publisher_profile_required"));
+    vi.stubGlobal("fetch", fetchMock);
+    renderOwnerPanel();
+    await screen.findByText("Not published yet");
+    fireEvent.change(screen.getByLabelText("Public browsing status"), { target: { value: "published" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save publication settings" }));
+
+    expect(await screen.findByRole("link", { name: /opens in a new tab/i })).toBeTruthy();
+    expect((screen.getByLabelText("Public browsing status") as HTMLSelectElement).value).toBe("published");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [, init] = fetchMock.mock.calls[1] ?? [];
+    expect(new Headers(init?.headers).get("If-Match")).toBe(etag);
+  });
 });

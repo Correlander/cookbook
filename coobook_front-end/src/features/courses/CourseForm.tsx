@@ -4,6 +4,7 @@ import type { Course, CourseCreatorAttribution } from "../../apiModels";
 import { errorMessage } from "../../apiModels";
 import usePublicAuthConfig from "../auth/usePublicAuthConfig.ts";
 import CreatorAttributionFields from "../creator/CreatorAttributionFields.tsx";
+import PublisherProfileSetupGuidance from "../creator/PublisherProfileSetupGuidance.tsx";
 
 interface CourseFormProps {
   course: Course | null;
@@ -20,6 +21,7 @@ export default function CourseForm({ course, onClose, onSaved }: CourseFormProps
     course?.visibility || "private",
   );
   const [error, setError] = useState("");
+  const [publisherProfileRequired, setPublisherProfileRequired] = useState(false);
   const [saving, setSaving] = useState(false);
   const { state: configState } = usePublicAuthConfig();
   const attributionEnabled = !course && configState.status === "ready" && configState.config.course_creator_attribution === true;
@@ -41,6 +43,7 @@ export default function CourseForm({ course, onClose, onSaved }: CourseFormProps
     }
     setSaving(true);
     setError("");
+    setPublisherProfileRequired(false);
     try {
       const response = await fetch(
         course ? `/api/courses/${course.id}` : "/api/courses",
@@ -57,10 +60,18 @@ export default function CourseForm({ course, onClose, onSaved }: CourseFormProps
           }),
         },
       );
-      if (!response.ok)
+      if (!response.ok) {
+        const body: unknown = await response.json().catch(() => null);
+        const code = body && typeof body === "object" && "error" in body &&
+          typeof body.error === "string" ? body.error : "";
+        if (response.status === 409 && code === "publisher_profile_required") {
+          setPublisherProfileRequired(true);
+          return;
+        }
         throw new Error(
           "Could not save this course. Check instance visibility settings and try again.",
         );
+      }
       await onSaved();
     } catch (saveError: unknown) {
       setError(errorMessage(saveError, "Could not save this course."));
@@ -144,7 +155,11 @@ export default function CourseForm({ course, onClose, onSaved }: CourseFormProps
             {saving ? "Saving…" : "Save course"}
           </button>
         </form>
-        {error && (
+        {publisherProfileRequired ? (
+          <p className="form-message" role="alert">
+            <PublisherProfileSetupGuidance />
+          </p>
+        ) : error && (
           <p className="form-message" role="alert">
             {error}
           </p>

@@ -5,6 +5,7 @@ import type { Course, CourseLesson, PublicRecipe } from "../../apiModels";
 import { errorMessage } from "../../apiModels";
 import CourseBookmarkAction from "./CourseBookmarkAction.tsx";
 import CreatorCredits from "../creator/CreatorCredits.tsx";
+import PublisherProfileSetupGuidance from "../creator/PublisherProfileSetupGuidance.tsx";
 
 interface CourseDetailProps {
   course: Course;
@@ -185,6 +186,7 @@ function LessonForm({
     [recipeID, setRecipeID] = useState(lesson?.recipe_id || ""),
     [recipes, setRecipes] = useState<PublicRecipe[]>([]),
     [error, setError] = useState(""),
+    [publisherProfileRequired, setPublisherProfileRequired] = useState(false),
     [saving, setSaving] = useState(false);
   useEffect(() => {
     fetch("/api/recipes?limit=100")
@@ -198,6 +200,7 @@ function LessonForm({
     event.preventDefault();
     setSaving(true);
     setError("");
+    setPublisherProfileRequired(false);
     try {
       const response = await fetch(
         lesson
@@ -214,7 +217,16 @@ function LessonForm({
           }),
         },
       );
-      if (!response.ok) throw new Error("Could not save this lesson.");
+      if (!response.ok) {
+        const body: unknown = await response.json().catch(() => null);
+        const code = body && typeof body === "object" && "error" in body &&
+          typeof body.error === "string" ? body.error : "";
+        if (response.status === 409 && code === "publisher_profile_required") {
+          setPublisherProfileRequired(true);
+          return;
+        }
+        throw new Error("Could not save this lesson.");
+      }
       await onSaved();
     } catch (saveError: unknown) {
       setError(errorMessage(saveError, "Could not save this lesson."));
@@ -287,7 +299,11 @@ function LessonForm({
             {saving ? "Saving…" : lesson ? "Save lesson" : "Add lesson"}
           </button>
         </form>
-        {error && (
+        {publisherProfileRequired ? (
+          <p className="form-message" role="alert">
+            <PublisherProfileSetupGuidance />
+          </p>
+        ) : error && (
           <p className="form-message" role="alert">
             {error}
           </p>

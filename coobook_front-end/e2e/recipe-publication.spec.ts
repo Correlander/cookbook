@@ -1,8 +1,30 @@
+/// <reference types="node" />
+
 import { expect, test } from "@playwright/test";
 import type { Browser, BrowserContext, Page } from "@playwright/test";
 import { signInWithSyntheticEmail } from "./auth";
 
 const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:4178";
+
+async function savePrivateProfile(page: Page, publicName: string): Promise<void> {
+  const response = await page.request.put("/api/account/creator-profile", {
+    headers: { Origin: baseURL },
+    data: { public_name: publicName, bio: "", visibility: "private" },
+  });
+  expect(response.status()).toBe(200);
+}
+
+async function attemptCleanup(
+  failures: string[],
+  label: string,
+  operation: () => Promise<void>,
+): Promise<void> {
+  try {
+    await operation();
+  } catch (error) {
+    failures.push(`${label}: ${error instanceof Error ? error.message : "cleanup failed"}`);
+  }
+}
 
 async function updatePublicInstance(
   page: Page,
@@ -35,8 +57,13 @@ test("owners can publish and withdraw a public recipe without losing owner acces
   let originalPublicInstance: boolean | undefined;
   let anonymousContext: BrowserContext | undefined;
   let anonymousPage: Page | undefined;
+  let profilePage: Page | undefined;
+  let publisherProfileTouched = false;
+  let publisherProfileID = "";
   let title = "";
   let recipeId = "";
+  let primaryFailure: unknown;
+  let publicationWrites = 0;
 
   try {
     await test.step("Admin setup and public browsing setting", async () => {
@@ -67,6 +94,14 @@ test("owners can publish and withdraw a public recipe without losing owner acces
         `publication-owner-${Date.now()}@example.test`,
         "Synthetic Recipe Owner",
       );
+      page.on("request", (request) => {
+        if (request.method() === "PUT" && new URL(request.url()).pathname.endsWith("/publication"))
+          publicationWrites += 1;
+      });
+      const profileResponse = await page.request.get("/api/account/creator-profile");
+      expect(profileResponse.status()).toBe(200);
+      const currentProfile = (await profileResponse.json()) as { profile: unknown };
+      expect(currentProfile.profile).toBeNull();
       await page.getByRole("button", { name: "Add a recipe" }).last().click();
       const recipeForm = page.getByRole("dialog", { name: "Add a recipe" });
       await page.getByLabel("Title").fill(`Publication proof ${Date.now()}`);
@@ -101,6 +136,7 @@ test("owners can publish and withdraw a public recipe without losing owner acces
       };
       expect(createdRecipe.title).toBe(title);
       recipeId = createdRecipe.id;
+      publisherProfileTouched = true;
 
       anonymousContext = await browser.newContext({ baseURL });
       anonymousPage = await anonymousContext.newPage();
@@ -170,7 +206,7 @@ test("owners can publish and withdraw a public recipe without losing owner acces
       await publicationState.selectOption("published");
     });
 
-    await test.step("Save publication and verify owner access", async () => {
+    await test.step("Show private profile setup after denied publish, then resubmit explicitly", async () => {
       const publishResponsePromise = page.waitForResponse(
         (response) =>
           response.request().method() === "PUT" &&
@@ -178,7 +214,36 @@ test("owners can publish and withdraw a public recipe without losing owner acces
             `/api/recipes/${recipeId}/publication`,
       );
       await page.getByRole("button", { name: "Save publication settings" }).click();
-      expect((await publishResponsePromise).status()).toBe(200);
+      const denied = await publishResponsePromise;
+      expect(denied.status()).toBe(409);
+      expect(await denied.json()).toEqual({ error: "publisher_profile_required" });
+      expect(publicationWrites).toBe(1);
+      await expect(page.getByRole("dialog", { name: title })).toBeVisible();
+      await expect(page.getByLabel("Public browsing status")).toHaveValue("published");
+      const profilePagePromise = page.context().waitForEvent("page");
+      await page.getByRole("link", { name: "Set up your creator profile (opens in a new tab)" }).click();
+      profilePage = await profilePagePromise;
+      await expect(profilePage).toHaveURL(/\/account\/creator-profile$/);
+      const name = `Private publisher ${Date.now()}`;
+      await profilePage.getByLabel("Public name").fill(name);
+      expect(await profilePage.getByLabel("Profile visibility").inputValue()).toBe("private");
+      publisherProfileTouched = true;
+      await profilePage.getByRole("button", { name: "Save profile" }).click();
+      await expect(profilePage.getByRole("status")).toContainText("Creator profile saved.");
+      const selfProfileResponse = await page.request.get("/api/account/creator-profile");
+      expect(selfProfileResponse.status()).toBe(200);
+      const selfProfile = (await selfProfileResponse.json()) as { profile: { id: string; visibility: string } };
+      expect(selfProfile.profile.visibility).toBe("private");
+      publisherProfileID = selfProfile.profile.id;
+      expect((await anonPage.request.get(`/api/creator-profiles/${publisherProfileID}`)).status()).toBe(404);
+
+      const retryPromise = page.waitForResponse(
+        (response) => response.request().method() === "PUT" &&
+          new URL(response.url()).pathname === `/api/recipes/${recipeId}/publication`,
+      );
+      await page.getByRole("button", { name: "Save publication settings" }).click();
+      expect((await retryPromise).status()).toBe(200);
+      expect(publicationWrites).toBe(2);
       const ownerRead = await page.request.get(`/api/recipes/${recipeId}`);
       expect(ownerRead.status()).toBe(200);
     });
@@ -223,17 +288,31 @@ test("owners can publish and withdraw a public recipe without losing owner acces
       ).toBe(200);
       expect((await page.request.get(`/api/recipes/${recipeId}`)).status()).toBe(200);
     });
-  } finally {
-    try {
-      if (adminContextChangedPublicSetting && originalPublicInstance === false) {
-        await updatePublicInstance(admin.page, false);
-      }
-    } finally {
-      await Promise.all(
-        [anonymousContext, admin.context]
-          .filter((context): context is BrowserContext => Boolean(context))
-          .map((context) => context.close()),
-      );
-    }
+  } catch (error) {
+    primaryFailure = error;
   }
+  const cleanupFailures: string[] = [];
+  if (recipeId)
+    await attemptCleanup(cleanupFailures, "Delete recipe fixture", async () => {
+      const response = await page.request.delete(`/api/recipes/${recipeId}`, { headers: { Origin: baseURL } });
+      expect(response.status()).toBe(200);
+    });
+  if (publisherProfileTouched)
+    await attemptCleanup(cleanupFailures, "Reset owner profile", async () => savePrivateProfile(page, ""));
+  const profileTab = profilePage;
+  if (profileTab)
+    await attemptCleanup(cleanupFailures, "Close profile tab", () => profileTab.close());
+  if (adminContextChangedPublicSetting && originalPublicInstance === false)
+    await attemptCleanup(cleanupFailures, "Restore public-instance setting", async () => updatePublicInstance(admin.page, false));
+  const contexts = [anonymousContext, admin.context].filter((context): context is BrowserContext => Boolean(context));
+  const closeResults = await Promise.allSettled(contexts.map((context) => context.close()));
+  closeResults.forEach((result) => {
+    if (result.status === "rejected") cleanupFailures.push(`Close browser context: ${result.reason instanceof Error ? result.reason.message : "cleanup failed"}`);
+  });
+  if (primaryFailure) {
+    if (primaryFailure instanceof Error && cleanupFailures.length)
+      primaryFailure.message += `\nCleanup also reported: ${cleanupFailures.join("; ")}`;
+    throw primaryFailure;
+  }
+  if (cleanupFailures.length) throw new Error(cleanupFailures.join("; "));
 });

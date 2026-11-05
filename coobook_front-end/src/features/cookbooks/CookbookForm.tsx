@@ -4,7 +4,8 @@ import type { Cookbook } from "../../apiModels";
 import { errorMessage } from "../../apiModels";
 import useModalFocus from "../../useModalFocus.ts";
 import Icon from "../recipes/RecipeIcon.tsx";
-import { saveCookbook } from "./cookbookApi.ts";
+import PublisherProfileSetupGuidance from "../creator/PublisherProfileSetupGuidance.tsx";
+import { CookbookApiError, saveCookbook } from "./cookbookApi.ts";
 
 interface CookbookFormProps {
   book?: Cookbook;
@@ -21,15 +22,19 @@ export default function CookbookForm({ book, onClose, onSaved }: CookbookFormPro
       book?.visibility || "private",
     ),
     [error, setError] = useState(""),
+    [publisherProfileRequired, setPublisherProfileRequired] = useState(false),
     [saving, setSaving] = useState(false);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
+    setPublisherProfileRequired(false);
     setSaving(true);
     try {
       onSaved(await saveCookbook(book, { title, description, visibility }));
     } catch (err: unknown) {
-      setError(errorMessage(err, "Could not save this cookbook. Try again."));
+      if (err instanceof CookbookApiError && err.status === 409 && err.code === "publisher_profile_required")
+        setPublisherProfileRequired(true);
+      else setError(errorMessage(err, "Could not save this cookbook. Try again."));
     } finally {
       setSaving(false);
     }
@@ -108,7 +113,11 @@ export default function CookbookForm({ book, onClose, onSaved }: CookbookFormPro
                 : "Create private cookbook"}
           </button>
         </form>
-        {error && (
+        {publisherProfileRequired ? (
+          <p className="form-message" role="alert">
+            <PublisherProfileSetupGuidance />
+          </p>
+        ) : error && (
           <p className="form-message" role="alert">
             {error}
           </p>

@@ -141,6 +141,135 @@ it("keeps the explicit creator choice and form values after a create failure", a
   ).toHaveLength(1);
 });
 
+it("allows a public but unpublished recipe draft without a creator profile", async () => {
+  let payload: Record<string, unknown> | undefined;
+  const fetchMock = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url) === "/api/account/creator-profile")
+      return Promise.resolve(response({ profile: null }));
+    if (String(url) === "/api/cookbooks") return Promise.resolve(response([]));
+    if (String(url) === "/api/recipes" && init?.method === "POST") {
+      payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return Promise.resolve(response(recipe, 201));
+    }
+    return Promise.resolve(response({}, 404));
+  });
+  mount(fetchMock);
+  await screen.findByRole("combobox", { name: "Creator credit" });
+  await completeRequiredFields();
+  fireEvent.change(screen.getByLabelText("Creator credit"), {
+    target: { value: "unknown" },
+  });
+  fireEvent.change(screen.getByLabelText("Visibility"), {
+    target: { value: "public" },
+  });
+  fireEvent.click(screen.getByLabelText("Anyone can read this recipe on a public instance."));
+  fireEvent.click(screen.getByLabelText("This recipe will not appear in anonymous browsing until I publish it."));
+  fireEvent.click(screen.getByRole("button", { name: "Save recipe" }));
+
+  await waitFor(() => expect(payload).toBeDefined());
+  expect(payload?.visibility).toBe("public");
+  expect(payload?.initial_publication).toMatchObject({
+    publication_state: "unpublished",
+    federation_mode: "off",
+    index_eligible: false,
+  });
+  expect(
+    fetchMock.mock.calls.filter(
+      ([url, init]) => String(url) === "/api/recipes" && init?.method === "POST",
+    ),
+  ).toHaveLength(1);
+  expect(screen.queryByRole("link", { name: /creator profile/i })).toBeNull();
+});
+
+it("retains a public published create after the exact publisher requirement until explicit resubmit", async () => {
+  const payloads: Record<string, unknown>[] = [];
+  const fetchMock = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url) === "/api/account/creator-profile")
+      return Promise.resolve(response({ profile: null }));
+    if (String(url) === "/api/cookbooks") return Promise.resolve(response([]));
+    if (String(url) === "/api/recipes" && init?.method === "POST") {
+      payloads.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return Promise.resolve(
+        payloads.length === 1
+          ? response({ error: "publisher_profile_required" }, 409)
+          : response(recipe, 201),
+      );
+    }
+    return Promise.resolve(response({}, 404));
+  });
+  mount(fetchMock);
+  await screen.findByRole("combobox", { name: "Creator credit" });
+  await completeRequiredFields();
+  fireEvent.change(screen.getByLabelText("Creator credit"), {
+    target: { value: "unknown" },
+  });
+  fireEvent.change(screen.getByLabelText("Visibility"), {
+    target: { value: "public" },
+  });
+  fireEvent.change(screen.getByLabelText("Initial publication status"), {
+    target: { value: "published" },
+  });
+  fireEvent.click(screen.getByLabelText("Anyone can read this recipe on a public instance."));
+  fireEvent.click(screen.getByRole("button", { name: "Save recipe" }));
+
+  expect(await screen.findByRole("link", { name: /opens in a new tab/i })).toBeTruthy();
+  expect(payloads).toHaveLength(1);
+  expect(payloads[0]).toMatchObject({
+    title: "Soup",
+    visibility: "public",
+    creator_attribution: { kind: "unknown" },
+    initial_publication: {
+      publication_state: "published",
+      federation_mode: "off",
+      index_eligible: false,
+    },
+  });
+  expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("Soup");
+  expect((screen.getByLabelText("Visibility") as HTMLSelectElement).value).toBe("public");
+  expect((screen.getByLabelText("Initial publication status") as HTMLSelectElement).value).toBe("published");
+  expect((screen.getByLabelText("Creator credit") as HTMLSelectElement).value).toBe("unknown");
+
+  fireEvent.click(screen.getByRole("button", { name: "Save recipe" }));
+  await waitFor(() => expect(payloads).toHaveLength(2));
+  expect(payloads[1]).toEqual(payloads[0]);
+});
+
+it("keeps a public edit draft after the exact publisher requirement without retrying", async () => {
+  const fetchMock = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url) === "/api/cookbooks") return Promise.resolve(response([]));
+    if (String(url) === "/api/recipes/r1" && init?.method === "PUT")
+      return Promise.resolve(response({ error: "publisher_profile_required" }, 409));
+    return Promise.resolve(response({}, 404));
+  });
+  mount(fetchMock, recipe);
+  fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Revised soup" } });
+  fireEvent.change(screen.getByLabelText("Description"), { target: { value: "Keep this draft" } });
+  fireEvent.change(screen.getByLabelText("Visibility"), { target: { value: "public" } });
+  fireEvent.click(screen.getByLabelText(/anyone can read/i));
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+  expect(await screen.findByRole("link", { name: /opens in a new tab/i })).toBeTruthy();
+  expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("Revised soup");
+  expect((screen.getByLabelText("Description") as HTMLTextAreaElement).value).toBe("Keep this draft");
+  expect((screen.getByLabelText("Visibility") as HTMLSelectElement).value).toBe("public");
+  expect(fetchMock.mock.calls.filter(([url, init]) => String(url) === "/api/recipes/r1" && init?.method === "PUT")).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  await waitFor(() => expect(fetchMock.mock.calls.filter(([url, init]) => String(url) === "/api/recipes/r1" && init?.method === "PUT")).toHaveLength(2));
+});
+
+it("does not show setup guidance for a different 409 recipe conflict", async () => {
+  const fetchMock = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url) === "/api/cookbooks") return Promise.resolve(response([]));
+    if (String(url) === "/api/recipes/r1" && init?.method === "PUT")
+      return Promise.resolve(response({ error: "version_conflict" }, 409));
+    return Promise.resolve(response({}, 404));
+  });
+  mount(fetchMock, recipe);
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(screen.queryByRole("link", { name: /creator profile/i })).toBeNull();
+});
+
 it("retries transient support checks without losing recipe input", async () => {
   let supportChecks = 0;
   let payload: Record<string, unknown> | undefined;

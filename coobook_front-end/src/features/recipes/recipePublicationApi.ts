@@ -20,6 +20,13 @@ export class RecipePublicationApiError extends Error {
   }
 }
 
+export function isPublisherProfileRequiredError(
+  error: unknown,
+): error is RecipePublicationApiError {
+  return error instanceof RecipePublicationApiError &&
+    error.status === 409 && error.code === "publisher_profile_required";
+}
+
 const strongPublicationEtag = /^"sha256:[a-f0-9]{64}"$/;
 
 function publicationEndpoint(recipeId: string): string {

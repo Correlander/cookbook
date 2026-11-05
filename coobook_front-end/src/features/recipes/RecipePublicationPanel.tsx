@@ -6,6 +6,7 @@ import type {
 } from "../../apiModels";
 import {
   fetchRecipePublication,
+  isPublisherProfileRequiredError,
   RecipePublicationApiError,
   updateRecipePublication,
 } from "./recipePublicationApi";
@@ -13,6 +14,7 @@ import {
   queueRecipeRetention,
   RecipeRetentionApiError,
 } from "./recipeRetentionApi";
+import PublisherProfileSetupGuidance from "../creator/PublisherProfileSetupGuidance.tsx";
 
 interface RecipePublicationPanelProps {
   recipeId: string;
@@ -115,6 +117,7 @@ export default function RecipePublicationPanel({
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [publisherProfileRequired, setPublisherProfileRequired] = useState(false);
   const [withdrawConfirmed, setWithdrawConfirmed] = useState(false);
   const [federationConfirmed, setFederationConfirmed] = useState(false);
   const [freshReviewRequired, setFreshReviewRequired] = useState(false);
@@ -138,6 +141,7 @@ export default function RecipePublicationPanel({
     setSaving(false);
     setStatus("");
     setErrorMessage("");
+    setPublisherProfileRequired(false);
     setWithdrawConfirmed(false);
     setFederationConfirmed(false);
     setFreshReviewRequired(false);
@@ -175,6 +179,7 @@ export default function RecipePublicationPanel({
     activeController.current = controller;
     setLoading(true);
     setErrorMessage("");
+    setPublisherProfileRequired(false);
     setStatus("Loading publication settings…");
     void fetchRecipePublication(recipeId, controller.signal)
       .then((snapshot) => {
@@ -384,6 +389,7 @@ export default function RecipePublicationPanel({
     activeController.current = controller;
     setSaving(true);
     setErrorMessage("");
+    setPublisherProfileRequired(false);
     setStatus("Saving publication settings…");
     try {
       const snapshot = await updateRecipePublication(
@@ -416,6 +422,12 @@ export default function RecipePublicationPanel({
         setFreshReviewConfirmed(false);
         await loadAfterConflict(controller.signal, requestScopeKey);
       } else {
+        if (isPublisherProfileRequiredError(error)) {
+          setPublisherProfileRequired(true);
+          setErrorMessage("");
+          setStatus("");
+          return;
+        }
         setErrorMessage(saveErrorMessage(error));
         setStatus("");
       }
@@ -501,7 +513,11 @@ export default function RecipePublicationPanel({
       <p className="sr-only" aria-live="polite" aria-atomic="true" role="status">
         {status}
       </p>
-      {errorMessage && !(freshReviewRequired && !etag) && (
+      {publisherProfileRequired ? (
+        <p className="form-message" role="alert">
+          <PublisherProfileSetupGuidance />
+        </p>
+      ) : errorMessage && !(freshReviewRequired && !etag) && (
         <p className="form-message" role="alert">
           {errorMessage}
         </p>

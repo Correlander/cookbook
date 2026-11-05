@@ -1,8 +1,49 @@
+/// <reference types="node" />
+
 import { expect, test } from "@playwright/test";
 import type { Browser, BrowserContext, Page } from "@playwright/test";
 import { signInWithSyntheticEmail } from "./auth";
 
 const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:4178";
+
+interface ProfileFields {
+  id?: string;
+  public_name: string;
+  bio: string;
+  visibility: "private" | "instance";
+}
+
+async function readSelfProfile(page: Page): Promise<ProfileFields | null> {
+  const response = await page.request.get("/api/account/creator-profile");
+  expect(response.status()).toBe(200);
+  const body = (await response.json()) as { profile: ProfileFields | null };
+  return body.profile ? {
+    id: body.profile.id,
+    public_name: body.profile.public_name,
+    bio: body.profile.bio,
+    visibility: body.profile.visibility,
+  } : null;
+}
+
+async function writeSelfProfile(page: Page, profile: ProfileFields): Promise<void> {
+  const response = await page.request.put("/api/account/creator-profile", {
+    headers: { Origin: baseURL },
+    data: { public_name: profile.public_name, bio: profile.bio, visibility: profile.visibility },
+  });
+  expect(response.status()).toBe(200);
+}
+
+async function attemptCleanup(
+  failures: string[],
+  label: string,
+  operation: () => Promise<void>,
+): Promise<void> {
+  try {
+    await operation();
+  } catch (error) {
+    failures.push(`${label}: ${error instanceof Error ? error.message : "cleanup failed"}`);
+  }
+}
 
 async function openContext(browser: Browser): Promise<{
   context: BrowserContext;
@@ -74,6 +115,14 @@ test("Library and recipe detail preserve account, public, saved, unavailable, an
   let reader: { context: BrowserContext; page: Page } | undefined;
   let originalPublicInstance: boolean | undefined;
   let changedPublicInstance = false;
+  let originalProfile: ProfileFields | null = null;
+  let changedProfile = false;
+  let publisherProfileID: string | undefined;
+  let privateRecipeID = "";
+  let publicRecipeID = "";
+  let privateRecipeDeleted = false;
+  let privateCopyID = "";
+  let primaryFailure: unknown;
 
   try {
     await admin.page.goto("/");
@@ -100,11 +149,23 @@ test("Library and recipe detail preserve account, public, saved, unavailable, an
       `Library private ${Date.now()}`,
       "private",
     );
+    privateRecipeID = privateRecipe.id;
+    originalProfile = await readSelfProfile(admin.page);
+    changedProfile = true;
+    await writeSelfProfile(admin.page, {
+      public_name: `Private library publisher ${Date.now()}`,
+      bio: originalProfile?.bio ?? "",
+      visibility: "private",
+    });
+    const privatePublisherProfile = await readSelfProfile(admin.page);
+    expect(privatePublisherProfile?.visibility).toBe("private");
+    publisherProfileID = privatePublisherProfile?.id ?? "";
     const publicRecipe = await createRecipe(
       admin.page,
       `Library public ${Date.now()}`,
       "public",
     );
+    publicRecipeID = publicRecipe.id;
 
     const libraryReads: string[] = [];
     const legacyRecipeFeeds: string[] = [];
@@ -197,6 +258,8 @@ test("Library and recipe detail preserve account, public, saved, unavailable, an
 
     anonymous = await openContext(browser);
     await anonymous.page.goto("/");
+    if (publisherProfileID)
+      expect((await anonymous.page.request.get(`/api/creator-profiles/${publisherProfileID}`)).status()).toBe(404);
     const anonymousLibraryRequests: string[] = [];
     anonymous.page.on("request", (request) => {
       if (new URL(request.url()).pathname.startsWith("/api/library/"))
@@ -248,6 +311,7 @@ test("Library and recipe detail preserve account, public, saved, unavailable, an
     await expect(reader.page.getByText("Owned by you · Your copy", { exact: true })).toBeVisible();
     const copyID = new URL(reader.page.url()).searchParams.get("id");
     expect(copyID).toBeTruthy();
+    privateCopyID = copyID ?? "";
     const copied = await reader.page.request.get(`/api/recipes/${copyID}`);
     expect(copied.status()).toBe(200);
     const copiedRecipe = (await copied.json()) as {
@@ -264,6 +328,7 @@ test("Library and recipe detail preserve account, public, saved, unavailable, an
       { headers: { Origin: baseURL } },
     );
     expect(deletePrivate.status()).toBe(200);
+    privateRecipeDeleted = true;
     await admin.page.goto("/library");
     const unavailable = admin.page.locator(
       'section[aria-labelledby="library-collection-title"]',
@@ -282,16 +347,41 @@ test("Library and recipe detail preserve account, public, saved, unavailable, an
       }),
     ).toBeVisible();
     expect(cspConsoleErrors).toEqual([]);
-  } finally {
-    try {
-      if (changedPublicInstance && originalPublicInstance === false)
-        await setPublicInstance(admin.page, false);
-    } finally {
-      await Promise.all(
-        [anonymous?.context, reader?.context, admin.context]
-          .filter((context): context is BrowserContext => Boolean(context))
-          .map((context) => context.close()),
-      );
-    }
+  } catch (error) {
+    primaryFailure = error;
   }
+  const cleanupFailures: string[] = [];
+  if (publicRecipeID)
+    await attemptCleanup(cleanupFailures, "Delete public recipe fixture", async () => {
+      const response = await admin.page.request.delete(`/api/recipes/${publicRecipeID}`, { headers: { Origin: baseURL } });
+      expect(response.status()).toBe(200);
+    });
+  if (privateRecipeID && !privateRecipeDeleted)
+    await attemptCleanup(cleanupFailures, "Delete private recipe fixture", async () => {
+      const response = await admin.page.request.delete(`/api/recipes/${privateRecipeID}`, { headers: { Origin: baseURL } });
+      expect(response.status()).toBe(200);
+    });
+  const readerFixture = reader;
+  if (privateCopyID && readerFixture)
+    await attemptCleanup(cleanupFailures, "Delete reader recipe copy", async () => {
+      const response = await readerFixture.page.request.delete(`/api/recipes/${privateCopyID}`, { headers: { Origin: baseURL } });
+      expect(response.status()).toBe(200);
+    });
+  if (changedProfile)
+    await attemptCleanup(cleanupFailures, "Restore admin profile", async () => {
+      await writeSelfProfile(admin.page, originalProfile ?? { public_name: "", bio: "", visibility: "private" });
+    });
+  if (changedPublicInstance && originalPublicInstance === false)
+    await attemptCleanup(cleanupFailures, "Restore public-instance setting", async () => setPublicInstance(admin.page, false));
+  const contexts = [anonymous?.context, reader?.context, admin.context].filter((context): context is BrowserContext => Boolean(context));
+  const closeResults = await Promise.allSettled(contexts.map((context) => context.close()));
+  closeResults.forEach((result) => {
+    if (result.status === "rejected") cleanupFailures.push(`Close browser context: ${result.reason instanceof Error ? result.reason.message : "cleanup failed"}`);
+  });
+  if (primaryFailure) {
+    if (primaryFailure instanceof Error && cleanupFailures.length)
+      primaryFailure.message += `\nCleanup also reported: ${cleanupFailures.join("; ")}`;
+    throw primaryFailure;
+  }
+  if (cleanupFailures.length) throw new Error(cleanupFailures.join("; "));
 });

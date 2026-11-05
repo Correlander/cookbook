@@ -86,3 +86,34 @@ it("does not show creator controls or rewrite credits while editing even when su
   const patch = calls.find((call) => call.url === "/api/courses/c1" && call.init?.method === "PATCH");
   expect(JSON.parse(String(patch?.init?.body))).not.toHaveProperty("creator_attribution");
 });
+
+it.each([
+  ["create", null],
+  ["metadata edit", { id: "course-1", owner_id: "owner", owner_name: "Owner", title: "Old title", description: "Old text", visibility: "private" as const, lesson_count: 2, created_at: "then", updated_at: "then" }],
+])("retains public course %s draft after publisher requirement and waits for resubmit", async (_label, course) => {
+  let writes = 0;
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/public/config") return Promise.resolve(configResponse(false));
+    if ((url === "/api/courses" || url === "/api/courses/course-1") && init?.method) {
+      writes += 1;
+      return Promise.resolve(new Response(JSON.stringify({ error: "publisher_profile_required" }), { status: 409 }));
+    }
+    return Promise.resolve(new Response("{}", { status: 404 }));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<CourseForm course={course} onClose={vi.fn()} onSaved={vi.fn(async () => {})} />);
+  fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Revised public course" } });
+  fireEvent.change(screen.getByLabelText("Description"), { target: { value: "Keep these details" } });
+  fireEvent.change(screen.getByLabelText("Visibility"), { target: { value: "public" } });
+  await waitFor(() => expect((screen.getByRole("button", { name: "Save course" }) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "Save course" }));
+
+  expect(await screen.findByRole("link", { name: /opens in a new tab/i })).toBeTruthy();
+  expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("Revised public course");
+  expect((screen.getByLabelText("Description") as HTMLTextAreaElement).value).toBe("Keep these details");
+  expect((screen.getByLabelText("Visibility") as HTMLSelectElement).value).toBe("public");
+  expect(writes).toBe(1);
+  fireEvent.click(screen.getByRole("button", { name: "Save course" }));
+  await waitFor(() => expect(writes).toBe(2));
+});

@@ -137,6 +137,8 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
             "Add and enable at least one peer with an approved public key before enabling federation.",
         };
         const reason = updated?.error;
+        if (response.status === 409 && reason === "publisher_profile_required")
+          throw new Error("Some owners of content affected by this change must complete a creator profile before the audience can expand. No owner details are shown here, and these settings were not changed.");
         throw new Error(
           (reason && reason in messages
             ? messages[reason as keyof typeof messages]

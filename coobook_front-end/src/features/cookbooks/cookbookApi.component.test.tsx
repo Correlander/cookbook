@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import {
+  CookbookApiError,
   getCookbook,
   getPublicCookbook,
   getCookbookMembers,
@@ -127,6 +128,22 @@ it("keeps cookbook edits on the existing PATCH contract without extra fields", a
     description: "Updated",
     visibility: "public",
   });
+});
+
+it("preserves the exact status and error code for a denied public cookbook edit", async () => {
+  const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+    jsonResponse({ error: "publisher_profile_required" }, 409),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+
+  await expect(saveCookbook(
+    { id: "book-1", title: "Old", description: "Old", visibility: "private", owner_id: "owner-1" },
+    { title: "New", description: "Description", visibility: "public" },
+  )).rejects.toMatchObject({
+    status: 409,
+    code: "publisher_profile_required",
+  } satisfies Partial<CookbookApiError>);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 
 it("reports member-read denial from the shared API boundary", async () => {

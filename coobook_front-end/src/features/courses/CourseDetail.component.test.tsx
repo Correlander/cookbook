@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import CourseDetail from "./CourseDetail.tsx";
 
@@ -33,6 +33,50 @@ it("keeps course custody, unverified name claim, and typed credits separate", as
   expect(await screen.findByText("public course · Owner: Current Owner")).toBeTruthy();
   expect(screen.getByText("Unverified creator name: Claimed teacher")).toBeTruthy();
   expect(screen.getByRole("region", { name: "Course creator credits" }).textContent).toContain("Unverified course creator claim: Imported teacher");
+});
+
+it.each([false, true])("preserves a public lesson %s draft after the exact publisher requirement", async (editing) => {
+  const lesson = { id: "lesson-1", course_id: course.id, title: "Old lesson", content: "Old content", recipe_id: "recipe-1", position: 0, created_at: "now", updated_at: "now" };
+  const recipe = {
+    id: "recipe-1", creator_name: "", title: "Tomato soup", description: "", ingredients: [], steps: [],
+    servings: 1, prep_time_minutes: 1, cook_time_minutes: 1, tags: [], version: 1,
+    created_at: "now", updated_at: "now",
+  };
+  let writes = 0;
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/courses/course-1/lessons") {
+      if (init?.method === "POST") {
+        writes += 1;
+        return Promise.resolve(new Response(JSON.stringify({ error: "publisher_profile_required" }), { status: 409 }));
+      }
+      return Promise.resolve(json(editing ? [lesson] : []));
+    }
+    if (url === "/api/courses/course-1/lessons/lesson-1" && init?.method === "PATCH") {
+      writes += 1;
+      return Promise.resolve(new Response(JSON.stringify({ error: "publisher_profile_required" }), { status: 409 }));
+    }
+    if (url === "/api/recipes?limit=100") return Promise.resolve(json([recipe]));
+    return Promise.resolve(json([]));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<CourseDetail course={course} onClose={vi.fn()} onEdit={vi.fn()} onChanged={async () => {}} />);
+  if (editing) fireEvent.click(await screen.findByRole("button", { name: "Edit lesson" }));
+  else fireEvent.click(await screen.findByRole("button", { name: "Add lesson" }));
+  await screen.findByRole("option", { name: "Tomato soup" });
+  fireEvent.change(screen.getByLabelText("Lesson title"), { target: { value: "Revised public lesson" } });
+  fireEvent.change(screen.getByLabelText("Lesson content"), { target: { value: "Keep this lesson text" } });
+  fireEvent.change(screen.getByLabelText("Link an accessible recipe (optional)"), { target: { value: "recipe-1" } });
+  const lessonDialog = screen.getByRole("dialog", { name: editing ? "Edit lesson" : "Add a lesson" });
+  fireEvent.click(within(lessonDialog).getByRole("button", { name: editing ? "Save lesson" : "Add lesson" }));
+
+  expect(await screen.findByRole("link", { name: /opens in a new tab/i })).toBeTruthy();
+  expect((screen.getByLabelText("Lesson title") as HTMLInputElement).value).toBe("Revised public lesson");
+  expect((screen.getByLabelText("Lesson content") as HTMLTextAreaElement).value).toBe("Keep this lesson text");
+  expect((screen.getByLabelText("Link an accessible recipe (optional)") as HTMLSelectElement).value).toBe("recipe-1");
+  expect(writes).toBe(1);
+  fireEvent.click(within(lessonDialog).getByRole("button", { name: editing ? "Save lesson" : "Add lesson" }));
+  await waitFor(() => expect(writes).toBe(2));
 });
 
 it("keeps course custody, unverified name claim, and typed credits separate", async () => {

@@ -22,6 +22,17 @@ export interface CookbookWriteInput {
   visibility: Cookbook["visibility"];
 }
 
+export class CookbookApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code: string,
+  ) {
+    super(message);
+    this.name = "CookbookApiError";
+  }
+}
+
 async function readJson<T>(
   url: string,
   failure: string | ((response: Response) => string),
@@ -117,13 +128,7 @@ export function saveCookbook(
   book: Cookbook | undefined,
   input: CookbookWriteInput,
 ) {
-  return readJson<Cookbook>(
-    book ? `/api/cookbooks/${book.id}` : "/api/cookbooks",
-    (response) =>
-      response.status === 403
-        ? "This instance does not allow that visibility or you cannot edit this cookbook."
-        : "Could not save this cookbook. Try again.",
-    {
+  return fetch(book ? `/api/cookbooks/${book.id}` : "/api/cookbooks", {
       method: book ? "PATCH" : "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -131,8 +136,21 @@ export function saveCookbook(
         description: input.description,
         visibility: book ? input.visibility : "private",
       }),
-    },
-  );
+    }).then(async (response) => {
+      if (!response.ok) {
+        const body: unknown = await response.json().catch(() => null);
+        const code = body && typeof body === "object" && "error" in body &&
+          typeof body.error === "string" ? body.error : "request_failed";
+        throw new CookbookApiError(
+          response.status === 403
+            ? "This instance does not allow that visibility or you cannot edit this cookbook."
+            : "Could not save this cookbook. Try again.",
+          response.status,
+          code,
+        );
+      }
+      return response.json() as Promise<Cookbook>;
+    });
 }
 
 export interface CookbookMembersData {

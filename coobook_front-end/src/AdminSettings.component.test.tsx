@@ -159,6 +159,50 @@ it("keeps the draft and editor on validation failures", async () => {
   expect(screen.queryByRole("button", { name: "Reload settings" })).toBeNull();
 });
 
+it("keeps audience settings and confirmation after a generic publisher-profile denial", async () => {
+  const populatedSettings = { ...settings, public_recipes: 1 };
+  let writes = 0;
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === "/api/admin/settings" && init?.method === "PATCH") {
+      writes += 1;
+      return Promise.resolve(jsonResponse({ error: "publisher_profile_required" }, 409));
+    }
+    if (String(input) === "/api/admin/settings") return Promise.resolve(jsonResponse(populatedSettings));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<AdminSettings />);
+  fireEvent.click(await screen.findByRole("checkbox", { name: /Enable public browsing/ }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /I reviewed the existing public content/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Save instance settings" }));
+
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("Some owners of content affected by this change must complete a creator profile");
+  expect(alert.textContent).not.toMatch(/administrator'?s profile|owner names|owner IDs|\d+ owners/i);
+  expect(alert.textContent).not.toMatch(/administrator/i);
+  expect(alert.textContent).not.toContain("Synthetic");
+  expect(screen.getByRole("checkbox", { name: /Enable public browsing/ })).toHaveProperty("checked", true);
+  expect(screen.getByRole("checkbox", { name: /I reviewed the existing public content/ })).toHaveProperty("checked", true);
+  expect(screen.getByRole("button", { name: "Save instance settings" })).toBeTruthy();
+  expect(writes).toBe(1);
+});
+
+it("does not show publisher setup guidance when the server uses that code with a non-409 status", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+    String(input) === "/api/admin/settings" && init?.method === "PATCH"
+      ? Promise.resolve(jsonResponse({ error: "publisher_profile_required" }, 400))
+      : Promise.resolve(jsonResponse(settings)),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  render(<AdminSettings />);
+  fireEvent.click(await screen.findByRole("button", { name: "Save instance settings" }));
+
+  expect((await screen.findByRole("alert")).textContent).toContain("Could not save instance settings.");
+  expect(screen.queryByText(/Some owners of content affected/)).toBeNull();
+  expect(screen.queryByRole("link", { name: /creator profile/i })).toBeNull();
+});
+
 it("keeps the editor active after an allowed save", async () => {
   let writes = 0;
   const savedSettings = { ...settings, federation_enabled: true };

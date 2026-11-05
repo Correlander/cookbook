@@ -15,6 +15,7 @@ import Icon from "./RecipeIcon.tsx";
 import type { RecipeCreatorAttribution } from "../../apiModels";
 import { CreatorProfileRequestError, getMyCreatorProfile } from "../creator/creatorProfileApi.ts";
 import CreatorAttributionFields from "../creator/CreatorAttributionFields.tsx";
+import PublisherProfileSetupGuidance from "../creator/PublisherProfileSetupGuidance.tsx";
 
 const StepListEditor = lazy(() => import("../../StepListEditor.tsx"));
 
@@ -93,6 +94,7 @@ function RecipeFormInstance({
     ),
     [imageFile, setImageFile] = useState<File | null>(null),
     [error, setError] = useState(""),
+    [publisherProfileRequired, setPublisherProfileRequired] = useState(false),
     [saving, setSaving] = useState(false);
   const [creatorSupport, setCreatorSupport] = useState<"checking" | "ready" | "unsupported" | "error">(recipe ? "ready" : "checking");
   const [creatorChoice, setCreatorChoice] = useState<RecipeCreatorAttribution["kind"] | "">("");
@@ -157,6 +159,7 @@ function RecipeFormInstance({
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
+    setPublisherProfileRequired(false);
     if (legacySharingSafetyBlocked) {
       setError(
         "This server does not confirm safe cookbook sharing permissions. Update it before editing this recipe.",
@@ -260,25 +263,32 @@ function RecipeFormInstance({
       );
       if (generation !== operationGeneration.current) return;
       if (!response.ok) {
-        const failure = await response.json().catch(() => ({}));
+        const failure: unknown = await response.json().catch(() => null);
         if (generation !== operationGeneration.current) return;
-        if (failure.error === "version_conflict")
+        const failureCode =
+          failure && typeof failure === "object" && "error" in failure &&
+          typeof failure.error === "string" ? failure.error : "";
+        if (response.status === 409 && failureCode === "publisher_profile_required") {
+          setPublisherProfileRequired(true);
+          return;
+        }
+        if (failureCode === "version_conflict")
           throw new Error(
             "This recipe changed elsewhere. Reload it before saving.",
           );
-        if (failure.error === "publication_confirmation_required")
+        if (failureCode === "publication_confirmation_required")
           throw new Error(
             "Confirm that anyone can read this recipe on a public instance before saving.",
           );
-        if (failure.error === "publication_unavailable")
+        if (failureCode === "publication_unavailable")
           throw new Error(
             "Publishing requires public visibility and an instance that allows public browsing.",
           );
-        if (failure.error === "instance_private")
+        if (failureCode === "instance_private")
           throw new Error(
             "Public visibility is disabled for this instance. Ask an administrator to enable public browsing.",
           );
-        if (failure.error === "visibility_owner_only")
+        if (failureCode === "visibility_owner_only")
           throw new Error("Only the recipe owner can change its visibility.");
         throw new Error(
           "Could not save this recipe. Check the details and try again.",
@@ -577,7 +587,11 @@ function RecipeFormInstance({
                 : "Save recipe"}
           </button>
         </form>
-        {error && (
+        {publisherProfileRequired ? (
+          <p className="form-message" role="alert">
+            <PublisherProfileSetupGuidance />
+          </p>
+        ) : error && (
           <p className="form-message" role="alert">
             {error}
           </p>

@@ -515,6 +515,7 @@ func TestBackupActorFixture(t *testing.T) {
             connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("UPDATE person_actor_ids SET state='retired',retired_at='proof' WHERE actor_id=(SELECT actor_id FROM person_actors WHERE user_id='fixture-retired')")
             profile_id = "a" * 32
+            local_recipe_id = "7" * 32
             local_attribution_id = "b" * 32
             foreign_source_id = "c" * 32
             foreign_creator_id = "d" * 32
@@ -533,19 +534,19 @@ func TestBackupActorFixture(t *testing.T) {
                 """INSERT INTO recipes
                    (id,owner_id,creator_name,title,visibility,edit_policy,version,created_at,updated_at)
                    VALUES(?,?,?,?,?,?,?,?,?)""",
-                ("profile-proof-recipe", "fixture-user", "", "Profile recovery proof", "private", "owner_only", 1, "created", "updated"),
+                (local_recipe_id, "fixture-user", "", "Profile recovery proof", "private", "owner_only", 1, "created", "updated"),
             )
             connection.execute(
                 """INSERT INTO content_attributions
                    (id,recipe_id,subject_kind,creator_id,role,provenance,created_at)
                    VALUES(?,?,'local',?,'creator','self_asserted_at_creation','created')""",
-                (local_attribution_id, "profile-proof-recipe", profile_id),
+                (local_attribution_id, local_recipe_id, profile_id),
             )
             connection.execute(
                 """INSERT INTO content_attributions
                    (id,recipe_id,subject_kind,claim_source_instance_id,claim_creator_id,claim_name,role,provenance,created_at)
                    VALUES(?,?,'external_claim',?,?,?,'contributor','portable_import','created')""",
-                (external_attribution_id, "profile-proof-recipe", foreign_source_id, foreign_creator_id, "Foreign Claim"),
+                (external_attribution_id, local_recipe_id, foreign_source_id, foreign_creator_id, "Foreign Claim"),
             )
             connection.execute(
                 """INSERT INTO cookbook_bookmarks
@@ -574,11 +575,11 @@ func TestBackupActorFixture(t *testing.T) {
                  "", 3, "menu-created-local", "menu-updated-local"),
             )
             local_entries = (
-                ("1" * 32, local_menu_id, 0, fixture_instance_id, "profile-proof-recipe",
+                ("1" * 32, local_menu_id, 0, fixture_instance_id, local_recipe_id,
                  "Starter", "First serving note", "Serve warm"),
                 ("2" * 32, local_menu_id, 1, None, None,
                  "Unresolved", "Keep this unavailable slot", "Choose a replacement later"),
-                ("3" * 32, local_menu_id, 2, fixture_instance_id, "profile-proof-recipe",
+                ("3" * 32, local_menu_id, 2, fixture_instance_id, local_recipe_id,
                  "Second serving", "Same recipe, separate course", "Serve after the starter"),
                 ("4" * 32, external_menu_id, 0, None, None,
                  "Guest slot", "Preserve this private note", "Ask the source"),
@@ -885,14 +886,14 @@ volumes:
                     "SELECT recipe_id,cookbook_id,subject_kind,creator_id,role,provenance "
                     "FROM content_attributions WHERE id=?", (local_attribution_id,),
                 ).fetchone()
-                self.assertEqual(local_attribution, ("profile-proof-recipe", None, "local", profile_id, "creator", "self_asserted_at_creation"))
+                self.assertEqual(local_attribution, (local_recipe_id, None, "local", profile_id, "creator", "self_asserted_at_creation"))
                 external_attribution = restored_db.execute(
                     "SELECT recipe_id,cookbook_id,subject_kind,creator_id,claim_source_instance_id,claim_creator_id,claim_name,role,provenance "
                     "FROM content_attributions WHERE id=?", (external_attribution_id,),
                 ).fetchone()
                 self.assertEqual(
                     external_attribution,
-                    ("profile-proof-recipe", None, "external_claim", None, foreign_source_id, foreign_creator_id, "Foreign Claim", "contributor", "portable_import"),
+                    (local_recipe_id, None, "external_claim", None, foreign_source_id, foreign_creator_id, "Foreign Claim", "contributor", "portable_import"),
                 )
                 with self.assertRaises(sqlite3.IntegrityError):
                     restored_db.execute("DELETE FROM creator_profiles WHERE creator_id=?", (profile_id,))
@@ -908,7 +909,7 @@ volumes:
                         """INSERT INTO content_attributions
                            (id,recipe_id,subject_kind,creator_id,role,provenance,created_at)
                            VALUES(?,?,'local',?,'creator','self_asserted_at_creation','created')""",
-                        ("f" * 32, "profile-proof-recipe", profile_id),
+                        ("f" * 32, local_recipe_id, profile_id),
                     )
                 self.assertEqual(
                     restored_db.execute("SELECT COUNT(*) FROM creator_profiles WHERE creator_id=?", (profile_id,)).fetchone(),

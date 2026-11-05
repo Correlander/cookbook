@@ -114,6 +114,56 @@ export interface CourseLesson {
   updated_at: string;
 }
 
+export type MenuCreatorChoice =
+  | { kind: "local_profile" }
+  | { kind: "name_claim"; name: string }
+  | { kind: "unknown" };
+
+export interface MenuRecipeSummary {
+  id: string;
+  title: string;
+}
+
+export interface MenuEntry {
+  id: string;
+  position: number;
+  label: string;
+  note: string;
+  serving_note: string;
+  available: true;
+  recipe: MenuRecipeSummary;
+}
+
+export interface UnavailableMenuEntry {
+  id: string;
+  position: number;
+  label: string;
+  note: string;
+  serving_note: string;
+  available: false;
+}
+
+export type MenuEntryView = MenuEntry | UnavailableMenuEntry;
+
+export interface PrivateMenu {
+  id: string;
+  title: string;
+  note: string;
+  creator_name?: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  creator_attributions?: CreatorAttribution[];
+  entries: MenuEntryView[];
+}
+
+export interface PrivateMenuPage {
+  menus: PrivateMenu[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface RecipeSummary {
   id: string;
   title: string;

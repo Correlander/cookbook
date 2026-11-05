@@ -77,6 +77,7 @@ func handlerWithAuthConfig(db *sql.DB, auth authHandler, cfg config) http.Handle
 	mux.Handle("PATCH /api/admin/users/{id}", csrfProtection(auth.origin, requireSession(db, auditChanges(db, requireRecentAuthentication(db, api)))))
 	mux.Handle("PATCH /api/admin/library/snapshots/{id}", recentPasskeyChange(api))
 	mux.Handle("GET /api/library/recipes/remote", requireSession(db, http.HandlerFunc(api.libraryRemoteRecipeDetailGuard)))
+	mux.Handle("GET /api/library/menus", requireSession(db, http.HandlerFunc(api.libraryMenus)))
 	mux.Handle("/api/public/courses", api)
 	mux.Handle("/api/public/courses/", api)
 	media := mediaHandler{db: db, rootDir: cfg.mediaDir}

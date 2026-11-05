@@ -29,19 +29,28 @@ func readCreatorAttributions(ctx context.Context, queryer contentQueryer, actorI
 	}
 
 	var targetColumn, resourceJoin, resourceACL string
+	resourceArgs := 0
 	switch targetKind {
 	case "recipe":
 		targetColumn = "a.recipe_id"
 		resourceJoin = "JOIN recipes r ON r.id=a.recipe_id AND r.deleted_at IS NULL JOIN instance_settings s ON s.id=1"
 		resourceACL = recipeActorReadPredicate
+		resourceArgs = 2
 	case "cookbook":
 		targetColumn = "a.cookbook_id"
 		resourceJoin = "JOIN cookbooks c ON c.id=a.cookbook_id JOIN instance_settings s ON s.id=1"
 		resourceACL = cookbookActorReadPredicate
+		resourceArgs = 2
 	case "course":
 		targetColumn = "a.course_id"
 		resourceJoin = "JOIN courses c ON c.id=a.course_id JOIN instance_settings s ON s.id=1"
 		resourceACL = `(c.owner_id=? OR (s.public_instance=1 AND c.visibility='public'))`
+		resourceArgs = 1
+	case "menu":
+		targetColumn = "a.menu_id"
+		resourceJoin = "JOIN meal_menus m ON m.id=a.menu_id"
+		resourceACL = "m.owner_id=?"
+		resourceArgs = 1
 	default:
 		return nil, errors.New("invalid creator attribution target kind")
 	}
@@ -55,7 +64,10 @@ func readCreatorAttributions(ctx context.Context, queryer contentQueryer, actorI
 		placeholders.WriteByte('?')
 		args = append(args, id)
 	}
-	args = append(args, actorID, actorID, actorID)
+	for i := 0; i < resourceArgs; i++ {
+		args = append(args, actorID)
+	}
+	args = append(args, actorID)
 	query := `SELECT ` + targetColumn + `,a.subject_kind,a.role,a.provenance,
 		p.creator_id,p.public_name,p.visibility,a.claim_name
 		FROM content_attributions a ` + resourceJoin + `

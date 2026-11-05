@@ -20,6 +20,50 @@ type ContentActor struct {
 	AccountID string
 }
 
+type menuRecipeSummary struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+// readMenuRecipeSummaries applies the canonical local recipe read predicate in
+// one bounded query and projects only the fields a private menu may disclose.
+func readMenuRecipeSummaries(ctx context.Context, queryer contentQueryer, actorID string, ids []string) (map[string]menuRecipeSummary, error) {
+	result := make(map[string]menuRecipeSummary, len(ids))
+	unique := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			unique[id] = struct{}{}
+		}
+	}
+	if len(unique) == 0 {
+		return result, nil
+	}
+	placeholders := make([]string, 0, len(unique))
+	args := make([]any, 0, len(unique)+2)
+	for id := range unique {
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+	args = append(args, actorID, actorID)
+	query := `SELECT r.id,r.title FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.id IN (` + strings.Join(placeholders, ",") + `) AND r.deleted_at IS NULL AND ` + recipeActorReadPredicate
+	rows, err := queryer.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read menu recipe summaries: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item menuRecipeSummary
+		if err := rows.Scan(&item.ID, &item.Title); err != nil {
+			return nil, fmt.Errorf("scan menu recipe summary: %w", err)
+		}
+		result[item.ID] = item
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate menu recipe summaries: %w", err)
+	}
+	return result, nil
+}
+
 // These predicates are the SQL read boundary for authenticated content lists.
 // Profile visibility never substitutes for resource access.
 const recipeActorReadPredicate = `((r.owner_id=? OR EXISTS(SELECT 1 FROM cookbook_recipes cr JOIN cookbook_memberships m ON m.cookbook_id=cr.cookbook_id WHERE cr.recipe_id=r.id AND m.user_id=?)) OR (s.public_instance=1 AND r.visibility='public' AND EXISTS(SELECT 1 FROM recipe_publication_policy p WHERE p.recipe_id=r.id AND p.publication_state='published')))`

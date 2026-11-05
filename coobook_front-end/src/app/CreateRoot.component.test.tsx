@@ -59,6 +59,42 @@ it("offers courses only when the server configuration enables them", async () =>
   expect(await screen.findByRole("heading", { name: "Add a recipe" })).toBeTruthy();
 });
 
+it("offers private menus only for the literal menu protocol capability and opens the existing creator form", async () => {
+  window.history.replaceState(null, "", "/create?type=menus");
+  const created = { id: "a".repeat(32), title: "Dinner", note: "Friday", version: 1, created_at: "2026-11-04T20:00:00Z", updated_at: "2026-11-04T20:00:00Z", entries: [] };
+  const calls: string[] = [];
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input); calls.push(url);
+    if (url === "/api/auth/me") return Promise.resolve(response({ id: "u1", email: "u@example.test", display_name: "User", is_admin: false }));
+    if (url === "/api/public/config") return Promise.resolve(response({ courses_enabled: false, menu_api: true }));
+    if (url === "/api/menus" && init?.method === "POST") return Promise.resolve(response(created, 201));
+    return Promise.resolve(response({}));
+  });
+  const navigate = vi.fn();
+  vi.stubGlobal("fetch", fetchMock);
+  render(<CreateRoot navigate={navigate} />);
+  expect(await screen.findByRole("dialog")).toBeTruthy();
+  expect(within(screen.getByRole("dialog")).getByRole("heading", { name: "Create a private menu" })).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Dinner" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Creator credit" }), { target: { value: "local_profile" } });
+  fireEvent.click(screen.getByRole("button", { name: "Create menu" }));
+  await waitFor(() => expect(navigate).toHaveBeenCalledWith(`/menu?id=${created.id}`));
+  expect(calls).toContain("/api/menus");
+  expect(calls.some((url) => url.startsWith("/api/library/menus"))).toBe(false);
+});
+
+it.each([undefined, false, "true", { enabled: true }])("keeps menu creation unavailable for capability %j", async (menuApi) => {
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    if (String(input) === "/api/auth/me") return Promise.resolve(response({ id: "u1", email: "u@example.test", display_name: "User", is_admin: false }));
+    return Promise.resolve(response({ courses_enabled: true, ...(menuApi === undefined ? {} : { menu_api: menuApi }) }));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<CreateRoot />);
+  expect(await screen.findByRole("button", { name: "Course" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Menu" })).toBeNull();
+  expect(screen.queryByRole("heading", { name: "Create a private menu" })).toBeNull();
+});
+
 it("returns a newly created private-instance course to the owner's Home surface", async () => {
   const navigate = vi.fn();
   const fetchMock = vi.fn((input: RequestInfo | URL) => {

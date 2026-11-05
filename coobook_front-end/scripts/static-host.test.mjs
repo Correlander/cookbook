@@ -62,6 +62,7 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
     await writeFile(join(dist, 'cookbooks.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Cookbooks</title></head></html>')
     await writeFile(join(dist, 'cookbook.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Cookbook</title></head></html>')
     await writeFile(join(dist, 'course.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Course</title></head></html>')
+    await writeFile(join(dist, 'menu.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Private menu</title></head></html>')
     await writeFile(join(dist, 'discover.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Browse</title></head></html>')
     await writeFile(join(dist, 'create.html'), '<!doctype html><html><head><meta name="robots" content="noindex,nofollow"><title>Create</title></head></html>')
     await writeFile(join(dist, 'static-csp.json'), JSON.stringify([
@@ -79,6 +80,7 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
       { route: '/cookbooks', policy: "default-src 'self'; script-src 'self'" },
       { route: '/cookbook', policy: "default-src 'self'; img-src 'self'" },
       { route: '/course', policy: "default-src 'self'; script-src 'self'; style-src 'self'" },
+      { route: '/menu', policy: "default-src 'self'; script-src 'self'; style-src 'self'" },
       { route: '/discover', policy: "default-src 'self'; script-src 'self'; style-src 'self'" },
       { route: '/create', policy: "default-src 'self'; script-src 'self'; style-src 'self'" },
     ]))
@@ -172,13 +174,14 @@ test('static host preserves confirmation query and proxies public Host, Origin, 
       { path: '/cookbooks', policy: "default-src 'self'; script-src 'self'", title: /Cookbooks/ },
       { path: '/cookbook', policy: "default-src 'self'; img-src 'self'", title: /Cookbook/ },
       { path: '/course', policy: "default-src 'self'; script-src 'self'; style-src 'self'", title: /Course/ },
+      { path: '/menu', policy: "default-src 'self'; script-src 'self'; style-src 'self'", title: /Private menu/ },
     ]) {
       for (const alias of [page.path, `${page.path}.html`]) {
         const response = await fetch(`${base}${alias}?id=synthetic-id`)
         assert.equal(response.status, 200, alias)
         const html = await response.text()
         assert.match(html, page.title)
-        if (page.path === '/course') assert.match(html, /<meta name="robots" content="noindex,nofollow">/)
+        if (page.path === '/course' || page.path === '/menu') assert.match(html, /<meta name="robots" content="noindex,nofollow">/)
         assert.equal(response.headers.get('cache-control'), 'no-store')
         assert.equal(response.headers.get('content-security-policy'), page.policy)
       }

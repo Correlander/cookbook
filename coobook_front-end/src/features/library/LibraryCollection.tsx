@@ -1,6 +1,7 @@
 import type {
   LibraryCookbookItem,
   LibraryCourseItem,
+  LibraryMenuItem,
   LibraryPage,
   LibraryRecipeItem,
   LibraryType,
@@ -12,7 +13,7 @@ import CookbookBookmarkAction from "../cookbooks/CookbookBookmarkAction.tsx";
 import CreatorCredits from "../creator/CreatorCredits.tsx";
 import CourseBookmarkAction from "../courses/CourseBookmarkAction.tsx";
 
-type LibraryItem = LibraryRecipeItem | LibraryCookbookItem | LibraryCourseItem;
+type LibraryItem = LibraryRecipeItem | LibraryCookbookItem | LibraryCourseItem | LibraryMenuItem;
 
 export default function LibraryCollection({
   type,
@@ -48,10 +49,24 @@ export default function LibraryCollection({
           {page.items.map((item, index) => type === "recipes"
             ? "target_kind" in item ? <RecipeLibraryCard key={libraryKey(item, index)} item={item} userID={userID} busy={busyBookmarkID === item.bookmark_id} onChange={onBookmarkChange} onMutationUncertain={onMutationUncertain} onRemoveUnavailable={onRemoveUnavailable} /> : null
             : type === "cookbooks" ? ! ("target_kind" in item) && !("course" in item) ? <CookbookLibraryCard key={libraryKey(item, index)} item={item as LibraryCookbookItem} userID={userID} onChange={onBookmarkChange} onMutationUncertain={onMutationUncertain} onRemoveUnavailable={onRemoveUnavailable} /> : null
+            : "menu" in item ? <MenuLibraryCard key={libraryKey(item, index)} item={item} />
             : "course" in item || item.availability === "unavailable" && "relationships" in item && Array.isArray(item.relationships) && item.relationships.includes("saved") ? <CourseLibraryCard key={libraryKey(item, index)} item={item as LibraryCourseItem} userID={userID} busy={busyBookmarkID === item.bookmark_id} onChange={onBookmarkChange} onMutationUncertain={onMutationUncertain} onRemoveUnavailable={onRemoveUnavailable} /> : null)}
         </div>
       )}
     </section>
+  );
+}
+
+function MenuLibraryCard({ item }: { item: LibraryMenuItem }) {
+  return (
+    <article className="cookbook-card">
+      <a href={`/menu?id=${encodeURIComponent(item.menu.id)}`} aria-label={`Open ${item.menu.title}`}>
+        <span className="eyebrow">Private menu</span>
+        <h3>{item.menu.title}</h3>
+        {item.menu.note && <p>{item.menu.note}</p>}
+      </a>
+      <p>Owned by you · {item.menu.entries.length} {item.menu.entries.length === 1 ? "recipe" : "recipes"}</p>
+    </article>
   );
 }
 
@@ -175,6 +190,7 @@ function RelationshipFacts({ relationships, ownedByCurrentUser, membershipRole, 
 }
 
 function libraryKey(item: LibraryItem, index: number): string {
+  if ("menu" in item) return `menu:${item.menu.id}`;
   if (item.availability === "unavailable") return `${item.bookmark_id ?? "unavailable"}:${index}`;
   if ("target_kind" in item && item.target_kind === "remote" && item.remote_recipe) return item.remote_recipe.object_uri;
   if ("recipe" in item && item.recipe) return `recipe:${item.recipe.id}`;

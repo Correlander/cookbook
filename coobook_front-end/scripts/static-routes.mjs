@@ -15,6 +15,7 @@ export const staticRoutes = [
   { source: 'cookbooks.astro', file: 'cookbooks.html', route: '/cookbooks', aliases: ['/cookbooks', '/cookbooks.html'] },
   { source: 'cookbook.astro', file: 'cookbook.html', route: '/cookbook', aliases: ['/cookbook', '/cookbook.html'] },
   { source: 'course.astro', file: 'course.html', route: '/course', aliases: ['/course', '/course.html'] },
+  { source: 'menu.astro', file: 'menu.html', route: '/menu', aliases: ['/menu', '/menu.html'] },
   { source: 'discover.astro', file: 'discover.html', route: '/discover', aliases: ['/discover', '/discover.html'] },
   { source: 'create.astro', file: 'create.html', route: '/create', aliases: ['/create', '/create.html'] },
 ]

@@ -1,0 +1,11 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro'
+import MenuDetailRoot from '../app/MenuDetailRoot.tsx'
+
+const title = 'Private menu — Cookbook'
+const description = 'View and manage a private menu available to its owner.'
+---
+
+<BaseLayout title={title} description={description} robots="noindex,nofollow">
+  <MenuDetailRoot client:load />
+</BaseLayout>

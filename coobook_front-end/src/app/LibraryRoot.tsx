@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { LibraryCookbookItem, LibraryCourseItem, LibraryPage, LibraryRecipeItem, LibraryType } from "../apiModels";
+import type { LibraryCookbookItem, LibraryCourseItem, LibraryMenuItem, LibraryPage, LibraryRecipeItem, LibraryType } from "../apiModels";
 import AppNavigation from "./AppNavigation.tsx";
 import { AppSessionProvider, useAppSession } from "./AppSession.tsx";
 import { SessionCheckError } from "./AppSession.tsx";
@@ -7,13 +7,14 @@ import LibraryCollection from "../features/library/LibraryCollection.tsx";
 import { fetchLibraryCourses, fetchLibraryPage, removeCookbookBookmark, removeCourseBookmark, removeRecipeBookmark } from "../features/library/libraryApi.ts";
 import ViewSwitcher from "../components/ViewSwitcher.tsx";
 import Toast from "../shared/Toast.tsx";
+import { fetchPrivateMenuPage } from "../features/menus/menuApi.ts";
 
-type LibraryItem = LibraryRecipeItem | LibraryCookbookItem | LibraryCourseItem;
+type LibraryItem = LibraryRecipeItem | LibraryCookbookItem | LibraryCourseItem | LibraryMenuItem;
 type LibraryPageState = LibraryPage<LibraryItem> & { type: LibraryType; actorID: string; query: string };
 
 function readType(): LibraryType {
   const requested = new URLSearchParams(window.location.search).get("type");
-  return requested === "cookbooks" || requested === "courses" ? requested : "recipes";
+  return requested === "cookbooks" || requested === "courses" || requested === "menus" ? requested : "recipes";
 }
 
 function readQuery(): string {
@@ -24,6 +25,7 @@ const libraryTypeOptions = [
   { value: "recipes", label: "Recipes" },
   { value: "cookbooks", label: "Cookbooks" },
   { value: "courses", label: "Courses" },
+  { value: "menus", label: "Menus" },
 ] as const;
 
 function SignInRequired() {
@@ -54,6 +56,8 @@ function LibraryPageView() {
   const [mutationError, setMutationError] = useState("");
   const [busyBookmarkID, setBusyBookmarkID] = useState("");
   const [coursesEnabled, setCoursesEnabled] = useState(false);
+  const [menuApiEnabled, setMenuApiEnabled] = useState(false);
+  const [menuApiChecked, setMenuApiChecked] = useState(false);
   const [hasSavedCourses, setHasSavedCourses] = useState(false);
   const generation = useRef(0);
   const probeGeneration = useRef(0);
@@ -70,7 +74,7 @@ function LibraryPageView() {
     const synchronize = () => {
       const queryType = new URLSearchParams(window.location.search).get("type");
       const nextType = readType();
-      if (queryType !== "recipes" && queryType !== "cookbooks" && queryType !== "courses") {
+      if (queryType !== "recipes" && queryType !== "cookbooks" && queryType !== "courses" && queryType !== "menus") {
         const params = new URLSearchParams(window.location.search);
         params.set("type", nextType);
         window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
@@ -100,7 +104,9 @@ function LibraryPageView() {
     setMoreError("");
     if (!keepNotice) setNotice(null);
     try {
-      const result = requestedType === "courses"
+      const result = requestedType === "menus"
+        ? await fetchPrivateMenuPage(0).then((result) => ({ items: result.menus.map((menu): LibraryMenuItem => ({ menu })), total: result.total, limit: result.limit, offset: result.offset }))
+        : requestedType === "courses"
         ? await fetchLibraryCourses(0)
         : requestedType === "recipes"
         ? await fetchLibraryPage("recipes", 0, requestedQuery)
@@ -125,29 +131,52 @@ function LibraryPageView() {
       setError("");
       return;
     }
+    if (type === "menus" && !menuApiEnabled) {
+      generation.current += 1;
+      setPage(null);
+      setNextOffset(0);
+      setLoading(false);
+      setError("");
+      return;
+    }
     void loadFirstPage(type, authenticatedActorID, type === "recipes" ? query.trim() : "");
     return () => { generation.current += 1; };
-  }, [authenticatedActorID, loadFirstPage, state.status, type, query]);
+  }, [authenticatedActorID, loadFirstPage, menuApiEnabled, state.status, type, query]);
 
   useEffect(() => {
-    if (state.status !== "authenticated") { setHasSavedCourses(false); setCoursesEnabled(false); return; }
+    if (state.status !== "authenticated") { setHasSavedCourses(false); setCoursesEnabled(false); setMenuApiEnabled(false); setMenuApiChecked(false); return; }
     const actorID = authenticatedActorID;
     let active = true;
     const request = ++probeGeneration.current;
     fetch("/api/public/config", { cache: "no-store" })
-      .then(async (response) => response.ok ? response.json() as Promise<{ courses_enabled?: boolean }> : { courses_enabled: false })
+      .then(async (response) => response.ok ? response.json() as Promise<{ courses_enabled?: boolean; menu_api?: boolean }> : { courses_enabled: false, menu_api: false })
       .then(async (config) => {
         if (!active || probeGeneration.current !== request || actorRef.current !== actorID) return;
         setCoursesEnabled(config.courses_enabled === true);
+        setMenuApiEnabled(config.menu_api === true);
+        setMenuApiChecked(true);
         if (config.courses_enabled === true) { setHasSavedCourses(false); return; }
         const probe = await fetchLibraryCourses(0, 1);
         if (active && probeGeneration.current === request && actorRef.current === actorID) setHasSavedCourses(probe.total > 0);
       })
-      .catch(() => { if (active && probeGeneration.current === request && actorRef.current === actorID) { setCoursesEnabled(false); setHasSavedCourses(false); } });
+      .catch(() => { if (active && probeGeneration.current === request && actorRef.current === actorID) { setCoursesEnabled(false); setMenuApiEnabled(false); setMenuApiChecked(true); setHasSavedCourses(false); } });
     return () => { active = false; probeGeneration.current += 1; };
   }, [authenticatedActorID, state.status]);
 
+  useEffect(() => {
+    if (!menuApiChecked || menuApiEnabled || type !== "menus") return;
+    typeRef.current = "recipes";
+    queryRef.current = "";
+    setType("recipes");
+    setQuery("");
+    const params = new URLSearchParams(window.location.search);
+    params.set("type", "recipes");
+    params.delete("q");
+    window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
+  }, [menuApiChecked, menuApiEnabled, type]);
+
   function selectType(nextType: LibraryType): void {
+    if (nextType === "menus" && !menuApiEnabled) return;
     if (typeRef.current === nextType) return;
     typeRef.current = nextType;
     const params = new URLSearchParams(window.location.search);
@@ -185,6 +214,8 @@ function LibraryPageView() {
     try {
       const result = requestedType === "courses"
         ? await fetchLibraryCourses(requestedOffset)
+        : requestedType === "menus"
+          ? await fetchPrivateMenuPage(requestedOffset).then((result) => ({ items: result.menus.map((menu): LibraryMenuItem => ({ menu })), total: result.total, limit: result.limit, offset: result.offset }))
         : requestedType === "recipes"
           ? await fetchLibraryPage("recipes", requestedOffset, currentPage.query)
           : await fetchLibraryPage("cookbooks", requestedOffset);
@@ -247,8 +278,8 @@ function LibraryPageView() {
             state.status === "anonymous" ? <SignInRequired /> :
               <>
                 <div className="library-type-controls">
-                  <ViewSwitcher label="Library type" value={type} options={libraryTypeOptions.filter((option) => option.value !== "courses" || showCourses)} onChange={selectType} />
-                  {type !== "courses" && <a className="text-link" href={`/create?type=${type}`}>Create {type === "recipes" ? "recipe" : "cookbook"}</a>}
+                  <ViewSwitcher label="Library type" value={type === "menus" && !menuApiEnabled ? "recipes" : type} options={libraryTypeOptions.filter((option) => option.value !== "courses" || showCourses).filter((option) => option.value !== "menus" || menuApiEnabled)} onChange={selectType} />
+                  {type !== "courses" && <a className="text-link" href={`/create?type=${type}`}>Create {type === "recipes" ? "recipe" : type === "menus" ? "menu" : "cookbook"}</a>}
                 </div>
                 {type === "recipes" && <div className="library-search"><label htmlFor="library-recipe-search">Search your recipes</label><input id="library-recipe-search" type="search" value={query} onChange={(event) => updateQuery(event.currentTarget.value)} placeholder="Title, description, or tag" autoComplete="off" /></div>}
                 {notice?.actorID === state.currentUser.id && <Toast actorID={state.currentUser.id} message={notice.message} revision={noticeRevision.current} onDismiss={() => setNotice(null)} />}
@@ -266,6 +297,7 @@ function LibraryPageView() {
 }
 
 function libraryIdentity(item: LibraryItem): string {
+  if ("menu" in item) return `menu:${item.menu.id}`;
   if (item.availability === "unavailable") return `bookmark:${item.bookmark_id ?? ""}`;
   if ("course" in item) return `course:${item.course.id}`;
   if ("target_kind" in item && item.target_kind === "remote") return `remote:${item.remote_recipe?.object_uri ?? ""}`;

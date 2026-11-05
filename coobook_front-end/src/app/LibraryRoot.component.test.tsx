@@ -74,6 +74,45 @@ it("reads only the selected canonical recipes page and renders current relations
   expect(calls.some((url) => url === "/api/recipes?limit=24&offset=0" || url.startsWith("/api/library/bookmarks?"))).toBe(false);
 });
 
+it("loads and links only the signed-in owner's private menu page when the protocol is supported", async () => {
+  window.history.replaceState(null, "", "/library?type=menus");
+  const menu = { id: "a".repeat(32), title: "Dinner plan", note: "Friday", version: 1, created_at: "2026-11-04T20:00:00Z", updated_at: "2026-11-04T21:00:00Z", entries: [] };
+  const calls: string[] = [];
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input); calls.push(url);
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse(user));
+    if (url === "/api/public/config") return Promise.resolve(jsonResponse({ courses_enabled: false, menu_api: true }));
+    if (url === "/api/library/menus?limit=24&offset=0") return Promise.resolve(jsonResponse({ menus: [menu], total: 1, limit: 24, offset: 0 }));
+    if (url === "/api/library/courses?limit=1&offset=0") return Promise.resolve(jsonResponse({ items: [], total: 0, limit: 1, offset: 0 }));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<LibraryRoot />);
+  expect((await screen.findByRole("link", { name: "Open Dinner plan" })).getAttribute("href")).toBe(`/menu?id=${menu.id}`);
+  expect(screen.getByText("Owned by you · 0 recipes")).toBeTruthy();
+  expect(calls).toContain("/api/library/menus?limit=24&offset=0");
+  expect(calls.some((url) => url.startsWith("/api/menus/"))).toBe(false);
+  expect(calls.some((url) => url.includes("?q="))).toBe(false);
+});
+
+it("does not query private menus when menu protocol support is absent", async () => {
+  window.history.replaceState(null, "", "/library?type=menus");
+  const calls: string[] = [];
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input); calls.push(url);
+    if (url === "/api/auth/me") return Promise.resolve(jsonResponse(user));
+    if (url === "/api/public/config") return Promise.resolve(jsonResponse({ courses_enabled: true }));
+    if (url.startsWith("/api/library/courses?limit=1")) return Promise.resolve(jsonResponse({ items: [], total: 0, limit: 1, offset: 0 }));
+    if (url === "/api/library/recipes?limit=24&offset=0") return Promise.resolve(jsonResponse({ items: [], total: 0, limit: 24, offset: 0 }));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<LibraryRoot />);
+  await screen.findByRole("button", { name: "Recipes" });
+  expect(screen.queryByRole("button", { name: "Menus" })).toBeNull();
+  expect(calls.some((url) => url.startsWith("/api/library/menus"))).toBe(false);
+});
+
 it("restores a multiword URL query and ignores a stale query response", async () => {
   window.history.replaceState(null, "", "/library?type=recipes&q=tomato+soup");
   let resolveOld!: (response: Response) => void;

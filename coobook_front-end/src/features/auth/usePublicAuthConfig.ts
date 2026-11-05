@@ -27,6 +27,8 @@ function publicAuthConfig(value: unknown): PublicAuthConfig {
     ...config,
     // Capability negotiation is deliberately fail-closed and optional for older APIs.
     course_creator_attribution: isRecord(value) && value.course_creator_attribution === true,
+    // This is protocol support, not an instance policy toggle. Only literal true enables menu UI.
+    menu_api: isRecord(value) && value.menu_api === true,
   };
 }
 

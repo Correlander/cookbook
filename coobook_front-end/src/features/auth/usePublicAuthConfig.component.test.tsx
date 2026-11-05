@@ -13,7 +13,7 @@ function Probe() {
         <button onClick={retry}>Retry</button>
       </>
     );
-  return <p>{state.config.auth_methods.email_link ? "Email enabled" : "Email disabled"} · course attribution {state.config.course_creator_attribution ? "enabled" : "disabled"}</p>;
+  return <p>{state.config.auth_methods.email_link ? "Email enabled" : "Email disabled"} · course attribution {state.config.course_creator_attribution ? "enabled" : "disabled"} · menus {state.config.menu_api ? "enabled" : "disabled"}</p>;
 }
 
 function configResponse(data: unknown, status = 200): Response {
@@ -67,6 +67,36 @@ it.each([
   vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(configResponse(config))));
   render(<Probe />);
   expect(await screen.findByText(/course attribution disabled/)).toBeTruthy();
+});
+
+it.each([
+  ["absent", undefined],
+  ["false", false],
+  ["string true", "true"],
+  ["malformed object", { enabled: true }],
+])("fails closed for an %s menu protocol capability", async (_label, capability) => {
+  const config: Record<string, unknown> = {
+    auth_methods: { email_link: true, passkey: false },
+    registration_policy: "invite_only",
+    public_instance: false,
+    courses_enabled: false,
+  };
+  if (capability !== undefined) config.menu_api = capability;
+  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(configResponse(config))));
+  render(<Probe />);
+  expect(await screen.findByText(/menus disabled/)).toBeTruthy();
+});
+
+it("enables menus only for an explicit supported protocol response", async () => {
+  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(configResponse({
+    auth_methods: { email_link: true, passkey: false },
+    registration_policy: "invite_only",
+    public_instance: false,
+    courses_enabled: false,
+    menu_api: true,
+  }))));
+  render(<Probe />);
+  expect(await screen.findByText(/menus enabled/)).toBeTruthy();
 });
 
 it("rejects malformed capability data instead of fabricating availability", async () => {

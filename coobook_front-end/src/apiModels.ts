@@ -69,6 +69,7 @@ export interface PublicAuthConfig {
   public_instance: boolean;
   courses_enabled: boolean;
   course_creator_attribution?: boolean;
+  menu_api?: boolean;
 }
 
 export interface AdminSettingsModel {
@@ -285,7 +286,7 @@ export interface CookbookBookmarkPage {
   offset: number;
 }
 
-export type LibraryType = "recipes" | "cookbooks" | "courses";
+export type LibraryType = "recipes" | "cookbooks" | "courses" | "menus";
 export type LibraryRelationship = "owned" | "shared" | "saved";
 export type LibraryRecipeRelationship = LibraryRelationship | "in_owned_cookbook";
 
@@ -336,6 +337,10 @@ export interface LibraryPage<T> {
   total: number;
   limit: number;
   offset: number;
+}
+
+export interface LibraryMenuItem {
+  menu: PrivateMenu;
 }
 
 export type RecipeBookmarkStatus =

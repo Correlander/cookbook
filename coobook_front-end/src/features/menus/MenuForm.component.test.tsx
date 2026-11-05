@@ -21,8 +21,8 @@ function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 }
 
-function installFetch(response: Response) {
-  const fetchMock = vi.fn().mockResolvedValue(response);
+function installFetch(...responses: Response[]) {
+  const fetchMock = vi.fn(() => Promise.resolve(responses.shift() ?? jsonResponse({}, 500)));
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
@@ -95,7 +95,7 @@ it("edits metadata with the current version and never submits creator fields", a
 });
 
 it("keeps the edit draft and explains a stale version conflict without retrying", async () => {
-  const fetchMock = installFetch(jsonResponse({ error: "version_conflict" }, 409));
+  const fetchMock = installFetch(jsonResponse({ error: "version_conflict" }, 409), jsonResponse(menu(8)), jsonResponse(menu(9)));
   render(<MenuForm menu={menu()} onClose={vi.fn()} onSaved={vi.fn()} />);
   const title = screen.getByLabelText("Title") as HTMLInputElement;
   const note = screen.getByLabelText("Note") as HTMLTextAreaElement;
@@ -107,6 +107,15 @@ it("keeps the edit draft and explains a stale version conflict without retrying"
   expect(title.value).toBe("Draft title");
   expect(note.value).toBe("Draft note");
   expect(fetchMock).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole("button", { name: "Load latest menu version" }));
+  expect((await screen.findByRole("status")).textContent).toContain("Your title and note draft are unchanged");
+  expect(title.value).toBe("Draft title");
+  expect(note.value).toBe("Draft note");
+  fireEvent.click(screen.getByRole("button", { name: "Save menu" }));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+  expect(fetchMock.mock.calls[1]?.[0]).toBe(`/api/menus/${menuID}`);
+  expect(fetchMock.mock.calls[2]?.[0]).toBe(`/api/menus/${menuID}`);
+  expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({ title: "Draft title", note: "Draft note", version: 8 });
 });
 
 it("keeps an unexpected save error inline with title and note intact", async () => {

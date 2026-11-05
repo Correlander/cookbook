@@ -299,7 +299,7 @@ test('serves Browse aliases with private headers and route-backed type filters',
   const policy = policies.find((item) => item.route === '/discover')?.policy
   expect(policy).toBeTruthy()
   await page.route('**/api/auth/me', (route) => route.fulfill({ status: 401, contentType: 'application/json', body: '{"error":"unauthorized"}' }))
-  await page.route('**/api/public/config', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '{"courses_enabled":true,"public_instance":true}' }))
+  await page.route('**/api/public/config', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '{"auth_methods":{"email_link":true,"passkey":false},"registration_policy":"invite_only","public_instance":true,"courses_enabled":true,"anonymous_home_preset":"library_first"}' }))
 
   for (const path of ['/discover', '/discover.html']) {
     const response = await page.goto(`${path}?type=cookbooks&keep=query`)
@@ -343,7 +343,7 @@ test('serves Create aliases with private headers and gates creation on sign-in',
 
 test('shows course creation only when the public configuration enables the feature', async ({ page, request }) => {
   await signInWithSyntheticEmail(page, request, 'course-feature@example.test', 'Course Feature')
-  await page.route('**/api/public/config', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '{"courses_enabled":true}' }))
+  await page.route('**/api/public/config', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '{"auth_methods":{"email_link":true,"passkey":false},"registration_policy":"invite_only","public_instance":false,"courses_enabled":true,"anonymous_home_preset":"library_first"}' }))
   await page.goto('/create')
   const courseButton = page.getByRole('button', { name: 'Course', exact: true })
   await expect(courseButton).toBeVisible()
@@ -385,10 +385,12 @@ test('signed-in instance administrators can open settings directly and through t
   const initialSettings = await initialSettingsResponse.json() as {
     public_instance: boolean
     anonymous_home_preset?: string
+    site_name?: string
   }
   const originalPreset = initialSettings.anonymous_home_preset === 'discovery_first'
     ? 'discovery_first'
     : 'library_first'
+  const originalSiteName = initialSettings.site_name ?? 'Cookbook'
   let guestContext: BrowserContext | undefined
   let primaryFailure: unknown
   let primaryFailed = false
@@ -406,6 +408,22 @@ test('signed-in instance administrators can open settings directly and through t
       await expect(page.getByRole('link', { name: 'Instance', exact: true })).toBeVisible()
       await expect(page.getByRole('link', { name: 'Administration' })).toHaveCount(0)
     }
+
+    const siteName = page.getByRole('textbox', { name: 'Instance name in navigation' })
+    await siteName.fill('E2E Kitchen')
+    await page.getByRole('button', { name: 'Save instance settings' }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'Instance settings saved.' })).toBeVisible()
+    const namedSettings = await page.request.get('/api/admin/settings')
+    expect((await namedSettings.json()).site_name).toBe('E2E Kitchen')
+    await page.goto('/discover')
+    await expect(page.locator('.brand')).toContainText('E2E Kitchen')
+
+    await page.goto('/admin/settings')
+    await page.getByRole('button', { name: 'Reset site name' }).click()
+    await page.getByRole('button', { name: 'Save instance settings' }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'Instance settings saved.' })).toBeVisible()
+    const resetSettings = await page.request.get('/api/admin/settings')
+    expect((await resetSettings.json()).site_name).toBe('Cookbook')
 
     const homePreset = page.getByRole('combobox', { name: /homepage presentation/i })
     await homePreset.selectOption('discovery_first')
@@ -465,6 +483,7 @@ test('signed-in instance administrators can open settings directly and through t
       data: {
         public_instance: initialSettings.public_instance,
         anonymous_home_preset: originalPreset,
+        site_name: originalSiteName,
         confirm_publication: true,
       },
     })

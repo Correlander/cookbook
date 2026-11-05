@@ -8,6 +8,7 @@ import { fetchLibraryCourses, fetchLibraryPage, removeCookbookBookmark, removeCo
 import ViewSwitcher from "../components/ViewSwitcher.tsx";
 import Toast from "../shared/Toast.tsx";
 import { fetchPrivateMenuPage } from "../features/menus/menuApi.ts";
+import usePublicAuthConfig from "../features/auth/usePublicAuthConfig.ts";
 
 type LibraryItem = LibraryRecipeItem | LibraryCookbookItem | LibraryCourseItem | LibraryMenuItem;
 type LibraryPageState = LibraryPage<LibraryItem> & { type: LibraryType; actorID: string; query: string };
@@ -41,6 +42,7 @@ function SignInRequired() {
 function LibraryPageView() {
   const { state, currentUser, refreshSession } = useAppSession();
   const authenticatedActorID = state.status === "authenticated" ? state.currentUser.id : "";
+  const { state: publicConfigState } = usePublicAuthConfig();
   const [type, setType] = useState<LibraryType>("recipes");
   const [query, setQuery] = useState("");
   const typeRef = useRef<LibraryType>("recipes");
@@ -55,12 +57,11 @@ function LibraryPageView() {
   const noticeRevision = useRef(0);
   const [mutationError, setMutationError] = useState("");
   const [busyBookmarkID, setBusyBookmarkID] = useState("");
-  const [coursesEnabled, setCoursesEnabled] = useState(false);
-  const [menuApiEnabled, setMenuApiEnabled] = useState(false);
-  const [menuApiChecked, setMenuApiChecked] = useState(false);
+  const coursesEnabled = publicConfigState.status === "ready" && publicConfigState.config.courses_enabled;
+  const menuApiEnabled = publicConfigState.status === "ready" && publicConfigState.config.menu_api === true;
+  const menuApiChecked = publicConfigState.status !== "loading";
   const [hasSavedCourses, setHasSavedCourses] = useState(false);
   const generation = useRef(0);
-  const probeGeneration = useRef(0);
   const loadingMoreRef = useRef(false);
   const actorRef = useRef(authenticatedActorID);
   actorRef.current = authenticatedActorID;
@@ -144,24 +145,21 @@ function LibraryPageView() {
   }, [authenticatedActorID, loadFirstPage, menuApiEnabled, state.status, type, query]);
 
   useEffect(() => {
-    if (state.status !== "authenticated") { setHasSavedCourses(false); setCoursesEnabled(false); setMenuApiEnabled(false); setMenuApiChecked(false); return; }
+    if (state.status !== "authenticated" || !menuApiChecked) {
+      setHasSavedCourses(false);
+      return;
+    }
     const actorID = authenticatedActorID;
     let active = true;
-    const request = ++probeGeneration.current;
-    fetch("/api/public/config", { cache: "no-store" })
-      .then(async (response) => response.ok ? response.json() as Promise<{ courses_enabled?: boolean; menu_api?: boolean }> : { courses_enabled: false, menu_api: false })
-      .then(async (config) => {
-        if (!active || probeGeneration.current !== request || actorRef.current !== actorID) return;
-        setCoursesEnabled(config.courses_enabled === true);
-        setMenuApiEnabled(config.menu_api === true);
-        setMenuApiChecked(true);
-        if (config.courses_enabled === true) { setHasSavedCourses(false); return; }
-        const probe = await fetchLibraryCourses(0, 1);
-        if (active && probeGeneration.current === request && actorRef.current === actorID) setHasSavedCourses(probe.total > 0);
-      })
-      .catch(() => { if (active && probeGeneration.current === request && actorRef.current === actorID) { setCoursesEnabled(false); setMenuApiEnabled(false); setMenuApiChecked(true); setHasSavedCourses(false); } });
-    return () => { active = false; probeGeneration.current += 1; };
-  }, [authenticatedActorID, state.status]);
+    if (coursesEnabled) {
+      setHasSavedCourses(false);
+      return () => { active = false; };
+    }
+    void fetchLibraryCourses(0, 1)
+      .then((probe) => { if (active && actorRef.current === actorID) setHasSavedCourses(probe.total > 0); })
+      .catch(() => { if (active && actorRef.current === actorID) setHasSavedCourses(false); });
+    return () => { active = false; };
+  }, [authenticatedActorID, coursesEnabled, menuApiChecked, state.status]);
 
   useEffect(() => {
     if (!menuApiChecked || menuApiEnabled || type !== "menus") return;
@@ -268,7 +266,7 @@ function LibraryPageView() {
 
   return (
     <div className="app-content">
-      <AppNavigation currentUser={currentUser} pathname="/library" sessionStatus={state.status} onRetrySession={() => void refreshSession()} />
+      <AppNavigation currentUser={currentUser} pathname="/library" sessionStatus={state.status} onRetrySession={() => void refreshSession()} publicConfigState={publicConfigState} />
       <main id="home" tabIndex={-1}>
         <section className="dashboard-welcome">
           <div><span className="eyebrow">Your kitchen</span><h1>My Library</h1><p>Your personal collection includes things you own, can access through a cookbook, or bookmark.</p></div>

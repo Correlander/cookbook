@@ -23,7 +23,12 @@ type AuthEntryProps =
       publicConfigState?: PublicAuthConfigState;
       retryPublicConfig?: () => void;
     }
-  | { mode: "confirm"; onContinueHome: () => void };
+  | {
+      mode: "confirm";
+      onContinueHome: () => void;
+      publicConfigState?: PublicAuthConfigState;
+      retryPublicConfig?: () => void;
+    };
 
 function routeIntent(pathname: string): AuthIntent {
   const params = new URLSearchParams(window.location.search);
@@ -52,16 +57,13 @@ export default function AuthEntry(props: AuthEntryProps) {
     mode === "confirm" ? "/auth/confirm" : (props.pathname ?? "/");
   const [intent, setIntent] = useAuthIntent(mode, pathname);
   const { currentUser, state: sessionState, refreshSession } = useAppSession();
-  const hasProvidedHomeConfig =
-    mode === "home" && props.publicConfigState !== undefined;
+  const hasProvidedConfig = props.publicConfigState !== undefined;
   const { state: fetchedAuthConfigState, retry: retryFetchedAuthConfig } =
-    usePublicAuthConfig({ enabled: !hasProvidedHomeConfig });
+    usePublicAuthConfig({ enabled: !hasProvidedConfig });
   const authConfigState =
-    mode === "home" && props.publicConfigState
-      ? props.publicConfigState
-      : fetchedAuthConfigState;
+    props.publicConfigState ?? fetchedAuthConfigState;
   const retryAuthConfig =
-    mode === "home" && props.retryPublicConfig
+    props.retryPublicConfig
       ? props.retryPublicConfig
       : retryFetchedAuthConfig;
   const [email, setEmail] = useState("");

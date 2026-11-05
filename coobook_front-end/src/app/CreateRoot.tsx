@@ -7,14 +7,16 @@ import CookbookForm from "../features/cookbooks/CookbookForm.tsx";
 import CourseForm from "../features/courses/CourseForm.tsx";
 import MenuForm from "../features/menus/MenuForm.tsx";
 import type { PrivateMenu } from "../apiModels";
+import usePublicAuthConfig from "../features/auth/usePublicAuthConfig.ts";
 
 type CreateType = "recipes" | "cookbooks" | "courses" | "menus";
 
 function CreatePage({ navigate }: { navigate: (path: string) => void }) {
   const { state, currentUser, refreshSession, clearSession } = useAppSession();
-  const [courseEnabled, setCourseEnabled] = useState<boolean | null>(null);
-  const [menuEnabled, setMenuEnabled] = useState(false);
-  const [configError, setConfigError] = useState(false);
+  const { state: publicConfigState } = usePublicAuthConfig();
+  const courseEnabled = state.status === "authenticated" && publicConfigState.status === "ready" ? publicConfigState.config.courses_enabled : null;
+  const menuEnabled = state.status === "authenticated" && publicConfigState.status === "ready" && publicConfigState.config.menu_api === true;
+  const configError = state.status === "authenticated" && publicConfigState.status === "error";
   const [selected, setSelected] = useState<CreateType | null>(null);
 
   useEffect(() => {
@@ -23,32 +25,11 @@ function CreatePage({ navigate }: { navigate: (path: string) => void }) {
     if (requested === "menus" && menuEnabled) setSelected("menus");
   }, [menuEnabled]);
 
-  useEffect(() => {
-    if (state.status !== "authenticated") return;
-    let active = true;
-    setCourseEnabled(null);
-    setMenuEnabled(false);
-    setConfigError(false);
-    fetch("/api/public/config", { cache: "no-store" })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Could not check available features.");
-        return response.json() as Promise<unknown>;
-      })
-      .then((value) => {
-        if (!active) return;
-        const config = isRecord(value) ? value : {};
-        setCourseEnabled(config.courses_enabled === true);
-        setMenuEnabled(config.menu_api === true);
-      })
-      .catch(() => { if (active) { setConfigError(true); setCourseEnabled(false); setMenuEnabled(false); } });
-    return () => { active = false; };
-  }, [state.status, currentUser?.id]);
-
   const leave = navigate;
 
   return (
     <div className="app-content">
-      <AppNavigation currentUser={currentUser} pathname="/create" activeArea="create" sessionStatus={state.status} onRetrySession={() => void refreshSession()} />
+      <AppNavigation currentUser={currentUser} pathname="/create" activeArea="create" sessionStatus={state.status} onRetrySession={() => void refreshSession()} publicConfigState={publicConfigState} />
       <main id="home" tabIndex={-1}>
         <section className="dashboard-welcome"><div><span className="eyebrow">Your workspace</span><h1>Create</h1><p>Choose a type to start a new item.</p></div></section>
         {state.status === "loading" ? <p className="cookbook-dashboard" role="status">Checking your session…</p> :
@@ -74,10 +55,6 @@ function CreatePage({ navigate }: { navigate: (path: string) => void }) {
       </main>
     </div>
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 export default function CreateRoot({ navigate = (path) => window.location.assign(path) }: { navigate?: (path: string) => void }) {

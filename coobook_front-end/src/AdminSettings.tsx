@@ -7,6 +7,18 @@ function isAnonymousHomePreset(
   return value === "library_first" || value === "discovery_first";
 }
 
+function validSiteName(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const trimmed = value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
+  return trimmed.length > 0 && Array.from(trimmed).length <= 48 && !/\p{Cc}/u.test(trimmed);
+}
+
+function displaySiteName(value: unknown): string {
+  return validSiteName(value)
+    ? value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "")
+    : "Cookbook";
+}
+
 type SettingsAccessFailure = "session" | "recent-authentication" | "permission";
 
 interface AdminSettingsProps {
@@ -24,6 +36,8 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
   const [federationEnabled, setFederationEnabled] = useState(false);
   const [anonymousHomePreset, setAnonymousHomePreset] = useState<"library_first" | "discovery_first">("library_first");
   const [supportsAnonymousHomePreset, setSupportsAnonymousHomePreset] = useState(false);
+  const [siteName, setSiteName] = useState("Cookbook");
+  const [supportsSiteName, setSupportsSiteName] = useState(false);
   const [confirmPublication, setConfirmPublication] = useState(false);
   const [loadingSettings, setLoadingSettings] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -43,6 +57,8 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
     setFederationEnabled(false);
     setAnonymousHomePreset("library_first");
     setSupportsAnonymousHomePreset(false);
+    setSiteName("Cookbook");
+    setSupportsSiteName(false);
     setConfirmPublication(false);
     setError("");
     setNotice("");
@@ -69,6 +85,8 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
         ? data.anonymous_home_preset
         : undefined;
       setSettings({ ...data, anonymous_home_preset: anonymousHomePreset });
+      setSiteName(displaySiteName(data.site_name));
+      setSupportsSiteName(typeof data.site_name === "string");
       setPublicInstance(data.public_instance);
       setCoursesEnabled(data.courses_enabled);
       setRegistrationPolicy(data.registration_policy);
@@ -104,6 +122,11 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
     setNotice("");
     try {
       const payload: Record<string, unknown> = {};
+      if (supportsSiteName && siteName !== settings.site_name) {
+        if (!validSiteName(siteName))
+          throw new Error("Use a name with 1 to 48 characters and no control characters.");
+        payload.site_name = siteName.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
+      }
       if (supportsAnonymousHomePreset && anonymousHomePreset !== settings.anonymous_home_preset)
         payload.anonymous_home_preset = anonymousHomePreset;
       if (publicInstance !== settings.public_instance)
@@ -175,6 +198,8 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
         ? updated.anonymous_home_preset
         : undefined;
       setSettings({ ...updated, anonymous_home_preset: updatedPreset });
+      setSiteName(displaySiteName(updated.site_name));
+      setSupportsSiteName(typeof updated.site_name === "string");
       setPublicInstance(updated.public_instance);
       setCoursesEnabled(updated.courses_enabled);
       setRegistrationPolicy(updated.registration_policy);
@@ -281,6 +306,21 @@ export default function AdminSettings({ onSaved }: AdminSettingsProps) {
         <form className="admin-settings-form" onSubmit={save}>
           <section className="instance-settings-section" id="homepage" aria-labelledby="homepage-heading">
             <h3 id="homepage-heading">Anonymous homepage</h3>
+            <div className="admin-settings-field">
+              <label htmlFor="instance-site-name">Instance name in navigation</label>
+              <input
+                id="instance-site-name"
+                type="text"
+                value={siteName}
+                disabled={!supportsSiteName || saving}
+                maxLength={96}
+                onChange={(event) => setSiteName(event.currentTarget.value)}
+                autoComplete="off"
+              />
+              <p className="admin-settings-note">This name appears in the shared application navigation. The Cookbook product footer remains unchanged.</p>
+              <button type="button" className="text-link" disabled={!supportsSiteName || saving || siteName === "Cookbook"} onClick={() => setSiteName("Cookbook")}>Reset site name</button>
+              {!supportsSiteName && <p className="admin-settings-note">This server does not support changing the instance name.</p>}
+            </div>
             {supportsAnonymousHomePreset ? (
               <>
                 <label htmlFor="anonymous-home-preset">Homepage presentation for signed-out visitors</label>

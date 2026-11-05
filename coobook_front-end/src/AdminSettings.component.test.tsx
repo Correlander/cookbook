@@ -232,6 +232,56 @@ it("does not send an unsupported homepage preset to an older settings API", asyn
   expect(patchBody).toEqual({});
 });
 
+it("saves only a supported changed site name and resets it explicitly to Cookbook", async () => {
+  const brandedSettings = { ...settings, site_name: "My Kitchen" };
+  const patchBodies: Record<string, unknown>[] = [];
+  let current = brandedSettings;
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === "/api/admin/settings" && init?.method === "PATCH") {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      patchBodies.push(body);
+      current = { ...current, ...body };
+      return Promise.resolve(jsonResponse(current));
+    }
+    if (String(input) === "/api/admin/settings") return Promise.resolve(jsonResponse(current));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<AdminSettings />);
+  const nameInput = await screen.findByRole("textbox", { name: "Instance name in navigation" });
+  fireEvent.change(nameInput, { target: { value: "New Kitchen" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save instance settings" }));
+  expect(await screen.findByRole("status")).toBeTruthy();
+  expect(patchBodies[0]).toEqual({ site_name: "New Kitchen" });
+
+  fireEvent.click(screen.getByRole("button", { name: "Reset site name" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save instance settings" }));
+  await screen.findByRole("status");
+  expect(patchBodies[1]).toEqual({ site_name: "Cookbook" });
+  expect(screen.getByRole("textbox", { name: "Instance name in navigation" })).toHaveProperty("value", "Cookbook");
+});
+
+it("omits the site name field and reset control when an older settings API omits support", async () => {
+  let patchBody: Record<string, unknown> | undefined;
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === "/api/admin/settings" && init?.method === "PATCH") {
+      patchBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return Promise.resolve(jsonResponse(settings));
+    }
+    if (String(input) === "/api/admin/settings") return Promise.resolve(jsonResponse(settings));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<AdminSettings />);
+  expect(await screen.findByRole("textbox", { name: "Instance name in navigation" })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: "Reset site name" })).toHaveProperty("disabled", true);
+  fireEvent.click(screen.getByRole("button", { name: "Save instance settings" }));
+  await screen.findByRole("status");
+  expect(patchBody).toEqual({});
+});
+
 it("does not show publisher setup guidance when the server uses that code with a non-409 status", async () => {
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
     String(input) === "/api/admin/settings" && init?.method === "PATCH"

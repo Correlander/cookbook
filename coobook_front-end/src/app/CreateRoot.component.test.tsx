@@ -6,6 +6,13 @@ function response(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 }
 
+function publicConfig(overrides: Record<string, unknown> = {}) {
+  return {
+    auth_methods: { email_link: true, passkey: false }, registration_policy: "invite_only",
+    public_instance: false, courses_enabled: false, ...overrides,
+  };
+}
+
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.history.replaceState(null, "", "/create"); });
 
 it("opens the existing recipe form for a contextual Library query", async () => {
@@ -13,7 +20,7 @@ it("opens the existing recipe form for a contextual Library query", async () => 
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     if (url === "/api/auth/me") return Promise.resolve(response({ id: "u1", email: "u@example.test", display_name: "User", is_admin: false }));
-    if (url === "/api/public/config") return Promise.resolve(response({ courses_enabled: false }));
+    if (url === "/api/public/config") return Promise.resolve(response(publicConfig()));
     if (url === "/api/cookbooks") return Promise.resolve(response([]));
     return Promise.resolve(response({}));
   });
@@ -29,7 +36,8 @@ it("requires a confirmed signed-in session before offering creation forms", asyn
   render(<CreateRoot />);
   expect(await screen.findByRole("heading", { name: "Sign in to create" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Recipe" })).toBeNull();
-  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/auth/me")).toHaveLength(1);
+  expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/public/config")).toHaveLength(1);
 });
 
 it("offers courses only when the server configuration enables them", async () => {
@@ -52,7 +60,7 @@ it("offers courses only when the server configuration enables them", async () =>
   expect(screen.queryByRole("button", { name: "Course" })).toBeNull();
   await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/public/config", { cache: "no-store" }));
   expect(screen.queryByRole("button", { name: "Course" })).toBeNull();
-  resolveConfig(response({ courses_enabled: false }));
+  resolveConfig(response(publicConfig()));
   await waitFor(() => expect(screen.queryByText("Checking enabled features…")).toBeNull());
   expect(screen.queryByRole("button", { name: "Course" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Recipe" }));
@@ -66,7 +74,7 @@ it("offers private menus only for the literal menu protocol capability and opens
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input); calls.push(url);
     if (url === "/api/auth/me") return Promise.resolve(response({ id: "u1", email: "u@example.test", display_name: "User", is_admin: false }));
-    if (url === "/api/public/config") return Promise.resolve(response({ courses_enabled: false, menu_api: true }));
+    if (url === "/api/public/config") return Promise.resolve(response(publicConfig({ menu_api: true })));
     if (url === "/api/menus" && init?.method === "POST") return Promise.resolve(response(created, 201));
     return Promise.resolve(response({}));
   });
@@ -86,7 +94,7 @@ it("offers private menus only for the literal menu protocol capability and opens
 it.each([undefined, false, "true", { enabled: true }])("keeps menu creation unavailable for capability %j", async (menuApi) => {
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     if (String(input) === "/api/auth/me") return Promise.resolve(response({ id: "u1", email: "u@example.test", display_name: "User", is_admin: false }));
-    return Promise.resolve(response({ courses_enabled: true, ...(menuApi === undefined ? {} : { menu_api: menuApi }) }));
+    return Promise.resolve(response(publicConfig({ courses_enabled: true, ...(menuApi === undefined ? {} : { menu_api: menuApi }) })));
   });
   vi.stubGlobal("fetch", fetchMock);
   render(<CreateRoot />);
@@ -100,7 +108,7 @@ it("returns a newly created private-instance course to the owner's Home surface"
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     if (url === "/api/auth/me") return Promise.resolve(response({ id: "u1", email: "u@example.test", display_name: "User", is_admin: false }));
-    if (url === "/api/public/config") return Promise.resolve(response({ courses_enabled: true, public_instance: false }));
+    if (url === "/api/public/config") return Promise.resolve(response(publicConfig({ courses_enabled: true, public_instance: false })));
     if (url === "/api/instance/authority") return Promise.resolve(response({ is_admin: false, is_instance_owner: false, owner_claimed: true, can_manage_instance_roles: false }));
     if (url === "/api/instance/owner-transfers") return Promise.resolve(response({ transfers: [] }));
     if (url === "/api/courses") return Promise.resolve(response({ id: "course-1" }, 201));

@@ -6,9 +6,11 @@ import {
   useAppSession,
 } from "./AppSession.tsx";
 import AuthEntry from "../features/auth/AuthEntry.tsx";
+import usePublicAuthConfig from "../features/auth/usePublicAuthConfig.ts";
 
 function AuthConfirmPage({ onContinueHome }: { onContinueHome: () => void }) {
   const { state, currentUser, refreshSession } = useAppSession();
+  const { state: publicConfigState, retry: retryPublicConfig } = usePublicAuthConfig();
 
   return (
     <div className="app-content">
@@ -17,6 +19,7 @@ function AuthConfirmPage({ onContinueHome }: { onContinueHome: () => void }) {
         sessionStatus={state.status}
         onRetrySession={() => void refreshSession()}
         pathname="/auth/confirm"
+        publicConfigState={publicConfigState}
       />
       <main id="home" tabIndex={-1}>
         <h1>Sign-in confirmation</h1>
@@ -26,7 +29,7 @@ function AuthConfirmPage({ onContinueHome }: { onContinueHome: () => void }) {
             onRetry={() => void refreshSession()}
           />
         )}
-        <AuthEntry mode="confirm" onContinueHome={onContinueHome} />
+        <AuthEntry mode="confirm" onContinueHome={onContinueHome} publicConfigState={publicConfigState} retryPublicConfig={retryPublicConfig} />
       </main>
     </div>
   );

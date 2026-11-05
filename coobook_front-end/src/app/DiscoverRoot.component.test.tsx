@@ -7,6 +7,13 @@ function response(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 }
 
+function publicConfig(overrides: Record<string, unknown> = {}) {
+  return {
+    auth_methods: { email_link: true, passkey: false }, registration_policy: "invite_only",
+    public_instance: false, courses_enabled: false, ...overrides,
+  };
+}
+
 afterEach(() => {
   cleanup(); vi.unstubAllGlobals(); window.history.replaceState({}, "", "/");
 });
@@ -32,7 +39,7 @@ it("reads, writes and restores the selected type through the route query", async
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     if (url === "/api/auth/me") return Promise.resolve(response({ id: "u1", email: "u@example.test", display_name: "User", is_admin: false }));
-    if (url === "/api/public/config") return Promise.resolve(response({ courses_enabled: true, public_instance: true }));
+    if (url === "/api/public/config") return Promise.resolve(response(publicConfig({ courses_enabled: true, public_instance: true })));
     if (url === "/api/instance/authority") return Promise.resolve(response({ is_admin: false, is_instance_owner: false, owner_claimed: true, can_manage_instance_roles: false }));
     if (url === "/api/instance/owner-transfers") return Promise.resolve(response({ transfers: [] }));
     if (url.startsWith("/api/cookbooks?")) return Promise.resolve(response([]));
@@ -56,7 +63,7 @@ it("requests one bounded public course catalog", async () => {
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     if (url === "/api/auth/me") return Promise.resolve(response(null, 401));
-    if (url === "/api/public/config") return Promise.resolve(response({ courses_enabled: true, public_instance: true }));
+    if (url === "/api/public/config") return Promise.resolve(response(publicConfig({ courses_enabled: true, public_instance: true })));
     if (url.startsWith("/api/public/courses")) return Promise.resolve(response([]));
     return Promise.resolve(response({}));
   });

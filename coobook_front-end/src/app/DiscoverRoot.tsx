@@ -7,11 +7,11 @@ import RecipeCardContents from "../features/recipes/RecipeCardContents.tsx";
 import CookbookCollection from "../features/cookbooks/CookbookCollection.tsx";
 import PublicCourses from "../PublicCourses.tsx";
 import ViewSwitcher from "../components/ViewSwitcher.tsx";
+import usePublicAuthConfig from "../features/auth/usePublicAuthConfig.ts";
 
 type DiscoverType = "recipes" | "cookbooks" | "courses";
 const discoverTypes: DiscoverType[] = ["recipes", "cookbooks", "courses"];
 const discoverOptions = discoverTypes.map((type) => ({ value: type, label: type[0]!.toUpperCase() + type.slice(1) }));
-type PublicConfig = { courses_enabled: boolean; public_instance: boolean };
 
 function routeFromSearch(search: string) {
   const params = new URLSearchParams(search);
@@ -25,19 +25,10 @@ function routeFromSearch(search: string) {
 function DiscoverPage() {
   const { state, currentUser, refreshSession } = useAppSession();
   const [route, setRoute] = useState({ type: "recipes" as DiscoverType, query: "" });
-  const [coursesEnabled, setCoursesEnabled] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    fetch("/api/public/config", { cache: "no-store" })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Could not check enabled features.");
-        return response.json() as Promise<PublicConfig>;
-      })
-      .then((config) => { if (active) setCoursesEnabled(config.courses_enabled === true && config.public_instance === true); })
-      .catch(() => { if (active) setCoursesEnabled(false); });
-    return () => { active = false; };
-  }, []);
+  const { state: publicConfigState } = usePublicAuthConfig();
+  const coursesEnabled = publicConfigState.status === "ready"
+    ? publicConfigState.config.courses_enabled && publicConfigState.config.public_instance
+    : publicConfigState.status === "loading" ? null : false;
 
   useEffect(() => {
     const syncRoute = () => setRoute(routeFromSearch(window.location.search));
@@ -64,6 +55,7 @@ function DiscoverPage() {
         activeArea="discover"
         sessionStatus={state.status}
         onRetrySession={() => void refreshSession()}
+        publicConfigState={publicConfigState}
         query={route.type === "recipes" ? route.query : undefined}
         onQueryChange={route.type === "recipes" ? (query) => updateRoute({ query }, false) : undefined}
       />

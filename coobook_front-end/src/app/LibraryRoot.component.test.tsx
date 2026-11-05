@@ -13,6 +13,9 @@ const recipe = {
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
+function publicConfig(overrides: Record<string, unknown> = {}) {
+  return { auth_methods: { email_link: true, passkey: false }, registration_policy: "invite_only", public_instance: false, courses_enabled: false, ...overrides };
+}
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.history.replaceState(null, "", "/library"); });
 
 it("exposes disabled-course saved placeholders and removes them without requesting course content", async () => {
@@ -22,7 +25,7 @@ it("exposes disabled-course saved placeholders and removes them without requesti
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input); calls.push(`${init?.method ?? "GET"} ${url}`);
     if (url === "/api/auth/me") return Promise.resolve(jsonResponse(user));
-    if (url === "/api/public/config") return Promise.resolve(jsonResponse({ courses_enabled: false }));
+    if (url === "/api/public/config") return Promise.resolve(jsonResponse(publicConfig()));
     if (url === "/api/library/courses?limit=24&offset=0") { coursePages += 1; return Promise.resolve(coursePages === 1 ? jsonResponse({ items: [{ availability: "unavailable", relationships: ["saved"], bookmark_id: "opaque-course", created_at: "then" }], total: 1, limit: 24, offset: 0 }) : jsonResponse({ items: [], total: 0, limit: 24, offset: 0 })); }
     if (url === "/api/library/courses?limit=1&offset=0") return Promise.resolve(jsonResponse({ items: [{ availability: "unavailable", relationships: ["saved"], bookmark_id: "opaque-course", created_at: "then" }], total: 1, limit: 1, offset: 0 }));
     if (url === "/api/library/course-bookmarks/opaque-course" && init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
@@ -42,7 +45,7 @@ it("reveals the Courses selector from the disabled-instance metadata probe", asy
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     if (url === "/api/auth/me") return Promise.resolve(jsonResponse(user));
-    if (url === "/api/public/config") return Promise.resolve(jsonResponse({ courses_enabled: false }));
+    if (url === "/api/public/config") return Promise.resolve(jsonResponse(publicConfig()));
     if (url === "/api/library/recipes?limit=24&offset=0") return Promise.resolve(jsonResponse({ items: [], total: 0, limit: 24, offset: 0 }));
     if (url === "/api/library/courses?limit=1&offset=0") return Promise.resolve(jsonResponse({ items: [{ availability: "unavailable", relationships: ["saved"], bookmark_id: "opaque", created_at: "then" }], total: 1, limit: 1, offset: 0 }));
     return Promise.resolve(jsonResponse({}, 404));
@@ -81,7 +84,7 @@ it("loads and links only the signed-in owner's private menu page when the protoc
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input); calls.push(url);
     if (url === "/api/auth/me") return Promise.resolve(jsonResponse(user));
-    if (url === "/api/public/config") return Promise.resolve(jsonResponse({ courses_enabled: false, menu_api: true }));
+    if (url === "/api/public/config") return Promise.resolve(jsonResponse(publicConfig({ menu_api: true })));
     if (url === "/api/library/menus?limit=24&offset=0") return Promise.resolve(jsonResponse({ menus: [menu], total: 1, limit: 24, offset: 0 }));
     if (url === "/api/library/courses?limit=1&offset=0") return Promise.resolve(jsonResponse({ items: [], total: 0, limit: 1, offset: 0 }));
     return Promise.resolve(jsonResponse({}, 404));
@@ -101,7 +104,7 @@ it("does not query private menus when menu protocol support is absent", async ()
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input); calls.push(url);
     if (url === "/api/auth/me") return Promise.resolve(jsonResponse(user));
-    if (url === "/api/public/config") return Promise.resolve(jsonResponse({ courses_enabled: true }));
+    if (url === "/api/public/config") return Promise.resolve(jsonResponse(publicConfig({ courses_enabled: true })));
     if (url.startsWith("/api/library/courses?limit=1")) return Promise.resolve(jsonResponse({ items: [], total: 0, limit: 1, offset: 0 }));
     if (url === "/api/library/recipes?limit=24&offset=0") return Promise.resolve(jsonResponse({ items: [], total: 0, limit: 24, offset: 0 }));
     return Promise.resolve(jsonResponse({}, 404));

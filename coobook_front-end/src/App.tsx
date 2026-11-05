@@ -172,6 +172,7 @@ function HomeApp({ pathname }: { pathname: string }) {
         sessionStatus={sessionState.status}
         onRetrySession={() => void refreshSession()}
         pathname={pathname}
+        publicConfigState={publicConfigState}
         query={query}
         onQueryChange={setQuery}
         actionLabel={signedIn ? "Add a recipe" : "Sign in"}

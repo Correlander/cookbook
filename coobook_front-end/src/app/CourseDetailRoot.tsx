@@ -5,9 +5,11 @@ import { AppSessionProvider, useAppSession } from "./AppSession.tsx";
 import { SessionCheckError } from "./AppSession.tsx";
 import CourseDetail from "../features/courses/CourseDetail.tsx";
 import { parseCourse } from "../features/courses/courseApi.ts";
+import usePublicAuthConfig from "../features/auth/usePublicAuthConfig.ts";
 
 function CourseDetailPage() {
   const { state, currentUser, refreshSession } = useAppSession();
+  const { state: publicConfigState } = usePublicAuthConfig();
   const [routeID, setRouteID] = useState<string | null>(null);
   const [course, setCourse] = useState<Course | null>(null);
   const [courseKey, setCourseKey] = useState("");
@@ -23,8 +25,8 @@ function CourseDetailPage() {
     let active = true;
     const actor = state.status === "authenticated" ? state.currentUser.id : "anonymous";
     setCourse(null); setCourseKey(""); setUnavailable(false); setLoading(true);
-    fetch("/api/public/config", { cache: "no-store" })
-      .then(async (response) => response.ok ? response.json() as Promise<{ courses_enabled?: boolean }> : { courses_enabled: false })
+    if (publicConfigState.status === "loading") return;
+    Promise.resolve(publicConfigState.status === "ready" ? publicConfigState.config : { courses_enabled: false })
       .then(async (config) => {
         if (!active) return;
         const enabled = config.courses_enabled === true;
@@ -39,10 +41,10 @@ function CourseDetailPage() {
       .catch(() => { if (active) setUnavailable(true); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [currentUser?.id, routeID, state]);
+  }, [currentUser?.id, publicConfigState, routeID, state]);
   const actorKey = state.status === "authenticated" ? state.currentUser.id : "anonymous";
   const routeKey = `${actorKey}:${routeID ?? ""}`;
-  return <div className="app-content"><AppNavigation currentUser={currentUser} pathname="/course" sessionStatus={state.status} onRetrySession={() => void refreshSession()} /><main id="home" tabIndex={-1}>{state.status === "error" ? <SessionCheckError message={state.message} onRetry={() => void refreshSession()} /> : state.status === "loading" || routeID === null || loading || (course !== null && courseKey !== routeKey) ? <p className="cookbook-dashboard" role="status">Checking course availability…</p> : unavailable || !course ? <section className="cookbook-dashboard"><h1>Course unavailable</h1><p>{coursesEnabled === false ? "Courses are disabled on this instance." : "This course is unavailable or you cannot access it."}</p><a className="text-link" href="/library?type=courses">Go to your Courses Library</a></section> : <CourseDetail key={`${currentUser?.id ?? "anonymous"}:${course.id}`} course={course} currentUserID={state.status === "authenticated" ? state.currentUser.id : null} mode="page" onClose={() => {}} onEdit={() => {}} onChanged={async () => {}} />}</main></div>;
+  return <div className="app-content"><AppNavigation currentUser={currentUser} pathname="/course" sessionStatus={state.status} onRetrySession={() => void refreshSession()} publicConfigState={publicConfigState} /><main id="home" tabIndex={-1}>{state.status === "error" ? <SessionCheckError message={state.message} onRetry={() => void refreshSession()} /> : state.status === "loading" || routeID === null || loading || (course !== null && courseKey !== routeKey) ? <p className="cookbook-dashboard" role="status">Checking course availability…</p> : unavailable || !course ? <section className="cookbook-dashboard"><h1>Course unavailable</h1><p>{coursesEnabled === false ? "Courses are disabled on this instance." : "This course is unavailable or you cannot access it."}</p><a className="text-link" href="/library?type=courses">Go to your Courses Library</a></section> : <CourseDetail key={`${currentUser?.id ?? "anonymous"}:${course.id}`} course={course} currentUserID={state.status === "authenticated" ? state.currentUser.id : null} mode="page" onClose={() => {}} onEdit={() => {}} onChanged={async () => {}} />}</main></div>;
 }
 
 export default function CourseDetailRoot() { return <AppSessionProvider><CourseDetailPage /></AppSessionProvider>; }

@@ -4,6 +4,8 @@ import type { AppSessionStatus } from "./AppSession.tsx";
 import useInstanceAuthority from "../features/auth/useInstanceAuthority.ts";
 import useOwnerTransfers from "../features/instance/useOwnerTransfers.ts";
 import SessionMenu from "../components/SessionMenu.tsx";
+import usePublicAuthConfig from "../features/auth/usePublicAuthConfig.ts";
+import type { PublicAuthConfigState } from "../features/auth/usePublicAuthConfig.ts";
 
 interface AppNavigationProps {
   currentUser: AuthenticatedUser | null;
@@ -15,6 +17,7 @@ interface AppNavigationProps {
   actionLabel?: string;
   onAction?: () => void;
   activeArea?: "home" | "discover" | "library" | "create";
+  publicConfigState?: PublicAuthConfigState;
 }
 
 function ChefMark() {
@@ -46,7 +49,13 @@ export default function AppNavigation({
   actionLabel,
   onAction,
   activeArea,
+  publicConfigState,
 }: AppNavigationProps) {
+  const { state: fetchedPublicConfig } = usePublicAuthConfig({ enabled: publicConfigState === undefined });
+  const resolvedPublicConfigState = publicConfigState ?? fetchedPublicConfig;
+  const name = resolvedPublicConfigState.status === "ready"
+    ? resolvedPublicConfigState.config.branding?.site_name ?? "Cookbook"
+    : "Cookbook";
   const [showSessionPending, setShowSessionPending] = useState(false);
   useEffect(() => {
     if (sessionStatus !== "loading") { setShowSessionPending(false); return; }
@@ -106,7 +115,7 @@ export default function AppNavigation({
         <span className="brand-mark">
           <ChefMark />
         </span>
-        <span>Cookbook</span>
+        <span>{name}</span>
       </a>
       <nav className="main-nav" aria-label="Main navigation">
         <a className={active === "home" ? "main-nav__active" : undefined} aria-current={active === "home" ? "page" : undefined} href="/">

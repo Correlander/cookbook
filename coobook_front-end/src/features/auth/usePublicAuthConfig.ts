@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   AnonymousHomePreset,
   PublicAuthConfig,
+  PublicBranding,
   RegistrationPolicy,
 } from "../../apiModels";
 
@@ -9,6 +10,23 @@ export type PublicAuthConfigState =
   | { status: "loading" }
   | { status: "ready"; config: PublicAuthConfig }
   | { status: "error"; message: string };
+
+function trimUnicodeWhitespace(value: string): string {
+  return value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
+}
+
+function normalizedBranding(value: unknown): PublicBranding {
+  const branding = isRecord(value) && isRecord(value.branding) ? value.branding : {};
+  const candidate = typeof branding.site_name === "string"
+    ? trimUnicodeWhitespace(branding.site_name)
+    : "";
+  const valid = candidate.length > 0 && Array.from(candidate).length <= 48 && !/\p{Cc}/u.test(candidate);
+  return {
+    site_name: valid ? candidate : "Cookbook",
+    // Palette is persisted independently; the current client intentionally renders only garden.
+    palette: "garden",
+  };
+}
 
 function isPublicAuthConfig(value: unknown): value is PublicAuthConfig {
   if (!value || typeof value !== "object") return false;
@@ -38,6 +56,7 @@ function publicAuthConfig(value: unknown): PublicAuthConfig {
     course_creator_attribution: isRecord(value) && value.course_creator_attribution === true,
     // This is protocol support, not an instance policy toggle. Only literal true enables menu UI.
     menu_api: isRecord(value) && value.menu_api === true,
+    branding: normalizedBranding(value),
   };
 }
 
@@ -59,7 +78,7 @@ export default function usePublicAuthConfig({ enabled = true }: { enabled?: bool
     const currentRequest = ++requestID.current;
     setState({ status: "loading" });
     try {
-      const response = await fetch("/api/public/config");
+      const response = await fetch("/api/public/config", { cache: "no-store" });
       if (!response.ok) throw new Error("Could not load sign-in options.");
       const value: unknown = await response.json();
       if (!isPublicAuthConfig(value))

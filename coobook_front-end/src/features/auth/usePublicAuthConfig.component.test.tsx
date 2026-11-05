@@ -13,7 +13,7 @@ function Probe() {
         <button onClick={retry}>Retry</button>
       </>
     );
-  return <p>{state.config.auth_methods.email_link ? "Email enabled" : "Email disabled"} · course attribution {state.config.course_creator_attribution ? "enabled" : "disabled"} · menus {state.config.menu_api ? "enabled" : "disabled"} · Home {state.config.anonymous_home_preset}</p>;
+  return <p>{state.config.auth_methods.email_link ? "Email enabled" : "Email disabled"} · course attribution {state.config.course_creator_attribution ? "enabled" : "disabled"} · menus {state.config.menu_api ? "enabled" : "disabled"} · Home {state.config.anonymous_home_preset} · brand {state.config.branding?.site_name}</p>;
 }
 
 function configResponse(data: unknown, status = 200): Response {
@@ -137,4 +137,37 @@ it("rejects malformed capability data instead of fabricating availability", asyn
     "Could not load sign-in options. Try again.",
   );
   expect(screen.queryByText("Email enabled")).toBeNull();
+});
+
+it.each([
+  ["missing branding", undefined],
+  ["missing name", {}],
+  ["empty name", { site_name: " \u2003 " }],
+  ["overlong name", { site_name: "x".repeat(49) }],
+  ["control character", { site_name: "Kitchen\nname" }],
+  ["unknown name shape", { site_name: { text: "Kitchen" } }],
+])("keeps valid auth config and defaults %s to Cookbook", async (_label, branding) => {
+  const value: Record<string, unknown> = {
+    auth_methods: { email_link: true, passkey: false },
+    registration_policy: "invite_only",
+    public_instance: true,
+    courses_enabled: false,
+  };
+  if (branding !== undefined) value.branding = branding;
+  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(configResponse(value))));
+  render(<Probe />);
+  expect(await screen.findByText(/Email enabled/)).toBeTruthy();
+  expect(screen.getByText(/brand Cookbook/)).toBeTruthy();
+});
+
+it("trims and preserves a valid Unicode instance name while ignoring unknown palette values", async () => {
+  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(configResponse({
+    auth_methods: { email_link: true, passkey: false },
+    registration_policy: "invite_only",
+    public_instance: true,
+    courses_enabled: false,
+    branding: { site_name: "  Crème 🍲  ", palette: "untrusted-css" },
+  }))));
+  render(<Probe />);
+  expect(await screen.findByText(/brand Crème 🍲/)).toBeTruthy();
 });

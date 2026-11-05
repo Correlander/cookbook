@@ -33,7 +33,7 @@ function MenuDetailPage() {
 
   return (
     <div className="app-content menu-detail-root">
-      <AppNavigation currentUser={currentUser} pathname="/menu" sessionStatus={state.status} onRetrySession={() => void refreshSession()} />
+      <AppNavigation currentUser={currentUser} pathname="/menu" sessionStatus={state.status} onRetrySession={() => void refreshSession()} publicConfigState={config} />
       <main id="home" tabIndex={-1}>
         {state.status === "error" ? <SessionCheckError message={state.message} onRetry={() => void refreshSession()} /> :
           state.status === "loading" || menuID === null || config.status === "loading" ? <p className="cookbook-dashboard" role="status">Checking access to this private menu…</p> :

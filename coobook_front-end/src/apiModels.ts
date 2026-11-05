@@ -72,10 +72,18 @@ export interface PublicAuthConfig {
   anonymous_home_preset: AnonymousHomePreset;
   course_creator_attribution?: boolean;
   menu_api?: boolean;
+  branding?: { site_name?: string; palette?: string };
+}
+
+export interface PublicBranding {
+  site_name: string;
+  palette: "garden";
 }
 
 export interface AdminSettingsModel {
   anonymous_home_preset?: AnonymousHomePreset;
+  site_name?: string;
+  palette?: string;
   public_instance: boolean;
   courses_enabled: boolean;
   registration_policy: RegistrationPolicy;

@@ -4,13 +4,16 @@ import CourseDetailRoot from "./CourseDetailRoot.tsx";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.history.replaceState(null, "", "/course?id=course-1"); });
 function json(body: unknown, status = 200) { return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }); }
+function publicConfig(courses_enabled: boolean) {
+  return { auth_methods: { email_link: true, passkey: false }, registration_policy: "invite_only", public_instance: false, courses_enabled };
+}
 
 it("keeps disabled course content behind the feature gate and links to reference management", async () => {
   const calls: string[] = [];
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
     const url = String(input); calls.push(url);
     if (url === "/api/auth/me") return Promise.resolve(json({ id: "actor", email: "a@example.test", display_name: "A", is_admin: false }));
-    if (url === "/api/public/config") return Promise.resolve(json({ courses_enabled: false }));
+    if (url === "/api/public/config") return Promise.resolve(json(publicConfig(false)));
     return Promise.resolve(json({}, 404));
   }));
   render(<CourseDetailRoot />);
@@ -24,7 +27,7 @@ it("uses one authenticated read and never falls back to anonymous detail after d
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
     const url = String(input); calls.push(url);
     if (url === "/api/auth/me") return Promise.resolve(json({ id: "actor", email: "a@example.test", display_name: "A", is_admin: false }));
-    if (url === "/api/public/config") return Promise.resolve(json({ courses_enabled: true }));
+    if (url === "/api/public/config") return Promise.resolve(json(publicConfig(true)));
     if (url === "/api/courses/course-1") return Promise.resolve(json({}, 404));
     return Promise.resolve(json({}, 404));
   }));
@@ -39,7 +42,7 @@ it("parses an accepted authenticated course detail and keeps creator data separa
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     if (url === "/api/auth/me") return Promise.resolve(json({ id: "actor", email: "a@example.test", display_name: "A", is_admin: false }));
-    if (url === "/api/public/config") return Promise.resolve(json({ courses_enabled: true }));
+    if (url === "/api/public/config") return Promise.resolve(json(publicConfig(true)));
     if (url === "/api/courses/course-1") return Promise.resolve(json(course));
     if (url === "/api/courses/course-1/lessons") return Promise.resolve(json([]));
     return Promise.resolve(json({}, 404));

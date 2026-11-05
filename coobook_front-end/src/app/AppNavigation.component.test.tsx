@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { AuthenticatedUser } from "../apiModels";
+import type { PublicAuthConfigState } from "../features/auth/usePublicAuthConfig.ts";
 import AppNavigation from "./AppNavigation.tsx";
 
 const ownerAuthority = {
@@ -32,10 +33,18 @@ function renderNavigation({
   user = ordinaryUser,
   pathname = "/library",
   sessionStatus,
+  publicConfigState = { status: "ready", config: {
+    auth_methods: { email_link: true, passkey: false }, registration_policy: "invite_only" as const,
+    public_instance: false, courses_enabled: false, anonymous_home_preset: "library_first" as const,
+    branding: { site_name: "Cookbook", palette: "garden" as const },
+  } },
+  omitPublicConfig = false,
 }: {
   user?: AuthenticatedUser | null;
   pathname?: string;
   sessionStatus?: "loading" | "authenticated" | "anonymous" | "error";
+  publicConfigState?: PublicAuthConfigState;
+  omitPublicConfig?: boolean;
 } = {}) {
   return render(
     <AppNavigation
@@ -43,6 +52,7 @@ function renderNavigation({
       pathname={pathname}
       sessionStatus={sessionStatus ?? (user ? "authenticated" : "anonymous")}
       onRetrySession={vi.fn()}
+      {...(!omitPublicConfig ? { publicConfigState } : {})}
     />,
   );
 }
@@ -164,6 +174,50 @@ it("keeps a signed-out navigation free of authority and transfer requests", () =
   expect(screen.queryByRole("link", { name: "Create" })).toBeNull();
   expect(screen.queryByRole("link", { name: "Instance" })).toBeNull();
   expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it("renders a supplied instance name as escaped text without a second config request", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL) =>
+    String(input) === "/api/instance/authority"
+      ? Promise.resolve(response(ordinaryAuthority))
+      : Promise.resolve(response({ transfers: [] })),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const name = "&lt;script&gt;Kitchen & Sons";
+  renderNavigation({ publicConfigState: {
+    status: "ready",
+    config: {
+      auth_methods: { email_link: true, passkey: false },
+      registration_policy: "invite_only",
+      public_instance: false,
+      courses_enabled: false,
+      anonymous_home_preset: "library_first",
+      branding: { site_name: name, palette: "garden" },
+    },
+  } });
+
+  const brand = screen.getByRole("link", { name: "Cookbook home" });
+  expect(brand.textContent).toContain(name);
+  expect(brand.querySelector("script")).toBeNull();
+  await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input) === "/api/public/config")).toBe(false));
+});
+
+it("uses its existing config hook once when no route owner supplies state", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    if (String(input) === "/api/public/config") return Promise.resolve(response({
+      auth_methods: { email_link: true, passkey: false },
+      registration_policy: "invite_only", public_instance: false, courses_enabled: false,
+      branding: { site_name: "My Kitchen" },
+    }));
+    if (String(input) === "/api/instance/authority") return Promise.resolve(response(ordinaryAuthority));
+    return Promise.resolve(response({ transfers: [] }));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderNavigation({ omitPublicConfig: true, user: null });
+
+  expect(await screen.findByText("My Kitchen")).toBeTruthy();
+  expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/public/config")).toHaveLength(1);
 });
 
 it("marks the independent Discover route active", () => {

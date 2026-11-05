@@ -130,11 +130,7 @@ func TestRecipeAttributionCreateOnlyChoicesAndPublicPrivacy(t *testing.T) {
 
 func TestLocalProfileRecipeAttributionRollsBackWholeCreateOnLateFailure(t *testing.T) {
 	db := testDatabase(t)
-	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now');
-		UPDATE instance_settings SET public_instance=1,federation_enabled=1,federation_origin=? WHERE id=1`, testFederationOrigin); err != nil {
-		t.Fatal(err)
-	}
-	if err := registerFederationPeer(db, "https://peer.example.org", true); err != nil {
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`CREATE TRIGGER fail_local_profile_create_audit
@@ -145,9 +141,9 @@ func TestLocalProfileRecipeAttributionRollsBackWholeCreateOnLateFailure(t *testi
 	h := apiHandler{db: db}
 	input := map[string]any{
 		"title": "Atomic profile recipe", "ingredients": []ingredient{}, "steps": []recipeStep{{Text: "Cook"}},
-		"visibility": "public", "confirm_public_access": true,
+		"visibility": "private",
 		"initial_publication": map[string]any{
-			"publication_state": "published", "federation_mode": "followers", "index_eligible": false,
+			"publication_state": "unpublished", "federation_mode": "off", "index_eligible": false,
 		},
 		"creator_attribution": map[string]any{"kind": "local_profile"},
 	}
@@ -182,15 +178,128 @@ func TestLocalProfileRecipeAttributionRollsBackWholeCreateOnLateFailure(t *testi
 	if created.Code != http.StatusOK {
 		t.Fatalf("control recipe create status=%d body=%s", created.Code, created.Body)
 	}
-	var outboxRows, attributionRows int
+	var recipeRows, profileRows, policyRows, revisionRows, outboxRows, attributionRows, auditRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM recipes WHERE owner_id='owner'`).Scan(&recipeRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM creator_profiles WHERE user_id='owner' AND public_name='' AND visibility='private'`).Scan(&profileRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM recipe_publication_policy p JOIN recipes r ON r.id=p.recipe_id WHERE r.owner_id='owner' AND p.publication_state='unpublished' AND p.federation_mode='off'`).Scan(&policyRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM recipe_revisions v JOIN recipes r ON r.id=v.recipe_id WHERE r.owner_id='owner'`).Scan(&revisionRows); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_outbox`).Scan(&outboxRows); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM content_attributions a JOIN recipes r ON r.id=a.recipe_id WHERE r.owner_id='owner' AND a.subject_kind='local'`).Scan(&attributionRows); err != nil {
 		t.Fatal(err)
 	}
-	if outboxRows != 1 || attributionRows != 1 {
-		t.Fatalf("success control did not exercise complete transaction: outbox=%d attributions=%d", outboxRows, attributionRows)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE action='recipe.publication.initialize'`).Scan(&auditRows); err != nil {
+		t.Fatal(err)
+	}
+	if recipeRows != 1 || profileRows != 1 || policyRows != 1 || revisionRows != 1 || outboxRows != 0 || attributionRows != 1 || auditRows != 1 {
+		t.Fatalf("success control did not exercise complete private-create transaction: recipes=%d profiles=%d policies=%d revisions=%d outbox=%d attributions=%d audit=%d", recipeRows, profileRows, policyRows, revisionRows, outboxRows, attributionRows, auditRows)
+	}
+}
+
+func TestPublishedFederatedRecipeAttributionRollsBackOnLateFailure(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,created_at) VALUES('owner','owner@example.test','Owner','now');
+		UPDATE instance_settings SET public_instance=1,federation_enabled=1,federation_origin=? WHERE id=1`, testFederationOrigin); err != nil {
+		t.Fatal(err)
+	}
+	insertCompletedPublisherProfile(t, db, "owner", "Private publisher")
+	if err := registerFederationPeer(db, "https://peer.example.org", true); err != nil {
+		t.Fatal(err)
+	}
+	var profileID, profileName, profileVisibility string
+	if err := db.QueryRow(`SELECT creator_id,public_name,visibility FROM creator_profiles WHERE user_id='owner'`).Scan(&profileID, &profileName, &profileVisibility); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER fail_federated_profile_recipe_audit
+		BEFORE INSERT ON audit_events WHEN NEW.action='recipe.publication.initialize'
+		BEGIN SELECT RAISE(ABORT,'injected late create failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	h := apiHandler{db: db}
+	input := map[string]any{
+		"title": "Atomic federated profile recipe", "ingredients": []ingredient{}, "steps": []recipeStep{{Text: "Cook"}},
+		"visibility": "public", "confirm_public_access": true,
+		"initial_publication": map[string]any{
+			"publication_state": "published", "federation_mode": "followers", "index_eligible": false,
+		},
+		"creator_attribution": map[string]any{"kind": "local_profile"},
+	}
+	failed := callCreatorProfileAPI(t, h, http.MethodPost, "/api/recipes", "owner", input)
+	if failed.Code != http.StatusInternalServerError {
+		t.Fatalf("injected late failure status=%d body=%s", failed.Code, failed.Body)
+	}
+	for _, check := range []struct {
+		name  string
+		query string
+	}{
+		{"recipe", `SELECT COUNT(*) FROM recipes WHERE owner_id='owner'`},
+		{"policy", `SELECT COUNT(*) FROM recipe_publication_policy p JOIN recipes r ON r.id=p.recipe_id WHERE r.owner_id='owner'`},
+		{"revision", `SELECT COUNT(*) FROM recipe_revisions v JOIN recipes r ON r.id=v.recipe_id WHERE r.owner_id='owner'`},
+		{"attribution", `SELECT COUNT(*) FROM content_attributions a JOIN recipes r ON r.id=a.recipe_id WHERE r.owner_id='owner'`},
+		{"local federation object", `SELECT COUNT(*) FROM federation_local_objects`},
+		{"peer federation object", `SELECT COUNT(*) FROM federation_local_peer_objects`},
+		{"outbox", `SELECT COUNT(*) FROM federation_outbox`},
+		{"audit", `SELECT COUNT(*) FROM audit_events WHERE action='recipe.publication.initialize'`},
+	} {
+		var count int
+		if err := db.QueryRow(check.query).Scan(&count); err != nil {
+			t.Fatalf("count %s after injected failure: %v", check.name, err)
+		}
+		if count != 0 {
+			t.Errorf("late federated create failure left %s rows: %d", check.name, count)
+		}
+	}
+	var preservedID, preservedName, preservedVisibility string
+	if err := db.QueryRow(`SELECT creator_id,public_name,visibility FROM creator_profiles WHERE user_id='owner'`).Scan(&preservedID, &preservedName, &preservedVisibility); err != nil {
+		t.Fatalf("completed profile was not preserved after rollback: %v", err)
+	}
+	if preservedID != profileID || preservedName != profileName || preservedVisibility != profileVisibility {
+		t.Fatalf("completed profile changed after rollback: before=%q/%q/%q after=%q/%q/%q", profileID, profileName, profileVisibility, preservedID, preservedName, preservedVisibility)
+	}
+	if _, err := db.Exec(`DROP TRIGGER fail_federated_profile_recipe_audit`); err != nil {
+		t.Fatal(err)
+	}
+	created := callCreatorProfileAPI(t, h, http.MethodPost, "/api/recipes", "owner", input)
+	if created.Code != http.StatusOK {
+		t.Fatalf("eligible federated create control status=%d body=%s", created.Code, created.Body)
+	}
+	var recipes, policies, revisions, attributions, localObjects, peerObjects, outbox, audits int
+	for _, check := range []struct {
+		name  string
+		query string
+		total *int
+	}{
+		{"recipe", `SELECT COUNT(*) FROM recipes WHERE owner_id='owner'`, &recipes},
+		{"policy", `SELECT COUNT(*) FROM recipe_publication_policy p JOIN recipes r ON r.id=p.recipe_id WHERE r.owner_id='owner' AND p.publication_state='published' AND p.federation_mode='followers'`, &policies},
+		{"revision", `SELECT COUNT(*) FROM recipe_revisions v JOIN recipes r ON r.id=v.recipe_id WHERE r.owner_id='owner'`, &revisions},
+		{"attribution", `SELECT COUNT(*) FROM content_attributions a JOIN recipes r ON r.id=a.recipe_id WHERE r.owner_id='owner' AND a.subject_kind='local'`, &attributions},
+		{"local federation object", `SELECT COUNT(*) FROM federation_local_objects`, &localObjects},
+		{"peer federation object", `SELECT COUNT(*) FROM federation_local_peer_objects`, &peerObjects},
+		{"outbox", `SELECT COUNT(*) FROM federation_outbox`, &outbox},
+		{"audit", `SELECT COUNT(*) FROM audit_events WHERE action='recipe.publication.initialize'`, &audits},
+	} {
+		if err := db.QueryRow(check.query).Scan(check.total); err != nil {
+			t.Fatalf("count %s after successful federated create: %v", check.name, err)
+		}
+	}
+	var controlProfileID, controlName, controlVisibility string
+	if err := db.QueryRow(`SELECT creator_id,public_name,visibility FROM creator_profiles WHERE user_id='owner'`).Scan(&controlProfileID, &controlName, &controlVisibility); err != nil {
+		t.Fatal(err)
+	}
+	if recipes != 1 || policies != 1 || revisions != 1 || attributions != 1 || localObjects != 1 || peerObjects != 1 || outbox != 1 || audits != 1 {
+		t.Fatalf("successful federated create did not exercise the full transaction: recipes=%d policies=%d revisions=%d attributions=%d local=%d peer=%d outbox=%d audits=%d", recipes, policies, revisions, attributions, localObjects, peerObjects, outbox, audits)
+	}
+	if controlProfileID != profileID || controlName != profileName || controlVisibility != profileVisibility {
+		t.Fatalf("successful publication changed existing publisher profile: before=%q/%q/%q after=%q/%q/%q", profileID, profileName, profileVisibility, controlProfileID, controlName, controlVisibility)
 	}
 }
 

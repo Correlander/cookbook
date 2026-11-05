@@ -505,14 +505,19 @@ func TestBackupActorFixture(t *testing.T) {
                 source_db.close()
             if source_schema_version is None or source_schema_version[0] is None:
                 self.fail("generated source database has no migration version")
-            if source_schema_version[0] != 15:
-                self.fail(f"generated source database schema version is {source_schema_version[0]}, expected 15")
+            if source_schema_version[0] != 16:
+                self.fail(f"generated source database schema version is {source_schema_version[0]}, expected 16")
 
             # Seed a checkpointed baseline, then prove a later committed menu edit is in WAL.
             connection = sqlite3.connect(database)
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA wal_autocheckpoint=0")
             connection.execute("PRAGMA foreign_keys=ON")
+            home_preset = "discovery_first"
+            connection.execute(
+                "UPDATE instance_settings SET anonymous_home_preset=? WHERE id=1",
+                (home_preset,),
+            )
             connection.execute("UPDATE person_actor_ids SET state='retired',retired_at='proof' WHERE actor_id=(SELECT actor_id FROM person_actors WHERE user_id='fixture-retired')")
             profile_id = "a" * 32
             local_recipe_id = "7" * 32
@@ -709,6 +714,10 @@ volumes:
             with closing(sqlite3.connect(cold_restored_database)) as cold_restored:
                 cold_restored.execute("PRAGMA foreign_keys=ON")
                 self.assertEqual(read_menu_recovery_state(cold_restored, menu_ids), cold_menu_expected)
+                self.assertEqual(
+                    cold_restored.execute("SELECT anonymous_home_preset FROM instance_settings WHERE id=1").fetchone(),
+                    (home_preset,),
+                )
                 self.assertEqual(cold_restored.execute("PRAGMA integrity_check").fetchone(), ("ok",))
                 self.assertEqual(cold_restored.execute("PRAGMA foreign_key_check").fetchall(), [])
                 self.assertEqual(
@@ -769,6 +778,10 @@ volumes:
                 self.assertEqual(restored_db.execute("PRAGMA integrity_check").fetchone(), ("ok",))
                 self.assertEqual(restored_db.execute("PRAGMA foreign_key_check").fetchall(), [])
                 self.assertEqual(read_menu_recovery_state(restored_db, menu_ids), hot_menu_expected)
+                self.assertEqual(
+                    restored_db.execute("SELECT anonymous_home_preset FROM instance_settings WHERE id=1").fetchone(),
+                    (home_preset,),
+                )
                 self.assertEqual(
                     restored_db.execute(
                         "SELECT COUNT(*) FROM pragma_foreign_key_list('meal_menu_entries') WHERE \"table\"='recipes'"

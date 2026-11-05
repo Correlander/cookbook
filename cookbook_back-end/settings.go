@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -109,6 +110,9 @@ func (h apiHandler) instanceSettings(w http.ResponseWriter, r *http.Request) {
 		settings, err := updateInstanceSettingsWithSnapshotLimitAndPreset(h.db, input.PublicInstance, input.CoursesEnabled, input.RegistrationPolicy, input.RevisionRetention, input.AuditRetention, input.ConfirmPublication, input.PrivateSnapshotStorageLimitBytes, input.FederationEnabled, anonymousHomePreset)
 		if errors.Is(err, errPublicationConfirmationRequired) {
 			writeError(w, http.StatusConflict, "publication_confirmation_required")
+			return
+		}
+		if writePublisherProfileError(w, err) {
 			return
 		}
 		if err != nil {
@@ -241,6 +245,24 @@ func updateInstanceSettingsWithSnapshotLimitAndPreset(db *sql.DB, publicInstance
 		}
 		if publicCourses > 0 && public && !confirmPublication {
 			return instanceSettings{}, errPublicationConfirmationRequired
+		}
+	}
+	if public {
+		ownerQueries := make([]string, 0, 3)
+		if wasPublic == 0 {
+			ownerQueries = append(ownerQueries,
+				`SELECT DISTINCT owner_id FROM cookbooks WHERE visibility='public'`,
+				`SELECT DISTINCT r.owner_id FROM recipes r JOIN recipe_publication_policy p ON p.recipe_id=r.id
+					WHERE r.visibility='public' AND r.deleted_at IS NULL AND p.publication_state='published'`,
+			)
+		}
+		if courses == 1 && (wasPublic == 0 || !wasCoursesEnabled) {
+			ownerQueries = append(ownerQueries, `SELECT DISTINCT owner_id FROM courses WHERE visibility='public'`)
+		}
+		for _, ownerQuery := range ownerQueries {
+			if err := requirePublisherProfilesForOwners(context.Background(), tx, ownerQuery); err != nil {
+				return instanceSettings{}, err
+			}
 		}
 	}
 	if registrationPolicy != nil {

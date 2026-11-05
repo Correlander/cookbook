@@ -106,6 +106,7 @@ func TestInstanceSettingsRequireAdminAndConfirmExistingPublication(t *testing.T)
 		INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at) VALUES('public-recipe','published','off',0,'now'),('private-recipe','unpublished','off',0,'now')`); err != nil {
 		t.Fatal(err)
 	}
+	insertCompletedPublisherProfile(t, db, "member", "Member publisher")
 	adminToken, _, err := issueSession(db, "admin")
 	if err != nil {
 		t.Fatal(err)

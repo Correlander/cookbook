@@ -678,6 +678,14 @@ func (h apiHandler) cookbooks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer tx.Rollback()
+		if input.Visibility == visibilityPublic {
+			if profileErr := requireCompletedPublisherProfile(r.Context(), tx, input.OwnerID); profileErr != nil {
+				if !writePublisherProfileError(w, profileErr) {
+					writeError(w, http.StatusInternalServerError, "storage_error")
+				}
+				return
+			}
+		}
 		profile, err := ensureCreatorProfile(r.Context(), tx, input.OwnerID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "storage_error")
@@ -820,6 +828,14 @@ func (h apiHandler) cookbookByID(w http.ResponseWriter, r *http.Request, id stri
 		writeError(w, 403, "forbidden")
 		return
 	}
+	if input.Visibility == visibilityPublic {
+		if profileErr := requireCompletedPublisherProfile(r.Context(), tx, input.UserID); profileErr != nil {
+			if !writePublisherProfileError(w, profileErr) {
+				writeError(w, http.StatusInternalServerError, "storage_error")
+			}
+			return
+		}
+	}
 	_, err = tx.ExecContext(r.Context(), `UPDATE cookbooks SET title=?,description=?,visibility=?,updated_at=? WHERE id=?`, input.Title, input.Description, input.Visibility, timestamp(), id)
 	if err != nil {
 		writeError(w, 500, "storage_error")
@@ -901,6 +917,15 @@ func (h apiHandler) recipes(w http.ResponseWriter, r *http.Request) {
 				_ = tx.Rollback()
 				writePublicationError(w, code)
 				return
+			}
+			if initial.PublicationState == RecipePublicationPublished {
+				if profileErr := requireCompletedPublisherProfile(r.Context(), tx, in.OwnerID); profileErr != nil {
+					_ = tx.Rollback()
+					if !writePublisherProfileError(w, profileErr) {
+						writeError(w, http.StatusInternalServerError, "storage_error")
+					}
+					return
+				}
 			}
 		}
 		now := time.Now().UTC().Format(fixedPolicyTimeLayout)
@@ -1315,6 +1340,9 @@ func (h apiHandler) recipeByID(w http.ResponseWriter, r *http.Request, id string
 		writeError(w, http.StatusForbidden, "instance_private")
 		return
 	}
+	if writePublisherProfileError(w, err) {
+		return
+	}
 	if errors.Is(err, errRecipeMutationDenied) {
 		writeError(w, http.StatusForbidden, "forbidden")
 		return
@@ -1637,6 +1665,9 @@ func (h apiHandler) restoreRecipeRevision(w http.ResponseWriter, r *http.Request
 	}
 	if errors.Is(err, errRecipeMutationInstanceGate) {
 		writeError(w, http.StatusForbidden, "instance_private")
+		return
+	}
+	if writePublisherProfileError(w, err) {
 		return
 	}
 	if errors.Is(err, errRecipeMutationDenied) {

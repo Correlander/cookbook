@@ -511,6 +511,16 @@ func (h apiHandler) updateRecipePublication(w http.ResponseWriter, r *http.Reque
 		writeError(w, publicationInputStatus(code), code)
 		return
 	}
+	increasesAudience := (record.Policy.PublicationState != RecipePublicationPublished && input.PublicationState == RecipePublicationPublished) ||
+		(record.Policy.FederationMode != RecipeFederationFollowers && input.FederationMode == RecipeFederationFollowers)
+	if increasesAudience {
+		if profileErr := requireCompletedPublisherProfile(r.Context(), tx, uid); profileErr != nil {
+			if !writePublisherProfileError(w, profileErr) {
+				writeError(w, http.StatusInternalServerError, "storage_error")
+			}
+			return
+		}
+	}
 	updatedAt, err := nextPublicationTime(record.RawUpdatedAt)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")

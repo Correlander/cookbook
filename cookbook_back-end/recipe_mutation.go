@@ -129,7 +129,12 @@ func authorizeRecipeMutationTx(tx *sql.Tx, mutation recipeMutation) (visibility,
 	var editPolicy string
 	var currentVisibility visibility
 	var publicInstance int
-	err := tx.QueryRow(`SELECT r.owner_id,r.edit_policy,r.visibility,s.public_instance FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.id=? AND r.deleted_at IS NULL`, mutation.RecipeID).Scan(&ownerID, &editPolicy, &currentVisibility, &publicInstance)
+	var currentVersion int
+	var publicationState sql.NullString
+	err := tx.QueryRow(`SELECT r.owner_id,r.edit_policy,r.visibility,s.public_instance,r.version,p.publication_state
+		FROM recipes r JOIN instance_settings s ON s.id=1
+		LEFT JOIN recipe_publication_policy p ON p.recipe_id=r.id
+		WHERE r.id=? AND r.deleted_at IS NULL`, mutation.RecipeID).Scan(&ownerID, &editPolicy, &currentVisibility, &publicInstance, &currentVersion, &publicationState)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", errRecipeMutationNotFound
 	}
@@ -155,6 +160,17 @@ func authorizeRecipeMutationTx(tx *sql.Tx, mutation recipeMutation) (visibility,
 	}
 	if currentVisibility != visibilityPublic && mutation.Snapshot.Visibility == visibilityPublic && !mutation.ConfirmPublicAccess {
 		return "", errRecipeMutationConfirmation
+	}
+	if currentVersion != mutation.ExpectedVersion {
+		return "", errRecipeMutationConflict
+	}
+	if publicationState.Valid && publicationState.String == string(RecipePublicationPublished) && mutation.Snapshot.Visibility == visibilityPublic && publicInstance == 1 {
+		if err := requireCompletedPublisherProfile(mutation.Context, tx, mutation.ActorID); err != nil {
+			if errors.Is(err, errPublisherProfileRequired) {
+				return "", errPublisherProfileRequired
+			}
+			return "", err
+		}
 	}
 	return currentVisibility, nil
 }

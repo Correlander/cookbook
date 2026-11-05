@@ -223,6 +223,7 @@ func TestRecipePublicationIfMatchNoOpAndConcurrentPrecondition(t *testing.T) {
 	if audits != 0 || outbox != 0 {
 		t.Fatalf("no-op wrote audit/outbox: audits=%d outbox=%d", audits, outbox)
 	}
+	insertCompletedPublisherProfile(t, env.db, "owner", "Private publisher")
 	input.PublicationState = RecipePublicationPublished
 	responses := make([]*httptest.ResponseRecorder, 2)
 	start := make(chan struct{})
@@ -307,6 +308,7 @@ func TestRecipePublicationGatesAndTransactionalFailures(t *testing.T) {
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "federation_unavailable") {
 		t.Fatalf("follower opt-in without federation=%d %s", response.Code, response.Body)
 	}
+	insertCompletedPublisherProfile(t, env.db, "owner", "Private publisher")
 	if _, err := env.db.Exec(`CREATE TRIGGER reject_publication_audit BEFORE INSERT ON audit_events WHEN NEW.action='recipe.publication.publish' BEGIN SELECT RAISE(ABORT,'audit failure'); END`); err != nil {
 		t.Fatal(err)
 	}
@@ -328,6 +330,7 @@ func TestRecipePublicationGatesAndTransactionalFailures(t *testing.T) {
 
 	fed := newPublicationTestEnv(t, visibilityPublic, RecipePublicationPublished, RecipeFederationOff, true)
 	_, fedETag := publicationGET(t, fed)
+	insertCompletedPublisherProfile(t, fed.db, "owner", "Private publisher")
 	if _, err := fed.db.Exec(`CREATE TRIGGER reject_publication_outbox BEFORE INSERT ON federation_outbox BEGIN SELECT RAISE(ABORT,'outbox failure'); END`); err != nil {
 		t.Fatal(err)
 	}
@@ -465,6 +468,7 @@ func TestRecipeCreatePublicationDefaultsAndExplicitChoice(t *testing.T) {
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "publication_confirmation_required") {
 		t.Fatalf("public create without confirmation=%d %s", response.Code, response.Body)
 	}
+	insertCompletedPublisherProfile(t, env.db, "owner", "Private publisher")
 	if _, err := env.db.Exec(`CREATE TRIGGER reject_create_audit BEFORE INSERT ON audit_events WHEN NEW.action='recipe.publication.initialize' BEGIN SELECT RAISE(ABORT,'audit failure'); END`); err != nil {
 		t.Fatal(err)
 	}

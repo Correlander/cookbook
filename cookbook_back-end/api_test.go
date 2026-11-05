@@ -1434,6 +1434,11 @@ func TestCookbookOwnerCanEditDetailsAndVisibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	publicInstance := callAPI(handler, http.MethodPatch, "/api/cookbooks/book", body, ownerCookie)
+	if publicInstance.Code != http.StatusConflict {
+		t.Fatalf("public visibility without publisher profile status=%d, want 409: %s", publicInstance.Code, publicInstance.Body)
+	}
+	insertCompletedPublisherProfile(t, db, "owner", "Private cookbook publisher")
+	publicInstance = callAPI(handler, http.MethodPatch, "/api/cookbooks/book", body, ownerCookie)
 	if publicInstance.Code != http.StatusOK {
 		t.Fatalf("public visibility on public instance status=%d: %s", publicInstance.Code, publicInstance.Body)
 	}

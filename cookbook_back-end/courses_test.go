@@ -48,6 +48,7 @@ func TestEnablingCoursesRequiresReviewOfExistingPublicCourses(t *testing.T) {
 		INSERT INTO courses(id,owner_id,title,visibility,created_at,updated_at) VALUES('public-course','admin','Public course','public','now','now')`); err != nil {
 		t.Fatal(err)
 	}
+	insertCompletedPublisherProfile(t, db, "admin", "Admin publisher")
 	token, _, err := issueSession(db, "admin")
 	if err != nil {
 		t.Fatal(err)
@@ -131,6 +132,7 @@ func TestEnabledCoursesEnforceVisibilityAndProtectLinkedRecipes(t *testing.T) {
 	if privateRead.Code != http.StatusNotFound {
 		t.Fatalf("private course leaked to another user: status=%d", privateRead.Code)
 	}
+	insertCompletedPublisherProfile(t, db, "owner", "Private course publisher")
 	public := callAPI(handler, http.MethodPost, "/api/courses", map[string]string{"title": "Home cooking", "visibility": "public"}, ownerCookie)
 	if public.Code != http.StatusCreated {
 		t.Fatalf("create public course status=%d body=%s", public.Code, public.Body)
@@ -201,13 +203,13 @@ func TestCourseReadDistinguishesMissingAndStorageFailure(t *testing.T) {
 		t.Fatalf("course create did not roll back after read failure: count=%d err=%v", createdCount, err)
 	}
 
-	updated := callAPI(handler, http.MethodPatch, "/api/courses/private-course", map[string]string{"title": "Committed update"}, ownerCookie)
+	updated := callAPI(handler, http.MethodPatch, "/api/courses/private-course", map[string]string{"title": "Rolled back update"}, ownerCookie)
 	if updated.Code != http.StatusInternalServerError || !strings.Contains(updated.Body.String(), `"error":"storage_error"`) {
 		t.Fatalf("course update post-write read status=%d body=%s, want 500 storage_error", updated.Code, updated.Body)
 	}
 	var storedTitle string
-	if err := db.QueryRow(`SELECT title FROM courses WHERE id='private-course'`).Scan(&storedTitle); err != nil || storedTitle != "Committed update" {
-		t.Fatalf("course update did not commit before read failure: title=%q err=%v", storedTitle, err)
+	if err := db.QueryRow(`SELECT title FROM courses WHERE id='private-course'`).Scan(&storedTitle); err != nil || storedTitle != "Private course" {
+		t.Fatalf("course update was not rolled back after response read failure: title=%q err=%v", storedTitle, err)
 	}
 }
 

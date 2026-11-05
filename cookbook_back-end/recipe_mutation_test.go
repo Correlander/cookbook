@@ -109,6 +109,7 @@ func recipeMutationHandlerFixture(t *testing.T, federation bool) (*sql.DB, http.
 		if _, err := db.Exec(`UPDATE instance_settings SET public_instance=1,federation_enabled=1,federation_origin=? WHERE id=1`, testFederationOrigin); err != nil {
 			t.Fatal(err)
 		}
+		insertCompletedPublisherProfile(t, db, "owner", "Private publisher")
 		if _, err := db.Exec(`INSERT INTO recipe_publication_policy(recipe_id,publication_state,federation_mode,index_eligible,updated_at,published_at)
 			VALUES(?, 'published', 'followers', 0, 'now', 'now')`, testFederationID); err != nil {
 			t.Fatal(err)

@@ -107,6 +107,23 @@ func (h apiHandler) courseCollection(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer tx.Rollback()
+		var publicInstance, coursesEnabled int
+		if err := tx.QueryRowContext(r.Context(), `SELECT public_instance,courses_enabled FROM instance_settings WHERE id=1`).Scan(&publicInstance, &coursesEnabled); err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		if coursesEnabled != 1 {
+			writeError(w, http.StatusNotFound, "courses_disabled")
+			return
+		}
+		if input.Visibility == "public" && publicInstance == 1 {
+			if profileErr := requireCompletedPublisherProfile(r.Context(), tx, uid); profileErr != nil {
+				if !writePublisherProfileError(w, profileErr) {
+					writeError(w, http.StatusInternalServerError, "storage_error")
+				}
+				return
+			}
+		}
 		creatorName := ""
 		if input.CreatorAttribution != nil && input.CreatorAttribution.Kind == "name_claim" {
 			creatorName = input.CreatorAttribution.Name
@@ -216,9 +233,21 @@ func (h apiHandler) courseItem(w http.ResponseWriter, r *http.Request, id string
 			return
 		}
 		uid := authenticatedUser(r)
+		tx, err := h.db.BeginTx(r.Context(), nil)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		defer tx.Rollback()
 		var current course
-		if err := h.db.QueryRow(`SELECT id,owner_id,title,description,visibility,created_at,updated_at FROM courses WHERE id=?`, id).Scan(&current.ID, &current.OwnerID, &current.Title, &current.Description, &current.Visibility, &current.CreatedAt, &current.UpdatedAt); err != nil || current.OwnerID != uid {
+		var publicInstance, coursesEnabled int
+		if err := tx.QueryRowContext(r.Context(), `SELECT c.id,c.owner_id,c.title,c.description,c.visibility,c.created_at,c.updated_at,s.public_instance,s.courses_enabled
+			FROM courses c JOIN instance_settings s ON s.id=1 WHERE c.id=?`, id).Scan(&current.ID, &current.OwnerID, &current.Title, &current.Description, &current.Visibility, &current.CreatedAt, &current.UpdatedAt, &publicInstance, &coursesEnabled); err != nil || current.OwnerID != uid {
 			writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		if coursesEnabled != 1 {
+			writeError(w, http.StatusNotFound, "courses_disabled")
 			return
 		}
 		if input.Title != nil {
@@ -230,15 +259,33 @@ func (h apiHandler) courseItem(w http.ResponseWriter, r *http.Request, id string
 		if input.Visibility != nil {
 			current.Visibility = *input.Visibility
 		}
-		if !validCourseFields(current.Title, current.Description, current.Visibility) || (current.Visibility == "public" && !h.instancePublic()) {
+		if !validCourseFields(current.Title, current.Description, current.Visibility) || (current.Visibility == "public" && publicInstance != 1) {
 			writeError(w, http.StatusBadRequest, "invalid_course")
 			return
 		}
-		if _, err := h.db.Exec(`UPDATE courses SET title=?,description=?,visibility=?,updated_at=? WHERE id=? AND owner_id=?`, current.Title, current.Description, current.Visibility, timestamp(), id, uid); err != nil {
+		if current.Visibility == "public" {
+			if profileErr := requireCompletedPublisherProfile(r.Context(), tx, uid); profileErr != nil {
+				if !writePublisherProfileError(w, profileErr) {
+					writeError(w, http.StatusInternalServerError, "storage_error")
+				}
+				return
+			}
+		}
+		current.UpdatedAt = timestamp()
+		if _, err := tx.ExecContext(r.Context(), `UPDATE courses SET title=?,description=?,visibility=?,updated_at=? WHERE id=? AND owner_id=?`, current.Title, current.Description, current.Visibility, current.UpdatedAt, id, uid); err != nil {
 			writeError(w, http.StatusInternalServerError, "storage_error")
 			return
 		}
-		h.readCourse(w, requestForUser(http.MethodGet, "/api/courses/"+id, uid), id)
+		item, err := readCourseDetail(r.Context(), tx, uid, id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
 	case http.MethodDelete:
 		result, err := h.db.Exec(`DELETE FROM courses WHERE id=? AND owner_id=?`, id, authenticatedUser(r))
 		if err != nil {
@@ -319,12 +366,46 @@ func (h apiHandler) courseLessons(w http.ResponseWriter, r *http.Request, course
 	}
 	input.Title = strings.TrimSpace(input.Title)
 	input.Content = strings.TrimSpace(input.Content)
-	if !validLessonFields(input.Title, input.Content, input.Position) || (input.RecipeID != "" && !h.canReadRecipe(r.Context(), input.RecipeID, authenticatedUser(r))) {
+	if !validLessonFields(input.Title, input.Content, input.Position) {
+		writeError(w, http.StatusBadRequest, "invalid_course_lesson")
+		return
+	}
+	uid := authenticatedUser(r)
+	tx, err := h.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	defer tx.Rollback()
+	var ownerID, courseVisibility string
+	var publicInstance, coursesEnabled int
+	if err := tx.QueryRowContext(r.Context(), `SELECT c.owner_id,c.visibility,s.public_instance,s.courses_enabled FROM courses c JOIN instance_settings s ON s.id=1 WHERE c.id=?`, courseID).Scan(&ownerID, &courseVisibility, &publicInstance, &coursesEnabled); err != nil || ownerID != uid {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if coursesEnabled != 1 {
+		writeError(w, http.StatusNotFound, "courses_disabled")
+		return
+	}
+	publiclyReadable := courseVisibility == "public" && publicInstance == 1
+	if publiclyReadable {
+		if profileErr := requireCompletedPublisherProfile(r.Context(), tx, uid); profileErr != nil {
+			if !writePublisherProfileError(w, profileErr) {
+				writeError(w, http.StatusInternalServerError, "storage_error")
+			}
+			return
+		}
+	}
+	if input.RecipeID != "" && !canReadRecipeWithQueryer(r.Context(), tx, input.RecipeID, uid) {
 		writeError(w, http.StatusBadRequest, "invalid_course_lesson")
 		return
 	}
 	id, now := newID(), timestamp()
-	if _, err := h.db.Exec(`INSERT INTO course_lessons(id,course_id,title,content,recipe_id,position,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, id, courseID, input.Title, input.Content, nullableString(input.RecipeID), input.Position, now, now); err != nil {
+	if _, err := tx.ExecContext(r.Context(), `INSERT INTO course_lessons(id,course_id,title,content,recipe_id,position,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, id, courseID, input.Title, input.Content, nullableString(input.RecipeID), input.Position, now, now); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
@@ -396,8 +477,24 @@ func (h apiHandler) courseLessonItem(w http.ResponseWriter, r *http.Request, cou
 	if !decodeJSON(w, r, &input) {
 		return
 	}
+	tx, err := h.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	defer tx.Rollback()
+	var ownerID, courseVisibility string
+	var publicInstance, coursesEnabled int
+	if err := tx.QueryRowContext(r.Context(), `SELECT c.owner_id,c.visibility,s.public_instance,s.courses_enabled FROM courses c JOIN instance_settings s ON s.id=1 WHERE c.id=?`, courseID).Scan(&ownerID, &courseVisibility, &publicInstance, &coursesEnabled); err != nil || ownerID != uid {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if coursesEnabled != 1 {
+		writeError(w, http.StatusNotFound, "courses_disabled")
+		return
+	}
 	var item courseLesson
-	if err := h.db.QueryRow(`SELECT id,course_id,title,content,COALESCE(recipe_id,''),position,created_at,updated_at FROM course_lessons WHERE id=? AND course_id=?`, lessonID, courseID).Scan(&item.ID, &item.CourseID, &item.Title, &item.Content, &item.RecipeID, &item.Position, &item.CreatedAt, &item.UpdatedAt); err != nil {
+	if err := tx.QueryRowContext(r.Context(), `SELECT id,course_id,title,content,COALESCE(recipe_id,''),position,created_at,updated_at FROM course_lessons WHERE id=? AND course_id=?`, lessonID, courseID).Scan(&item.ID, &item.CourseID, &item.Title, &item.Content, &item.RecipeID, &item.Position, &item.CreatedAt, &item.UpdatedAt); err != nil {
 		writeError(w, http.StatusNotFound, "not_found")
 		return
 	}
@@ -413,12 +510,28 @@ func (h apiHandler) courseLessonItem(w http.ResponseWriter, r *http.Request, cou
 	if input.Position != nil {
 		item.Position = *input.Position
 	}
-	if !validLessonFields(item.Title, item.Content, item.Position) || (item.RecipeID != "" && !h.canReadRecipe(r.Context(), item.RecipeID, uid)) {
+	if !validLessonFields(item.Title, item.Content, item.Position) {
+		writeError(w, http.StatusBadRequest, "invalid_course_lesson")
+		return
+	}
+	if courseVisibility == "public" && publicInstance == 1 {
+		if profileErr := requireCompletedPublisherProfile(r.Context(), tx, uid); profileErr != nil {
+			if !writePublisherProfileError(w, profileErr) {
+				writeError(w, http.StatusInternalServerError, "storage_error")
+			}
+			return
+		}
+	}
+	if item.RecipeID != "" && !canReadRecipeWithQueryer(r.Context(), tx, item.RecipeID, uid) {
 		writeError(w, http.StatusBadRequest, "invalid_course_lesson")
 		return
 	}
 	item.UpdatedAt = timestamp()
-	if _, err := h.db.Exec(`UPDATE course_lessons SET title=?,content=?,recipe_id=?,position=?,updated_at=? WHERE id=? AND course_id=?`, item.Title, item.Content, nullableString(item.RecipeID), item.Position, item.UpdatedAt, lessonID, courseID); err != nil {
+	if _, err := tx.ExecContext(r.Context(), `UPDATE course_lessons SET title=?,content=?,recipe_id=?,position=?,updated_at=? WHERE id=? AND course_id=?`, item.Title, item.Content, nullableString(item.RecipeID), item.Position, item.UpdatedAt, lessonID, courseID); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}
@@ -442,19 +555,26 @@ func (h apiHandler) ownsCourse(courseID, uid string) bool {
 }
 
 func (h apiHandler) canReadRecipe(ctx context.Context, recipeID, uid string) bool {
+	return canReadRecipeWithQueryer(ctx, h.db, recipeID, uid)
+}
+
+func canReadRecipeWithQueryer(ctx context.Context, queryer contentQueryer, recipeID, uid string) bool {
 	var owner string
 	var itemVisibility visibility
 	var public int
-	if err := h.db.QueryRow(`SELECT r.owner_id,r.visibility,s.public_instance FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.id=? AND r.deleted_at IS NULL`, recipeID).Scan(&owner, &itemVisibility, &public); err != nil {
+	if err := queryer.QueryRowContext(ctx, `SELECT r.owner_id,r.visibility,s.public_instance FROM recipes r JOIN instance_settings s ON s.id=1 WHERE r.id=? AND r.deleted_at IS NULL`, recipeID).Scan(&owner, &itemVisibility, &public); err != nil {
 		return false
 	}
-	member := recipeMemberRole(h.db, recipeID, uid)
+	member, err := recipeMemberRoleContext(ctx, queryer, recipeID, uid)
+	if err != nil {
+		return false
+	}
 	if !canReadResource(uid, access{instancePublic: public == 1, visibility: itemVisibility, ownerID: owner, memberRole: member}) {
 		return false
 	}
 	if hasLocalRecipeRead(uid, owner, member) {
 		return true
 	}
-	facts, err := readRecipePublicReadFacts(ctx, h.db, recipeID)
+	facts, err := readRecipePublicReadFacts(ctx, queryer, recipeID)
 	return err == nil && facts.AnonymousEligible()
 }

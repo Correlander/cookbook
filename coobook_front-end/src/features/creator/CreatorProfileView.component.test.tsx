@@ -227,7 +227,7 @@ it("does not request a profile when the route has no id", async () => {
     await screen.findByRole("heading", { name: "Creator profile unavailable" }),
   ).toBeTruthy();
   expect(fetchMock).toHaveBeenCalledTimes(1);
-  expect(fetchMock).toHaveBeenCalledWith("/api/public/config");
+  expect(fetchMock).toHaveBeenCalledWith("/api/public/config", { cache: "no-store" });
   expect(
     fetchMock.mock.calls.some(([url]) => String(url).includes("/courses?")),
   ).toBe(false);

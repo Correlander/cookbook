@@ -12,14 +12,23 @@ afterEach(() => {
 });
 
 it("owns an independent session check and does not request authority after anonymous resolution", async () => {
-  const fetchMock = vi.fn(() => Promise.resolve(response({}, 401)));
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    void input;
+    return Promise.resolve(response({}, 401));
+  });
   vi.stubGlobal("fetch", fetchMock);
 
   render(<InstanceWorkbenchRoot />);
 
   expect(await screen.findByRole("heading", { name: "Sign in to view instance access" })).toBeTruthy();
-  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock.mock.calls.map(([input]) => String(input)).sort()).toEqual([
+    "/api/auth/me",
+    "/api/public/config",
+  ]);
   expect(fetchMock).toHaveBeenCalledWith("/api/auth/me", { cache: "no-store" });
+  expect(fetchMock.mock.calls.some(([input]) =>
+    /\/api\/(?:instance\/authority|instance\/owner-transfers)/.test(String(input)),
+  )).toBe(false);
   expect(screen.queryByText("Welcome back")).toBeNull();
 });
 

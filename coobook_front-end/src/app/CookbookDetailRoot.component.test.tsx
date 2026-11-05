@@ -143,8 +143,15 @@ it("shows the same generic unavailable state for missing IDs and anonymous denia
   vi.stubGlobal("fetch", missingIDFetch);
   render(<CookbookDetailRoot />);
   expect(await screen.findByRole("heading", { name: "Cookbook unavailable" })).toBeTruthy();
-  expect(missingIDFetch).toHaveBeenCalledTimes(1);
+  expect(missingIDFetch.mock.calls.map(([input]) => String(input)).sort()).toEqual([
+    "/api/auth/me",
+    "/api/public/config",
+  ]);
   expect(missingIDFetch).toHaveBeenCalledWith("/api/auth/me", { cache: "no-store" });
+  expect(calls.some((url) => url === "/api/public/config")).toBe(true);
+  expect(missingIDFetch.mock.calls.some(([input]) =>
+    /\/api\/(?:public\/)?cookbooks(?:\/|\?|$)/.test(String(input)),
+  )).toBe(false);
 });
 
 it("does not request cookbook data while session status is unresolved or errored", async () => {
@@ -165,11 +172,12 @@ it("does not request cookbook data while session status is unresolved or errored
 
   render(<CookbookDetailRoot />);
   expect(await screen.findByText("Checking your session…")).toBeTruthy();
-  expect(calls).toEqual(["/api/auth/me"]);
+  expect(calls.slice().sort()).toEqual(["/api/auth/me", "/api/public/config"]);
   await act(async () => {
     session.resolve(jsonResponse({}, 503));
     await session.promise;
   });
   expect(await screen.findByRole("heading", { name: "Could not check your session" })).toBeTruthy();
-  expect(calls).toEqual(["/api/auth/me"]);
+  expect(calls.slice().sort()).toEqual(["/api/auth/me", "/api/public/config"]);
+  expect(calls.some((url) => /\/api\/(?:public\/)?cookbooks(?:\/|\?|$)/.test(url))).toBe(false);
 });

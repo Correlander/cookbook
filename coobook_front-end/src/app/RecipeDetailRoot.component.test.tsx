@@ -272,13 +272,14 @@ it("does not choose an anonymous detail endpoint after a transient session error
   render(<RecipeDetailRoot />);
 
   expect(await screen.findByText("Checking your session…")).toBeTruthy();
-  expect(calls).toEqual(["/api/auth/me"]);
+  expect(calls.slice().sort()).toEqual(["/api/auth/me", "/api/public/config"]);
   await act(async () => {
     initialSession.resolve(jsonResponse({}, 500));
     await initialSession.promise;
   });
   expect(await screen.findByRole("heading", { name: "Could not check your session" })).toBeTruthy();
-  expect(calls).toEqual(["/api/auth/me"]);
+  expect(calls.slice().sort()).toEqual(["/api/auth/me", "/api/public/config"]);
+  expect(calls.some((url) => /\/api\/(?:public\/)?recipes\//.test(url))).toBe(false);
   expect(screen.queryByRole("heading", { name: "Recipe unavailable" })).toBeNull();
 
   fireEvent.click(screen.getByRole("button", { name: "Retry session check" }));

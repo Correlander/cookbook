@@ -61,9 +61,13 @@ it("does not request private profile data for an anonymous page visit", async ()
   expect(
     await screen.findByRole("heading", { name: "Sign in to continue" }),
   ).toBeTruthy();
-  expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+  expect(fetchMock.mock.calls.map(([input]) => String(input)).sort()).toEqual([
     "/api/auth/me",
+    "/api/public/config",
   ]);
+  expect(fetchMock.mock.calls.some(([input]) =>
+    /\/api\/(?:account\/creator-profile|creator-profiles)(?:\/|\?|$)/.test(String(input)),
+  )).toBe(false);
 });
 
 it("loads the linked profile under one page heading", async () => {

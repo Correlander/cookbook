@@ -51,7 +51,7 @@ it("waits for confirmed anonymity before loading and searching public cookbooks"
 
   render(<CookbooksRoot />);
   expect(await screen.findByText("Checking your session…")).toBeTruthy();
-  expect(calls).toEqual(["/api/auth/me"]);
+  expect(calls.slice().sort()).toEqual(["/api/auth/me", "/api/public/config"]);
   await act(async () => {
     session.resolve(jsonResponse({}, 401));
     await session.promise;
@@ -59,6 +59,7 @@ it("waits for confirmed anonymity before loading and searching public cookbooks"
   expect(await screen.findByRole("heading", { name: "Browse public cookbooks" })).toBeTruthy();
   expect(screen.getByText("3 public recipes")).toBeTruthy();
   expect(calls).toContain("/api/public/cookbooks?limit=24&offset=0&q=summer");
+  expect(calls.filter((url) => url === "/api/public/config")).toHaveLength(1);
   expect(calls.some((url) => url.startsWith("/api/cookbooks"))).toBe(false);
   expect(screen.getByRole("link", { name: "Open cookbook" }).getAttribute("href"))
     .toBe("/cookbook?id=public-1&return_q=summer");
@@ -111,20 +112,21 @@ it("keeps cookbook reads stopped after a session error and retries the session f
 
   render(<CookbooksRoot />);
   expect(await screen.findByText("Checking your session…")).toBeTruthy();
-  expect(calls).toEqual(["/api/auth/me"]);
+  expect(calls.slice().sort()).toEqual(["/api/auth/me", "/api/public/config"]);
   await act(async () => {
     firstSession.resolve(jsonResponse({}, 503));
     await firstSession.promise;
   });
   expect(await screen.findByRole("heading", { name: "Could not check your session" })).toBeTruthy();
-  expect(calls).toEqual(["/api/auth/me"]);
+  expect(calls.slice().sort()).toEqual(["/api/auth/me", "/api/public/config"]);
   fireEvent.click(screen.getByRole("button", { name: "Retry session check" }));
   expect(await screen.findByRole("heading", { name: "Browse public cookbooks" })).toBeTruthy();
   await waitFor(() => expect(calls).toContain("/api/public/cookbooks?limit=24&offset=0"));
-  expect(calls).toEqual([
+  expect(calls.slice().sort()).toEqual([
     "/api/auth/me",
+    "/api/public/config",
     "/api/auth/me",
     "/api/public/cookbooks?limit=24&offset=0",
-  ]);
+  ].sort());
   expect(calls.some((url) => url.startsWith("/api/cookbooks?"))).toBe(false);
 });

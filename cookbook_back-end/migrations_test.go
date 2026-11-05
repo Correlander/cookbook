@@ -68,8 +68,8 @@ func TestFreshDatabaseRecordsAllRegisteredMigrations(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if latestSchemaVersion() != 16 {
-		t.Fatalf("registered latest migration=%d, want v16 anonymous homepage preset", latestSchemaVersion())
+	if latestSchemaVersion() != 17 {
+		t.Fatalf("registered latest migration=%d, want v17 site branding", latestSchemaVersion())
 	}
 	if got := migrationVersion(t, db); got != latestSchemaVersion() {
 		t.Fatalf("migration version=%d, want latest %d", got, latestSchemaVersion())
@@ -85,7 +85,7 @@ func TestFreshDatabaseRecordsAllRegisteredMigrations(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != latestSchemaVersion() {
 		t.Fatalf("migration ledger rows=%d err=%v, want latest %d", count, err, latestSchemaVersion())
 	}
-	for version, name := range map[int]string{1: "legacy-baseline", 2: "instance-owner-authority", 3: "recipe-publication-policy", 4: "offline-passkey-enrollment", 5: "person-actor-identity", 6: "personal-library-bookmarks", 7: "creator-profile-household-foundation", 8: "personal-library-cookbook-bookmarks", 9: "library-remote-search-projection", 10: "personal-library-course-bookmarks", 11: "federation-resource-limits", 12: "federation-retention-receipts", 13: "private-remote-recipe-snapshots", 14: "course-creator-attribution", 15: "private-meal-menu-schema", 16: "anonymous-home-presentation-preset"} {
+	for version, name := range map[int]string{1: "legacy-baseline", 2: "instance-owner-authority", 3: "recipe-publication-policy", 4: "offline-passkey-enrollment", 5: "person-actor-identity", 6: "personal-library-bookmarks", 7: "creator-profile-household-foundation", 8: "personal-library-cookbook-bookmarks", 9: "library-remote-search-projection", 10: "personal-library-course-bookmarks", 11: "federation-resource-limits", 12: "federation-retention-receipts", 13: "private-remote-recipe-snapshots", 14: "course-creator-attribution", 15: "private-meal-menu-schema", 16: "anonymous-home-presentation-preset", 17: "minimal-site-branding"} {
 		var got string
 		if err := db.QueryRow(`SELECT name FROM schema_migrations WHERE version=?`, version).Scan(&got); err != nil || got != name {
 			t.Fatalf("migration %d name=%q err=%v, want %q", version, got, err, name)

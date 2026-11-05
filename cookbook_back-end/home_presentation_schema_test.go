@@ -13,8 +13,8 @@ func TestAnonymousHomePresetFreshMigrationDefaultAndConstraint(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if got := migrationVersion(t, db); got != 16 {
-		t.Fatalf("fresh schema version=%d, want v16", got)
+	if got := migrationVersion(t, db); got != 17 {
+		t.Fatalf("fresh schema version=%d, want v17", got)
 	}
 	var preset string
 	if err := db.QueryRow(`SELECT anonymous_home_preset FROM instance_settings WHERE id=1`).Scan(&preset); err != nil || preset != defaultAnonymousHomePreset {
@@ -96,15 +96,15 @@ func TestAnonymousHomePresetUpgradesV15AndSurvivesRestart(t *testing.T) {
 	if err := runSchemaMigrations(ctx, db, migrations); err != nil {
 		t.Fatalf("upgrade v15 database: %v", err)
 	}
-	if got := migrationVersion(t, db); got != 16 {
-		t.Fatalf("upgraded schema version=%d, want v16", got)
+	if got := migrationVersion(t, db); got != 17 {
+		t.Fatalf("upgraded schema version=%d, want v17", got)
 	}
 	assertPreservedState(db, defaultAnonymousHomePreset)
 	if _, err := db.Exec(`UPDATE instance_settings SET anonymous_home_preset=? WHERE id=1`, anonymousHomePresetDiscoveryFirst); err != nil {
 		t.Fatal(err)
 	}
 	if err := runSchemaMigrations(ctx, db, migrations); err != nil {
-		t.Fatalf("idempotent v16 restart: %v", err)
+		t.Fatalf("idempotent v17 restart: %v", err)
 	}
 	assertPreservedState(db, anonymousHomePresetDiscoveryFirst)
 	if err := db.Close(); err != nil {
@@ -116,8 +116,8 @@ func TestAnonymousHomePresetUpgradesV15AndSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	if got := migrationVersion(t, reopened); got != 16 {
-		t.Fatalf("reopened schema version=%d, want v16", got)
+	if got := migrationVersion(t, reopened); got != 17 {
+		t.Fatalf("reopened schema version=%d, want v17", got)
 	}
 	assertPreservedState(reopened, anonymousHomePresetDiscoveryFirst)
 }

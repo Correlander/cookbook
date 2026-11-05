@@ -505,8 +505,8 @@ func TestBackupActorFixture(t *testing.T) {
                 source_db.close()
             if source_schema_version is None or source_schema_version[0] is None:
                 self.fail("generated source database has no migration version")
-            if source_schema_version[0] != 16:
-                self.fail(f"generated source database schema version is {source_schema_version[0]}, expected 16")
+            if source_schema_version[0] != 17:
+                self.fail(f"generated source database schema version is {source_schema_version[0]}, expected 17")
 
             # Seed a checkpointed baseline, then prove a later committed menu edit is in WAL.
             connection = sqlite3.connect(database)
@@ -514,10 +514,13 @@ func TestBackupActorFixture(t *testing.T) {
             connection.execute("PRAGMA wal_autocheckpoint=0")
             connection.execute("PRAGMA foreign_keys=ON")
             home_preset = "discovery_first"
+            cold_branding = ("Our Kitchen", "garden")
+            hot_branding = ("WAL Kitchen", "plum")
             connection.execute(
                 "UPDATE instance_settings SET anonymous_home_preset=? WHERE id=1",
                 (home_preset,),
             )
+            connection.execute("UPDATE instance_settings SET site_name=?,palette=? WHERE id=1", cold_branding)
             connection.execute("UPDATE person_actor_ids SET state='retired',retired_at='proof' WHERE actor_id=(SELECT actor_id FROM person_actors WHERE user_id='fixture-retired')")
             profile_id = "a" * 32
             local_recipe_id = "7" * 32
@@ -640,12 +643,14 @@ func TestBackupActorFixture(t *testing.T) {
                     cold_source.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='proof_marker'").fetchone(),
                     (0,),
                 )
+                self.assertEqual(cold_source.execute("SELECT site_name,palette FROM instance_settings WHERE id=1").fetchone(), cold_branding)
 
             key = b"-----BEGIN PRIVATE KEY-----\n" + base64.b64encode(bytes.fromhex("302e020100300506032b657004220420" + "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")) + b"\n-----END PRIVATE KEY-----\n"
             write_sqlite_backup_archive(cold_database, cold_archive, key)
 
             connection.execute("CREATE TABLE proof_marker(value TEXT NOT NULL)")
             connection.execute("INSERT INTO proof_marker VALUES('hot-wal-restore-proof')")
+            connection.execute("UPDATE instance_settings SET site_name=?,palette=? WHERE id=1", hot_branding)
             connection.execute(
                 "UPDATE meal_menus SET version=4,updated_at='menu-updated-hot' WHERE id=?",
                 (local_menu_id,),
@@ -685,6 +690,7 @@ func TestBackupActorFixture(t *testing.T) {
                     hot_source.execute("SELECT value FROM proof_marker").fetchone(),
                     ("hot-wal-restore-proof",),
                 )
+                self.assertEqual(hot_source.execute("SELECT site_name,palette FROM instance_settings WHERE id=1").fetchone(), hot_branding)
             write_sqlite_backup_archive(hot_database, hot_archive, key)
             connection.close()
 
@@ -718,6 +724,7 @@ volumes:
                     cold_restored.execute("SELECT anonymous_home_preset FROM instance_settings WHERE id=1").fetchone(),
                     (home_preset,),
                 )
+                self.assertEqual(cold_restored.execute("SELECT site_name,palette FROM instance_settings WHERE id=1").fetchone(), cold_branding)
                 self.assertEqual(cold_restored.execute("PRAGMA integrity_check").fetchone(), ("ok",))
                 self.assertEqual(cold_restored.execute("PRAGMA foreign_key_check").fetchall(), [])
                 self.assertEqual(
@@ -782,6 +789,7 @@ volumes:
                     restored_db.execute("SELECT anonymous_home_preset FROM instance_settings WHERE id=1").fetchone(),
                     (home_preset,),
                 )
+                self.assertEqual(restored_db.execute("SELECT site_name,palette FROM instance_settings WHERE id=1").fetchone(), hot_branding)
                 self.assertEqual(
                     restored_db.execute(
                         "SELECT COUNT(*) FROM pragma_foreign_key_list('meal_menu_entries') WHERE \"table\"='recipes'"

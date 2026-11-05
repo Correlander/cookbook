@@ -9,7 +9,7 @@ import (
 
 func TestPublicConfigReturnsOnlySafeFormConfiguration(t *testing.T) {
 	db := testDatabase(t)
-	if _, err := db.Exec(`UPDATE instance_settings SET registration_policy='open',public_instance=1,courses_enabled=1,anonymous_home_preset='discovery_first' WHERE id=1`); err != nil {
+	if _, err := db.Exec(`UPDATE instance_settings SET registration_policy='open',public_instance=1,courses_enabled=1,anonymous_home_preset='discovery_first',site_name='Test Kitchen',palette='plum' WHERE id=1`); err != nil {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
@@ -21,20 +21,24 @@ func TestPublicConfigReturnsOnlySafeFormConfiguration(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body) != 7 {
-		t.Fatalf("public config keys=%v, want exactly the safe seven fields", body)
+	if len(body) != 8 {
+		t.Fatalf("public config keys=%v, want exactly the safe eight fields", body)
 	}
 	var got publicConfigResponse
 	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if !got.AuthMethods.EmailLink || !got.AuthMethods.Passkey || got.RegistrationPolicy != "open" || !got.PublicInstance || !got.CoursesEnabled || !got.CourseCreatorAttribution || !got.MenuAPI || got.AnonymousHomePreset != anonymousHomePresetDiscoveryFirst {
+	if !got.AuthMethods.EmailLink || !got.AuthMethods.Passkey || got.RegistrationPolicy != "open" || !got.PublicInstance || !got.CoursesEnabled || !got.CourseCreatorAttribution || !got.MenuAPI || got.AnonymousHomePreset != anonymousHomePresetDiscoveryFirst || got.Branding.SiteName != "Test Kitchen" || got.Branding.Palette != "plum" {
 		t.Fatalf("unexpected public config: %+v", got)
 	}
 	for _, forbidden := range []string{"smtp", "federation", "retention", "audit", "owner", "email", "key", "secret"} {
 		if _, exists := body[forbidden]; exists {
 			t.Fatalf("public config leaked field %q", forbidden)
 		}
+	}
+	var branding map[string]json.RawMessage
+	if err := json.Unmarshal(body["branding"], &branding); err != nil || len(branding) != 2 {
+		t.Fatalf("public branding projection=%v err=%v", branding, err)
 	}
 }
 

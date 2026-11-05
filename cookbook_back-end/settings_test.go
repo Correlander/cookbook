@@ -49,7 +49,7 @@ func TestAnonymousHomePresetSettingsUseOwnerAdminCapabilityAndRejectInvalidValue
 	if publicConfig.Code != http.StatusOK || publicConfig.Header().Get("Cache-Control") != "no-store" || json.Unmarshal(publicConfig.Body.Bytes(), &public) != nil || json.Unmarshal(publicConfig.Body.Bytes(), &projected) != nil {
 		t.Fatalf("public config status=%d cache=%q body=%s", publicConfig.Code, publicConfig.Header().Get("Cache-Control"), publicConfig.Body)
 	}
-	if len(public) != 7 || projected.AnonymousHomePreset != anonymousHomePresetDiscoveryFirst || !projected.MenuAPI || !projected.CourseCreatorAttribution {
+	if len(public) != 8 || projected.AnonymousHomePreset != anonymousHomePresetDiscoveryFirst || !projected.MenuAPI || !projected.CourseCreatorAttribution || projected.Branding.SiteName != defaultSiteName || projected.Branding.Palette != defaultPalette {
 		t.Fatalf("public config preset/capabilities or safe field set are wrong: %+v body=%s", projected, publicConfig.Body)
 	}
 	for _, forbidden := range []string{"federation_enabled", "federation_origin", "private_snapshot_storage_limit_bytes", "public_recipes", "public_cookbooks", "public_courses"} {
@@ -95,6 +95,106 @@ func TestAnonymousHomePresetSettingsUseOwnerAdminCapabilityAndRejectInvalidValue
 	}
 	if err := db.QueryRow(`SELECT anonymous_home_preset FROM instance_settings WHERE id=1`).Scan(&settings.AnonymousHomePreset); err != nil || settings.AnonymousHomePreset != anonymousHomePresetLibraryFirst {
 		t.Fatalf("denied preset update changed value to %q: err=%v", settings.AnonymousHomePreset, err)
+	}
+}
+
+func TestSiteBrandingSettingsValidationCapabilitiesAndIsolation(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,is_admin,created_at) VALUES
+		('owner','owner@example.test','Owner',0,'now'),('admin','admin@example.test','Admin',1,'now'),('ordinary','ordinary@example.test','Ordinary',0,'now')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClaimInstanceOwner(context.Background(), db, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE instance_settings SET registration_policy_configured=0`); err != nil {
+		t.Fatal(err)
+	}
+	cookies := make(map[string]*http.Cookie)
+	for _, accountID := range []string{"owner", "admin", "ordinary"} {
+		token, _, err := issueSession(db, accountID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cookies[accountID] = &http.Cookie{Name: sessionCookie, Value: token}
+	}
+	handler := handlerWithAuth(db, testAuth(db))
+	var settings instanceSettings
+	read := callAPI(handler, http.MethodGet, "/api/admin/settings", nil, cookies["owner"])
+	if read.Code != http.StatusOK || json.Unmarshal(read.Body.Bytes(), &settings) != nil || settings.SiteName != defaultSiteName || settings.Palette != defaultPalette {
+		t.Fatalf("default settings status=%d settings=%+v body=%s", read.Code, settings, read.Body)
+	}
+	var outboxBefore int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_outbox`).Scan(&outboxBefore); err != nil {
+		t.Fatal(err)
+	}
+	valid := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]any{"site_name": "  Crème 🍲 Kitchen  ", "palette": "plum"}, cookies["owner"])
+	if valid.Code != http.StatusOK || json.Unmarshal(valid.Body.Bytes(), &settings) != nil || settings.SiteName != "Crème 🍲 Kitchen" || settings.Palette != "plum" {
+		t.Fatalf("valid branding update status=%d settings=%+v body=%s", valid.Code, settings, valid.Body)
+	}
+	nameOnly := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]any{"site_name": "Shelf"}, cookies["owner"])
+	if nameOnly.Code != http.StatusOK || json.Unmarshal(nameOnly.Body.Bytes(), &settings) != nil || settings.SiteName != "Shelf" || settings.Palette != "plum" {
+		t.Fatalf("site-name-only update status=%d settings=%+v body=%s", nameOnly.Code, settings, nameOnly.Body)
+	}
+	paletteOnly := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]any{"palette": "garden"}, cookies["owner"])
+	if paletteOnly.Code != http.StatusOK || json.Unmarshal(paletteOnly.Body.Bytes(), &settings) != nil || settings.SiteName != "Shelf" || settings.Palette != "garden" {
+		t.Fatalf("palette-only update status=%d settings=%+v body=%s", paletteOnly.Code, settings, paletteOnly.Body)
+	}
+	reset := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]any{"site_name": defaultSiteName, "palette": defaultPalette}, cookies["owner"])
+	if reset.Code != http.StatusOK || json.Unmarshal(reset.Body.Bytes(), &settings) != nil || settings.SiteName != defaultSiteName || settings.Palette != defaultPalette {
+		t.Fatalf("explicit branding reset status=%d settings=%+v body=%s", reset.Code, settings, reset.Body)
+	}
+	var registrationConfigured int
+	if err := db.QueryRow(`SELECT registration_policy_configured FROM instance_settings WHERE id=1`).Scan(&registrationConfigured); err != nil || registrationConfigured != 0 {
+		t.Fatalf("branding-only update changed registration configuration: %d err=%v", registrationConfigured, err)
+	}
+	var outboxAfter int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM federation_outbox`).Scan(&outboxAfter); err != nil || outboxAfter != outboxBefore {
+		t.Fatalf("branding-only update changed federation outbox count from %d to %d: %v", outboxBefore, outboxAfter, err)
+	}
+	if _, err := db.Exec(`UPDATE instance_settings SET site_name='Baseline',palette='garden' WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	invalidCases := []struct {
+		field string
+		value any
+		code  string
+	}{
+		{"site_name", nil, "invalid_site_name"}, {"site_name", "  ", "invalid_site_name"},
+		{"site_name", strings.Repeat("é", 49), "invalid_site_name"}, {"site_name", "bad\nname", "invalid_site_name"},
+		{"site_name", 12, "invalid_site_name"}, {"palette", nil, "invalid_palette"},
+		{"palette", "violet", "invalid_palette"}, {"palette", false, "invalid_palette"},
+	}
+	for _, test := range invalidCases {
+		var response *httptest.ResponseRecorder
+		if test.field == "site_name" {
+			response = callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]any{test.field: test.value, "palette": "plum"}, cookies["owner"])
+		} else {
+			response = callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]any{"site_name": "Changed", test.field: test.value}, cookies["owner"])
+		}
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), test.code) {
+			t.Fatalf("invalid %s=%#v status=%d body=%s", test.field, test.value, response.Code, response.Body)
+		}
+		if err := db.QueryRow(`SELECT site_name,palette FROM instance_settings WHERE id=1`).Scan(&settings.SiteName, &settings.Palette); err != nil || settings.SiteName != "Baseline" || settings.Palette != "garden" {
+			t.Fatalf("invalid %s patch partially changed branding=(%q,%q) err=%v", test.field, settings.SiteName, settings.Palette, err)
+		}
+	}
+	boundary := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]any{"site_name": strings.Repeat("🥣", 48)}, cookies["admin"])
+	if boundary.Code != http.StatusOK || json.Unmarshal(boundary.Body.Bytes(), &settings) != nil || settings.SiteName != strings.Repeat("🥣", 48) {
+		t.Fatalf("48-rune name status=%d body=%s", boundary.Code, boundary.Body)
+	}
+	for _, actor := range []struct {
+		name   string
+		cookie *http.Cookie
+		status int
+	}{{name: "ordinary", cookie: cookies["ordinary"], status: http.StatusForbidden}, {name: "anonymous", status: http.StatusUnauthorized}} {
+		response := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]any{"site_name": "Denied", "palette": "garden"}, actor.cookie)
+		if response.Code != actor.status {
+			t.Fatalf("%s branding update status=%d want=%d body=%s", actor.name, response.Code, actor.status, response.Body)
+		}
+	}
+	if err := db.QueryRow(`SELECT site_name,palette FROM instance_settings WHERE id=1`).Scan(&settings.SiteName, &settings.Palette); err != nil || settings.SiteName != strings.Repeat("🥣", 48) || settings.Palette != "garden" {
+		t.Fatalf("denied branding update changed values=(%q,%q) err=%v", settings.SiteName, settings.Palette, err)
 	}
 }
 

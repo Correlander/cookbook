@@ -18,8 +18,8 @@ func TestMealMenuMigrationFromV14PreservesAttributionsAndConstraints(t *testing.
 		t.Fatal(err)
 	}
 	migrations := registeredSchemaMigrations()
-	if len(migrations) != 16 || migrations[14].version != 15 || migrations[14].name != "private-meal-menu-schema" || migrations[15].version != 16 || migrations[15].name != "anonymous-home-presentation-preset" {
-		t.Fatalf("registered migration count=%d latest=%+v, want historical v15 menu plus v16 homepage preset", len(migrations), migrations[len(migrations)-1])
+	if len(migrations) != 17 || migrations[14].version != 15 || migrations[14].name != "private-meal-menu-schema" || migrations[15].version != 16 || migrations[15].name != "anonymous-home-presentation-preset" || migrations[16].version != 17 || migrations[16].name != "minimal-site-branding" {
+		t.Fatalf("registered migration count=%d latest=%+v, want v15 menu, v16 homepage preset, and v17 branding", len(migrations), migrations[len(migrations)-1])
 	}
 	if err := runSchemaMigrations(ctx, db, migrations[:14]); err != nil {
 		t.Fatalf("create genuine v14 database: %v", err)

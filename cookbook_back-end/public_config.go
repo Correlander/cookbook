@@ -16,6 +16,11 @@ type publicAuthMethods struct {
 	Passkey   bool `json:"passkey"`
 }
 
+type publicBranding struct {
+	SiteName string `json:"site_name"`
+	Palette  string `json:"palette"`
+}
+
 type publicConfigResponse struct {
 	AuthMethods              publicAuthMethods `json:"auth_methods"`
 	RegistrationPolicy       string            `json:"registration_policy"`
@@ -24,6 +29,7 @@ type publicConfigResponse struct {
 	CourseCreatorAttribution bool              `json:"course_creator_attribution,omitempty"`
 	MenuAPI                  bool              `json:"menu_api"`
 	AnonymousHomePreset      string            `json:"anonymous_home_preset"`
+	Branding                 publicBranding    `json:"branding"`
 }
 
 func publicConfigFor(db *sql.DB, auth authHandler) http.Handler {
@@ -47,7 +53,7 @@ func (h publicConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Passkey:   h.passkeyEnabled,
 		},
 	}
-	if err := h.db.QueryRow(`SELECT registration_policy,public_instance,courses_enabled,anonymous_home_preset FROM instance_settings WHERE id=1`).Scan(&response.RegistrationPolicy, &public, &courses, &response.AnonymousHomePreset); err != nil {
+	if err := h.db.QueryRow(`SELECT registration_policy,public_instance,courses_enabled,anonymous_home_preset,site_name,palette FROM instance_settings WHERE id=1`).Scan(&response.RegistrationPolicy, &public, &courses, &response.AnonymousHomePreset, &response.Branding.SiteName, &response.Branding.Palette); err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
 	}

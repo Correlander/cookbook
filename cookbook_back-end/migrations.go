@@ -114,6 +114,11 @@ func registeredSchemaMigrations() []schemaMigration {
 		name:     "anonymous-home-presentation-preset",
 		checksum: migrationChecksum("anonymous-home-presentation-preset", anonymousHomePresetSchemaDDL),
 		apply:    applyAnonymousHomePresetMigration,
+	}, {
+		version:  17,
+		name:     "minimal-site-branding",
+		checksum: migrationChecksum("minimal-site-branding", siteBrandingSchemaDDL),
+		apply:    applySiteBrandingMigration,
 	}}
 }
 

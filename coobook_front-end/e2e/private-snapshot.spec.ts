@@ -300,6 +300,8 @@ test("private snapshots use signed captures, stay actor-bound, and import only b
     await signIn(referenceImporter, "snapshot-reference-import@example.test", "Reference Importer");
     const referenceSummary = await importArchive(referenceImporter, archive, false);
     expect(referenceSummary).toContain("0 private saved copies preserved as unverified");
+    expect(referenceSummary).toContain("0 private menus imported");
+    expect(referenceSummary).toContain("no menu recipe links were omitted");
     await referenceImporter.page.goto("/library");
     await saveReference(referenceImporter.page, ids.reference);
     await referenceImporter.page.goto("/library");
@@ -314,6 +316,8 @@ test("private snapshots use signed captures, stay actor-bound, and import only b
     await signIn(copyImporter, "snapshot-copy-import@example.test", "Copy Importer");
     const copySummary = await importArchive(copyImporter, archive, true);
     expect(copySummary).toContain("1 private saved copy preserved as unverified");
+    expect(copySummary).toContain("0 private menus imported");
+    expect(copySummary).toContain("no menu recipe links were omitted");
     await copyImporter.page.goto("/library");
     const importedLink = copyImporter.page.getByRole("link", { name: `Open ${titles.conditional}` });
     const importedCopyCard = copyImporter.page.getByRole("article").filter({ has: importedLink });

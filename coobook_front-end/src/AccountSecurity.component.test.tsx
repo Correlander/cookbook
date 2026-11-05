@@ -4,7 +4,7 @@ import AccountSecurity from "./AccountSecurity.tsx";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-function setupImportResult(result: Record<string, number>) {
+function setupImportResult(result: unknown) {
   const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>((input) => String(input) === "/api/import"
     ? Promise.resolve(new Response(JSON.stringify(result), { status: 200 }))
     : Promise.resolve(new Response("[]", { status: 200 })));
@@ -27,6 +27,56 @@ it("explains course portability and reports v7 course counts and omitted links",
 it("keeps legacy import summaries valid without v7 counters", async () => {
   const alert = setupImportResult({ recipes: 2, cookbooks: 1, course_bookmarks: 3 });
   await waitFor(() => expect(alert).toHaveBeenCalledWith("Imported 2 recipes and 1 cookbooks as private copies, plus 3 saved course references."));
+});
+
+it("reports v10 menu counts and omitted recipe links", async () => {
+  const alert = setupImportResult({
+    recipes: 2,
+    cookbooks: 1,
+    menus: 3,
+    omitted_menu_recipe_links: 2,
+    snapshot_copies: 1,
+    snapshot_references: 0,
+  });
+  expect(screen.getByText(/Backends that support menu portability also include your owned private menus/)).toBeTruthy();
+  await waitFor(() => expect(alert).toHaveBeenCalledWith(
+    "Imported 2 recipes and 1 cookbooks as private copies, 3 private menus imported; 2 menu recipe links were omitted and need relinking; 1 private saved copy preserved as unverified and 0 saved references imported as references.",
+  ));
+});
+
+it("reports zero v10 omitted menu links without adding counts to legacy responses", async () => {
+  const alert = setupImportResult({ recipes: 0, cookbooks: 0, menus: 0, omitted_menu_recipe_links: 0 });
+  await waitFor(() => expect(alert).toHaveBeenCalledWith(
+    "Imported 0 recipes and 0 cookbooks as private copies, 0 private menus imported; no menu recipe links were omitted.",
+  ));
+});
+
+it.each([
+  ["negative menu count", { menus: -1, omitted_menu_recipe_links: 0 }],
+  ["fractional omitted-link count", { menus: 1, omitted_menu_recipe_links: 0.5 }],
+  ["unsafe menu count", { menus: Number.MAX_SAFE_INTEGER + 1, omitted_menu_recipe_links: 0 }],
+  ["string menu count", { menus: "1", omitted_menu_recipe_links: 0 }],
+])("does not invent a summary for malformed %s", async (_description, menuCounts) => {
+  const alert = setupImportResult({ recipes: 0, cookbooks: 0, ...menuCounts });
+  await waitFor(() => expect(alert).toHaveBeenCalledWith(
+    "Import completed, but its summary could not be read. Check your Library before importing again.",
+  ));
+});
+
+it("does not invite a duplicate import when a successful response cannot be read", async () => {
+  const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>((input) => String(input) === "/api/import"
+    ? Promise.resolve(new Response("not-json", { status: 201 }))
+    : Promise.resolve(new Response("[]", { status: 200 })));
+  vi.stubGlobal("fetch", fetchMock);
+  const alert = vi.fn();
+  vi.stubGlobal("alert", alert);
+  render(<AccountSecurity />);
+  fireEvent.change(screen.getByLabelText("Import a Cookbook export (ZIP or legacy JSON)"), { target: { files: [new File(["archive"], "export.zip")] } });
+
+  await waitFor(() => expect(alert).toHaveBeenCalledWith(
+    "Import completed, but its summary could not be read. Check your Library before importing again.",
+  ));
+  expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/import")).toHaveLength(1);
 });
 
 it("defaults to reference-only and reports v8 snapshot counts without claiming trust", async () => {

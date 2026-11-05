@@ -3,6 +3,45 @@ import { registerPasskey } from "./passkeys.ts";
 import type { BrowserSession, Passkey } from "./apiModels";
 import { errorMessage } from "./apiModels";
 
+interface ImportSummary {
+  recipes: number;
+  cookbooks: number;
+  courses?: number;
+  course_lessons?: number;
+  omitted_course_recipe_links?: number;
+  course_bookmarks?: number;
+  snapshot_copies?: number;
+  snapshot_references?: number;
+  menus?: number;
+  omitted_menu_recipe_links?: number;
+}
+
+function parseImportSummary(value: unknown): ImportSummary | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (!isCount(record.recipes) || !isCount(record.cookbooks)) return null;
+
+  const countFields = [
+    "courses",
+    "course_lessons",
+    "omitted_course_recipe_links",
+    "course_bookmarks",
+    "snapshot_copies",
+    "snapshot_references",
+    "menus",
+    "omitted_menu_recipe_links",
+  ] as const;
+  for (const field of countFields) {
+    if (field in record && !isCount(record[field])) return null;
+  }
+
+  return record as ImportSummary;
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
 async function failureMessage(
   response: Response,
   fallback: string,
@@ -179,9 +218,9 @@ export default function AccountSecurity() {
       ))}
       {!items.length && !error && <p>No passkeys added yet.</p>}
       <div className="account-portability">
-        <h3>Your recipes, cookbooks, and saved references</h3>
+        <h3>Your content and saved references</h3>
         <p>
-          Exports include owned recipes, cookbooks, courses, and lesson text, plus saved reference identities. A lesson recipe link is included only when that recipe is in the same export; other links are omitted and can be relinked after import. Imports create private copies and do not include revision history. Saved course references remain references and are not mapped to copied courses.
+          Exports include owned recipes, cookbooks, courses, and lesson text, plus saved reference identities. Backends that support menu portability also include your owned private menus. Recipe links are included only when their recipes are in the same export; other links are omitted and can be relinked after import. Imports create private copies and do not include revision history. Saved course references remain references and are not mapped to copied courses.
         </p>
         <a className="button button--green" href="/api/export">
           Download export
@@ -254,23 +293,36 @@ export default function AccountSecurity() {
                   "This export could not be imported. Check that it is a valid Cookbook export.",
                 );
               }
-              const result = (await response.json()) as {
-                recipes: number;
-                cookbooks: number;
-                course_bookmarks?: number;
-                courses?: number;
-                course_lessons?: number;
-                omitted_course_recipe_links?: number;
-                snapshot_copies?: number;
-                snapshot_references?: number;
-              };
+              let summary: ImportSummary | null = null;
+              try {
+                summary = parseImportSummary(await response.json());
+              } catch {
+                // The import may already have committed; do not invite a retry.
+              }
+              if (!summary) {
+                window.alert(
+                  "Import completed, but its summary could not be read. Check your Library before importing again.",
+                );
+                return;
+              }
+              const result = summary;
               const snapshotSummary =
                 Number.isInteger(result.snapshot_copies) &&
                 Number.isInteger(result.snapshot_references)
                   ? `; ${result.snapshot_copies} private saved ${result.snapshot_copies === 1 ? "copy" : "copies"} preserved as unverified and ${result.snapshot_references} saved ${result.snapshot_references === 1 ? "reference" : "references"} imported as references`
                   : "";
+              const menuSummary =
+                result.menus === undefined
+                  ? ""
+                  : `, ${result.menus} private ${result.menus === 1 ? "menu" : "menus"} imported`;
+              const omittedMenuLinksSummary =
+                result.omitted_menu_recipe_links === undefined
+                  ? ""
+                  : result.omitted_menu_recipe_links === 0
+                    ? "; no menu recipe links were omitted"
+                    : `; ${result.omitted_menu_recipe_links} menu recipe ${result.omitted_menu_recipe_links === 1 ? "link was" : "links were"} omitted and need relinking`;
               window.alert(
-                `Imported ${result.recipes} recipes and ${result.cookbooks} cookbooks as private copies${typeof result.courses === "number" ? `, ${result.courses} courses and ${result.course_lessons ?? 0} lessons` : ""}${typeof result.omitted_course_recipe_links === "number" && result.omitted_course_recipe_links > 0 ? `; ${result.omitted_course_recipe_links} course recipe links were omitted and need relinking` : ""}${typeof result.course_bookmarks === "number" ? `, plus ${result.course_bookmarks} saved course references` : ""}${snapshotSummary}.`,
+                `Imported ${result.recipes} recipes and ${result.cookbooks} cookbooks as private copies${typeof result.courses === "number" ? `, ${result.courses} courses and ${result.course_lessons ?? 0} lessons` : ""}${typeof result.omitted_course_recipe_links === "number" && result.omitted_course_recipe_links > 0 ? `; ${result.omitted_course_recipe_links} course recipe links were omitted and need relinking` : ""}${typeof result.course_bookmarks === "number" ? `, plus ${result.course_bookmarks} saved course references` : ""}${menuSummary}${omittedMenuLinksSummary}${snapshotSummary}.`,
               );
             } catch (err: unknown) {
               setError(errorMessage(err, "This export could not be imported."));

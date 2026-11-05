@@ -32,7 +32,7 @@ func TestApplicationPublicConfigRouteIsAnonymousAndNoStore(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.AuthMethods.EmailLink || !got.AuthMethods.Passkey || got.RegistrationPolicy != "disabled" || got.PublicInstance || got.CoursesEnabled || !got.MenuAPI {
+	if got.AuthMethods.EmailLink || !got.AuthMethods.Passkey || got.RegistrationPolicy != "disabled" || got.PublicInstance || got.CoursesEnabled || !got.MenuAPI || got.AnonymousHomePreset != defaultAnonymousHomePreset {
 		t.Fatalf("unexpected composed public config: %+v", got)
 	}
 }

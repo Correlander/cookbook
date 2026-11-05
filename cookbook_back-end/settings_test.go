@@ -10,6 +10,94 @@ import (
 	"time"
 )
 
+func TestAnonymousHomePresetSettingsUseOwnerAdminCapabilityAndRejectInvalidValues(t *testing.T) {
+	db := testDatabase(t)
+	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,is_admin,created_at) VALUES
+		('owner','owner@example.test','Owner',0,'now'),('admin','admin@example.test','Admin',1,'now'),('ordinary','ordinary@example.test','Ordinary',0,'now')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClaimInstanceOwner(context.Background(), db, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	cookies := make(map[string]*http.Cookie)
+	for _, accountID := range []string{"owner", "admin", "ordinary"} {
+		token, _, err := issueSession(db, accountID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cookies[accountID] = &http.Cookie{Name: sessionCookie, Value: token}
+	}
+	handler := handlerWithAuth(db, testAuth(db))
+
+	read := callAPI(handler, http.MethodGet, "/api/admin/settings", nil, cookies["owner"])
+	var settings instanceSettings
+	if read.Code != http.StatusOK || json.Unmarshal(read.Body.Bytes(), &settings) != nil || settings.AnonymousHomePreset != defaultAnonymousHomePreset {
+		t.Fatalf("owner settings status=%d preset=%q body=%s", read.Code, settings.AnonymousHomePreset, read.Body)
+	}
+	ownerUpdate := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]string{"anonymous_home_preset": anonymousHomePresetDiscoveryFirst}, cookies["owner"])
+	if ownerUpdate.Code != http.StatusOK || json.Unmarshal(ownerUpdate.Body.Bytes(), &settings) != nil || settings.AnonymousHomePreset != anonymousHomePresetDiscoveryFirst {
+		t.Fatalf("owner preset update status=%d preset=%q body=%s", ownerUpdate.Code, settings.AnonymousHomePreset, ownerUpdate.Body)
+	}
+	var registrationConfigured int
+	if err := db.QueryRow(`SELECT registration_policy_configured FROM instance_settings WHERE id=1`).Scan(&registrationConfigured); err != nil || registrationConfigured != 0 {
+		t.Fatalf("presentation-only update changed registration policy configuration: value=%d err=%v", registrationConfigured, err)
+	}
+
+	publicConfig := callAPI(handler, http.MethodGet, "/api/public/config", nil, nil)
+	var public map[string]json.RawMessage
+	var projected publicConfigResponse
+	if publicConfig.Code != http.StatusOK || publicConfig.Header().Get("Cache-Control") != "no-store" || json.Unmarshal(publicConfig.Body.Bytes(), &public) != nil || json.Unmarshal(publicConfig.Body.Bytes(), &projected) != nil {
+		t.Fatalf("public config status=%d cache=%q body=%s", publicConfig.Code, publicConfig.Header().Get("Cache-Control"), publicConfig.Body)
+	}
+	if len(public) != 7 || projected.AnonymousHomePreset != anonymousHomePresetDiscoveryFirst || !projected.MenuAPI || !projected.CourseCreatorAttribution {
+		t.Fatalf("public config preset/capabilities or safe field set are wrong: %+v body=%s", projected, publicConfig.Body)
+	}
+	for _, forbidden := range []string{"federation_enabled", "federation_origin", "private_snapshot_storage_limit_bytes", "public_recipes", "public_cookbooks", "public_courses"} {
+		if _, exists := public[forbidden]; exists {
+			t.Fatalf("public config exposed administrative field %q", forbidden)
+		}
+	}
+
+	invalidValues := []any{"publication_first", "", nil, true, 1, map[string]any{"preset": anonymousHomePresetLibraryFirst}, []string{anonymousHomePresetLibraryFirst}}
+	for _, invalidValue := range invalidValues {
+		response := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]any{
+			"anonymous_home_preset": invalidValue,
+			"registration_policy":   "open",
+		}, cookies["owner"])
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid_anonymous_home_preset") {
+			t.Fatalf("invalid preset %#v status=%d body=%s", invalidValue, response.Code, response.Body)
+		}
+		if err := db.QueryRow(`SELECT anonymous_home_preset,registration_policy FROM instance_settings WHERE id=1`).Scan(&settings.AnonymousHomePreset, &settings.RegistrationPolicy); err != nil || settings.AnonymousHomePreset != anonymousHomePresetDiscoveryFirst || settings.RegistrationPolicy != "invite_only" {
+			t.Fatalf("invalid preset %#v partially changed settings: preset=%q policy=%q err=%v", invalidValue, settings.AnonymousHomePreset, settings.RegistrationPolicy, err)
+		}
+	}
+
+	legacyUpdate := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]string{"registration_policy": "disabled"}, cookies["owner"])
+	if legacyUpdate.Code != http.StatusOK || json.Unmarshal(legacyUpdate.Body.Bytes(), &settings) != nil || settings.AnonymousHomePreset != anonymousHomePresetDiscoveryFirst || settings.RegistrationPolicy != "disabled" {
+		t.Fatalf("legacy settings update did not preserve omitted preset: status=%d settings=%+v body=%s", legacyUpdate.Code, settings, legacyUpdate.Body)
+	}
+	if err := db.QueryRow(`SELECT registration_policy_configured FROM instance_settings WHERE id=1`).Scan(&registrationConfigured); err != nil || registrationConfigured != 1 {
+		t.Fatalf("registration policy update did not retain existing configured behavior: value=%d err=%v", registrationConfigured, err)
+	}
+	adminUpdate := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]string{"anonymous_home_preset": anonymousHomePresetLibraryFirst}, cookies["admin"])
+	if adminUpdate.Code != http.StatusOK || json.Unmarshal(adminUpdate.Body.Bytes(), &settings) != nil || settings.AnonymousHomePreset != anonymousHomePresetLibraryFirst {
+		t.Fatalf("admin preset update status=%d settings=%+v body=%s", adminUpdate.Code, settings, adminUpdate.Body)
+	}
+	for _, actor := range []struct {
+		name   string
+		cookie *http.Cookie
+		status int
+	}{{name: "ordinary", cookie: cookies["ordinary"], status: http.StatusForbidden}, {name: "anonymous", status: http.StatusUnauthorized}} {
+		response := callAPI(handler, http.MethodPatch, "/api/admin/settings", map[string]string{"anonymous_home_preset": anonymousHomePresetDiscoveryFirst}, actor.cookie)
+		if response.Code != actor.status {
+			t.Fatalf("%s preset update status=%d want=%d body=%s", actor.name, response.Code, actor.status, response.Body)
+		}
+	}
+	if err := db.QueryRow(`SELECT anonymous_home_preset FROM instance_settings WHERE id=1`).Scan(&settings.AnonymousHomePreset); err != nil || settings.AnonymousHomePreset != anonymousHomePresetLibraryFirst {
+		t.Fatalf("denied preset update changed value to %q: err=%v", settings.AnonymousHomePreset, err)
+	}
+}
+
 func TestInstanceSettingsRequireAdminAndConfirmExistingPublication(t *testing.T) {
 	db := testDatabase(t)
 	if _, err := db.Exec(`INSERT INTO users(id,email,display_name,is_admin,created_at) VALUES('admin','admin@example.test','Admin',1,'now'),('member','member@example.test','Member',0,'now');

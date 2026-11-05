@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -14,6 +15,7 @@ type instanceSettings struct {
 	RevisionRetention                int    `json:"revision_retention_days"`
 	AuditRetention                   int    `json:"audit_retention_days"`
 	PrivateSnapshotStorageLimitBytes int64  `json:"private_snapshot_storage_limit_bytes"`
+	AnonymousHomePreset              string `json:"anonymous_home_preset"`
 	FederationEnabled                bool   `json:"federation_enabled"`
 	FederationOrigin                 string `json:"federation_origin"`
 	PublicCookbooks                  int    `json:"public_cookbooks"`
@@ -41,19 +43,34 @@ func (h apiHandler) instanceSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, settings)
 	case http.MethodPatch:
 		var input struct {
-			PublicInstance                   *bool   `json:"public_instance"`
-			CoursesEnabled                   *bool   `json:"courses_enabled"`
-			RegistrationPolicy               *string `json:"registration_policy"`
-			RevisionRetention                *int    `json:"revision_retention_days"`
-			AuditRetention                   *int    `json:"audit_retention_days"`
-			FederationEnabled                *bool   `json:"federation_enabled"`
-			PrivateSnapshotStorageLimitBytes *int64  `json:"private_snapshot_storage_limit_bytes"`
-			ConfirmPublication               bool    `json:"confirm_publication"`
+			PublicInstance                   *bool           `json:"public_instance"`
+			CoursesEnabled                   *bool           `json:"courses_enabled"`
+			RegistrationPolicy               *string         `json:"registration_policy"`
+			RevisionRetention                *int            `json:"revision_retention_days"`
+			AuditRetention                   *int            `json:"audit_retention_days"`
+			FederationEnabled                *bool           `json:"federation_enabled"`
+			PrivateSnapshotStorageLimitBytes *int64          `json:"private_snapshot_storage_limit_bytes"`
+			AnonymousHomePreset              json.RawMessage `json:"anonymous_home_preset"`
+			ConfirmPublication               bool            `json:"confirm_publication"`
 		}
 		if !decodeJSON(w, r, &input) {
 			return
 		}
-		if input.PublicInstance == nil && input.CoursesEnabled == nil && input.RegistrationPolicy == nil && input.RevisionRetention == nil && input.AuditRetention == nil && input.FederationEnabled == nil && input.PrivateSnapshotStorageLimitBytes == nil {
+		var anonymousHomePreset *string
+		if input.AnonymousHomePreset != nil {
+			var value any
+			if err := json.Unmarshal(input.AnonymousHomePreset, &value); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_anonymous_home_preset")
+				return
+			}
+			preset, ok := value.(string)
+			if !ok || !validAnonymousHomePreset(preset) {
+				writeError(w, http.StatusBadRequest, "invalid_anonymous_home_preset")
+				return
+			}
+			anonymousHomePreset = &preset
+		}
+		if input.PublicInstance == nil && input.CoursesEnabled == nil && input.RegistrationPolicy == nil && input.RevisionRetention == nil && input.AuditRetention == nil && input.FederationEnabled == nil && input.PrivateSnapshotStorageLimitBytes == nil && input.AnonymousHomePreset == nil {
 			writeError(w, http.StatusBadRequest, "empty_settings_update")
 			return
 		}
@@ -89,7 +106,7 @@ func (h apiHandler) instanceSettings(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		settings, err := updateInstanceSettingsWithSnapshotLimit(h.db, input.PublicInstance, input.CoursesEnabled, input.RegistrationPolicy, input.RevisionRetention, input.AuditRetention, input.ConfirmPublication, input.PrivateSnapshotStorageLimitBytes, input.FederationEnabled)
+		settings, err := updateInstanceSettingsWithSnapshotLimitAndPreset(h.db, input.PublicInstance, input.CoursesEnabled, input.RegistrationPolicy, input.RevisionRetention, input.AuditRetention, input.ConfirmPublication, input.PrivateSnapshotStorageLimitBytes, input.FederationEnabled, anonymousHomePreset)
 		if errors.Is(err, errPublicationConfirmationRequired) {
 			writeError(w, http.StatusConflict, "publication_confirmation_required")
 			return
@@ -125,7 +142,7 @@ func readInstanceSettings(db *sql.DB) (instanceSettings, error) {
 	var public int
 	var courses int
 	var federation int
-	if err := db.QueryRow(`SELECT public_instance,courses_enabled,registration_policy,revision_retention_days,audit_retention_days,federation_enabled,federation_origin,private_snapshot_storage_limit_bytes FROM instance_settings WHERE id=1`).Scan(&public, &courses, &current.RegistrationPolicy, &current.RevisionRetention, &current.AuditRetention, &federation, &current.FederationOrigin, &current.PrivateSnapshotStorageLimitBytes); err != nil {
+	if err := db.QueryRow(`SELECT public_instance,courses_enabled,registration_policy,revision_retention_days,audit_retention_days,federation_enabled,federation_origin,private_snapshot_storage_limit_bytes,anonymous_home_preset FROM instance_settings WHERE id=1`).Scan(&public, &courses, &current.RegistrationPolicy, &current.RevisionRetention, &current.AuditRetention, &federation, &current.FederationOrigin, &current.PrivateSnapshotStorageLimitBytes, &current.AnonymousHomePreset); err != nil {
 		return current, err
 	}
 	current.PublicInstance = public == 1
@@ -150,6 +167,17 @@ func updateInstanceSettings(db *sql.DB, publicInstance, coursesEnabled *bool, re
 }
 
 func updateInstanceSettingsWithSnapshotLimit(db *sql.DB, publicInstance, coursesEnabled *bool, registrationPolicy *string, revisionRetention, auditRetention *int, confirmPublication bool, privateSnapshotStorageLimitBytes *int64, federationSwitch ...*bool) (instanceSettings, error) {
+	var federation *bool
+	if len(federationSwitch) > 0 {
+		federation = federationSwitch[0]
+	}
+	return updateInstanceSettingsWithSnapshotLimitAndPreset(db, publicInstance, coursesEnabled, registrationPolicy, revisionRetention, auditRetention, confirmPublication, privateSnapshotStorageLimitBytes, federation, nil)
+}
+
+func updateInstanceSettingsWithSnapshotLimitAndPreset(db *sql.DB, publicInstance, coursesEnabled *bool, registrationPolicy *string, revisionRetention, auditRetention *int, confirmPublication bool, privateSnapshotStorageLimitBytes *int64, federationSwitch *bool, anonymousHomePreset *string) (instanceSettings, error) {
+	if anonymousHomePreset != nil && !validAnonymousHomePreset(*anonymousHomePreset) {
+		return instanceSettings{}, errors.New("invalid anonymous homepage preset")
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return instanceSettings{}, err
@@ -158,12 +186,14 @@ func updateInstanceSettingsWithSnapshotLimit(db *sql.DB, publicInstance, courses
 
 	var wasPublic int
 	var courses int
+	var registrationPolicyConfigured int
 	var currentPolicy string
 	var currentRevisionRetention, currentAuditRetention int
 	var federation int
 	var origin string
 	var currentPrivateSnapshotStorageLimit int64
-	if err := tx.QueryRow(`SELECT public_instance,courses_enabled,registration_policy,revision_retention_days,audit_retention_days,federation_enabled,federation_origin,private_snapshot_storage_limit_bytes FROM instance_settings WHERE id=1`).Scan(&wasPublic, &courses, &currentPolicy, &currentRevisionRetention, &currentAuditRetention, &federation, &origin, &currentPrivateSnapshotStorageLimit); err != nil {
+	var currentAnonymousHomePreset string
+	if err := tx.QueryRow(`SELECT public_instance,courses_enabled,registration_policy,registration_policy_configured,revision_retention_days,audit_retention_days,federation_enabled,federation_origin,private_snapshot_storage_limit_bytes,anonymous_home_preset FROM instance_settings WHERE id=1`).Scan(&wasPublic, &courses, &currentPolicy, &registrationPolicyConfigured, &currentRevisionRetention, &currentAuditRetention, &federation, &origin, &currentPrivateSnapshotStorageLimit, &currentAnonymousHomePreset); err != nil {
 		return instanceSettings{}, err
 	}
 	wasCoursesEnabled := courses == 1
@@ -179,8 +209,8 @@ func updateInstanceSettingsWithSnapshotLimit(db *sql.DB, publicInstance, courses
 		public = *publicInstance
 	}
 	oldFederation := federation
-	if len(federationSwitch) > 0 && federationSwitch[0] != nil {
-		if *federationSwitch[0] {
+	if federationSwitch != nil {
+		if *federationSwitch {
 			if origin == "" {
 				return instanceSettings{}, errors.New("federation origin is required")
 			}
@@ -228,11 +258,17 @@ func updateInstanceSettingsWithSnapshotLimit(db *sql.DB, publicInstance, courses
 		}
 		currentPrivateSnapshotStorageLimit = *privateSnapshotStorageLimitBytes
 	}
+	if anonymousHomePreset != nil {
+		currentAnonymousHomePreset = *anonymousHomePreset
+	}
+	if anonymousHomePreset == nil || publicInstance != nil || coursesEnabled != nil || registrationPolicy != nil || revisionRetention != nil || auditRetention != nil || federationSwitch != nil || privateSnapshotStorageLimitBytes != nil {
+		registrationPolicyConfigured = 1
+	}
 	publicValue := 0
 	if public {
 		publicValue = 1
 	}
-	if _, err := tx.Exec(`UPDATE instance_settings SET public_instance=?,courses_enabled=?,registration_policy=?,registration_policy_configured=1,revision_retention_days=?,audit_retention_days=?,federation_enabled=?,federation_origin_locked=CASE WHEN ?=1 THEN 1 ELSE federation_origin_locked END,private_snapshot_storage_limit_bytes=? WHERE id=1`, publicValue, courses, currentPolicy, currentRevisionRetention, currentAuditRetention, federation, federation, currentPrivateSnapshotStorageLimit); err != nil {
+	if _, err := tx.Exec(`UPDATE instance_settings SET public_instance=?,courses_enabled=?,registration_policy=?,registration_policy_configured=?,revision_retention_days=?,audit_retention_days=?,federation_enabled=?,federation_origin_locked=CASE WHEN ?=1 THEN 1 ELSE federation_origin_locked END,private_snapshot_storage_limit_bytes=?,anonymous_home_preset=? WHERE id=1`, publicValue, courses, currentPolicy, registrationPolicyConfigured, currentRevisionRetention, currentAuditRetention, federation, federation, currentPrivateSnapshotStorageLimit, currentAnonymousHomePreset); err != nil {
 		return instanceSettings{}, err
 	}
 	if oldFederation != federation || (publicInstance != nil && (wasPublic == 1) != public) {

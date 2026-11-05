@@ -18,8 +18,8 @@ func TestMealMenuMigrationFromV14PreservesAttributionsAndConstraints(t *testing.
 		t.Fatal(err)
 	}
 	migrations := registeredSchemaMigrations()
-	if len(migrations) != 15 || migrations[14].version != 15 || migrations[14].name != "private-meal-menu-schema" {
-		t.Fatalf("registered migration count=%d latest=%+v, want v15 private-meal-menu-schema", len(migrations), migrations[len(migrations)-1])
+	if len(migrations) != 16 || migrations[14].version != 15 || migrations[14].name != "private-meal-menu-schema" || migrations[15].version != 16 || migrations[15].name != "anonymous-home-presentation-preset" {
+		t.Fatalf("registered migration count=%d latest=%+v, want historical v15 menu plus v16 homepage preset", len(migrations), migrations[len(migrations)-1])
 	}
 	if err := runSchemaMigrations(ctx, db, migrations[:14]); err != nil {
 		t.Fatalf("create genuine v14 database: %v", err)
@@ -66,14 +66,14 @@ func TestMealMenuMigrationFromV14PreservesAttributionsAndConstraints(t *testing.
 		t.Fatalf("v15 attribution foreign keys=%#v, want prior keys plus menu cascade %#v", got, wantForeignKeys)
 	}
 	assertCourseAttributionSchemaForeignKeys(t, db)
-	if got := migrationVersion(t, db); got != 15 {
-		t.Fatalf("upgraded schema version=%d, want 15", got)
+	if got := migrationVersion(t, db); got != latestSchemaVersion() {
+		t.Fatalf("upgraded schema version=%d, want latest %d", got, latestSchemaVersion())
 	}
 	if err := runSchemaMigrations(ctx, db, migrations); err != nil {
 		t.Fatalf("idempotent migration restart: %v", err)
 	}
-	if got := migrationVersion(t, db); got != 15 {
-		t.Fatalf("restart schema version=%d, want 15", got)
+	if got := migrationVersion(t, db); got != latestSchemaVersion() {
+		t.Fatalf("restart schema version=%d, want latest %d", got, latestSchemaVersion())
 	}
 }
 
@@ -275,8 +275,8 @@ func TestMealMenuMigrationFailureRollsBackAndCanRetry(t *testing.T) {
 	if err := runSchemaMigrations(ctx, db, migrations); err != nil {
 		t.Fatalf("retry migration after rollback: %v", err)
 	}
-	if got := migrationVersion(t, db); got != 15 {
-		t.Fatalf("retried schema version=%d, want v15", got)
+	if got := migrationVersion(t, db); got != latestSchemaVersion() {
+		t.Fatalf("retried schema version=%d, want latest %d", got, latestSchemaVersion())
 	}
 	if got := readMealMenuV14Attributions(t, db); !reflect.DeepEqual(got, before) {
 		t.Fatalf("successful retry changed old attribution rows: before=%#v after=%#v", before, got)
@@ -289,8 +289,8 @@ func TestMealMenuMigrationFailureRollsBackAndCanRetry(t *testing.T) {
 	if err := runSchemaMigrations(ctx, reopened, migrations); err != nil {
 		t.Fatalf("restart after successful retry: %v", err)
 	}
-	if got := migrationVersion(t, reopened); got != 15 {
-		t.Fatalf("reopened schema version=%d, want v15", got)
+	if got := migrationVersion(t, reopened); got != latestSchemaVersion() {
+		t.Fatalf("reopened schema version=%d, want latest %d", got, latestSchemaVersion())
 	}
 }
 

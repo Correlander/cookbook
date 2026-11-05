@@ -109,6 +109,11 @@ func registeredSchemaMigrations() []schemaMigration {
 		name:     "private-meal-menu-schema",
 		checksum: migrationChecksum("private-meal-menu-schema", mealMenuSchemaDDL+"\x00"+mealMenuAttributionSchemaDDL+"\x00"+mealMenuAttributionIndexesDDL),
 		apply:    applyMealMenuSchemaMigration,
+	}, {
+		version:  16,
+		name:     "anonymous-home-presentation-preset",
+		checksum: migrationChecksum("anonymous-home-presentation-preset", anonymousHomePresetSchemaDDL),
+		apply:    applyAnonymousHomePresetMigration,
 	}}
 }
 

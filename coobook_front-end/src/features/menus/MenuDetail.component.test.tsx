@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import type { MenuEntryView, PrivateMenu } from "../../apiModels";
+import type { MenuEntry, MenuEntryView, PrivateMenu } from "../../apiModels";
 import MenuDetail from "./MenuDetail.tsx";
 
 const menuID = "a".repeat(32);
@@ -31,9 +31,12 @@ function response(value: unknown, status = 200): Response {
 }
 
 function installMenuFetch(responses: Response[], recipes: Response = response([])) {
-  const fetchMock = vi.fn((input: RequestInfo | URL) => String(input).startsWith("/api/recipes")
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    void init;
+    return String(input).startsWith("/api/recipes")
     ? Promise.resolve(recipes)
-    : Promise.resolve(responses.shift()!));
+    : Promise.resolve(responses.shift()!);
+  });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
@@ -52,7 +55,9 @@ it("loads the authoritative menu and reorders duplicate recipe references with t
   const reordered = menu(5, [entry(entryTwoID, 0), entry(entryOneID, 1)]);
   const fetchMock = installMenuFetch([response(starting), response(reordered), response(menu(6, [entry(entryOneID, 0)]))]);
   render(<MenuDetail actorID="actor-a" menuID={menuID} onDeleted={vi.fn()} />);
-  const move = (await screen.findAllByRole("button", { name: "Move Tomato soup down" }))[0]!;
+  const move = (await screen.findAllByRole("button", { name: "Move Tomato soup down" }))[0];
+  expect(move).toBeInstanceOf(HTMLButtonElement);
+  if (!(move instanceof HTMLButtonElement)) throw new Error("Expected menu reorder control to be a button.");
   move.focus();
   fireEvent.click(move);
   await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/entries/order"))).toBe(true));
@@ -100,7 +105,8 @@ it("keeps unavailable targets redacted and edits only owner text fields", async 
 });
 
 it("adds a selected local recipe with explicit entry text and the current menu version", async () => {
-  const added = menu(3, [entry(entryOneID, 0), { ...entry(entryTwoID, 1), recipe: { id: "e".repeat(32), title: "Fresh salad" } }]);
+  const addedEntry: MenuEntry = { id: entryTwoID, position: 1, label: "", note: "", serving_note: "", available: true, recipe: { id: "e".repeat(32), title: "Fresh salad" } };
+  const added = menu(3, [entry(entryOneID, 0), addedEntry]);
   const fetchMock = installMenuFetch([response(menu(2, [])), response(added, 201)], response([{ id: "e".repeat(32), title: "Fresh salad", ingredients: ["hidden"] }]));
   render(<MenuDetail actorID="actor-a" menuID={menuID} onDeleted={vi.fn()} />);
   fireEvent.click(await screen.findByRole("button", { name: "Add Fresh salad" }));
@@ -116,9 +122,12 @@ it("ignores a stale load and mutation after the actor or menu changes", async ()
   const actorB = deferred<Response>();
   const saveResponse = deferred<Response>();
   const menuReplies = [actorA.promise, actorB.promise, saveResponse.promise];
-  const fetchMock = vi.fn((input: RequestInfo | URL) => String(input).startsWith("/api/recipes")
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    void init;
+    return String(input).startsWith("/api/recipes")
     ? Promise.resolve(response([]))
-    : menuReplies.shift()!);
+    : menuReplies.shift()!;
+  });
   vi.stubGlobal("fetch", fetchMock);
   const view = render(<MenuDetail actorID="actor-a" menuID={menuID} onDeleted={vi.fn()} />);
   await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
@@ -165,9 +174,12 @@ it("reuses the accepted metadata form and applies the returned menu version", as
 it("reloads a metadata conflict inside the form and resubmits the preserved draft with the latest version", async () => {
   const updated = { ...menu(9), title: "Draft title", note: "Draft note" };
   const replies: Response[] = [response(menu(2)), response({ error: "version_conflict" }, 409), response(menu(8)), response(updated)];
-  const fetchMock = vi.fn((input: RequestInfo | URL) => String(input).startsWith("/api/recipes")
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    void init;
+    return String(input).startsWith("/api/recipes")
     ? Promise.resolve(response([]))
-    : Promise.resolve(replies.shift()!));
+    : Promise.resolve(replies.shift()!);
+  });
   vi.stubGlobal("fetch", fetchMock);
   render(<MenuDetail actorID="actor-a" menuID={menuID} onDeleted={vi.fn()} />);
   fireEvent.click(await screen.findByRole("button", { name: "Edit menu" }));
@@ -196,9 +208,12 @@ it("does not apply focus from a failed reorder after a later explicit reload", a
     Promise.resolve(response({ error: "version_conflict" }, 409)),
     reloadResponse.promise,
   ];
-  const fetchMock = vi.fn((input: RequestInfo | URL) => String(input).startsWith("/api/recipes")
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    void init;
+    return String(input).startsWith("/api/recipes")
     ? Promise.resolve(response([]))
-    : replies.shift()!);
+    : replies.shift()!;
+  });
   vi.stubGlobal("fetch", fetchMock);
   render(<MenuDetail actorID="actor-a" menuID={menuID} onDeleted={vi.fn()} />);
   fireEvent.click((await screen.findAllByRole("button", { name: "Move Tomato soup down" }))[0]!);

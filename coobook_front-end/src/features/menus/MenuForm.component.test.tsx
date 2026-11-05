@@ -22,7 +22,11 @@ function jsonResponse(value: unknown, status = 200): Response {
 }
 
 function installFetch(...responses: Response[]) {
-  const fetchMock = vi.fn(() => Promise.resolve(responses.shift() ?? jsonResponse({}, 500)));
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    void input;
+    void init;
+    return Promise.resolve(responses.shift() ?? jsonResponse({}, 500));
+  });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }

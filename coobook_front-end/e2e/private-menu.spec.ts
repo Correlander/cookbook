@@ -133,7 +133,7 @@ test("ordinary owners create, order, reopen, and cook from private menus while o
     await expect(cookingDialog.getByText("Cooking mode", { exact: true })).toBeVisible();
     await expect(cookingDialog.getByRole("button", { name: "Next step" })).toBeVisible();
     await cookingDialog.getByRole("button", { name: "Next step" }).click();
-    await expect(cookingDialog.getByText("Step 2 of 2")).toBeVisible();
+    await expect(cookingDialog.getByRole("status")).toHaveText("Step 2 of 2");
     await expect(cookingDialog.getByRole("heading", { name: "Season with salt." })).toBeVisible();
     await expect(cookingDialog.getByRole("button", { name: "Finished" })).toBeVisible();
 

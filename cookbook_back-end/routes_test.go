@@ -15,7 +15,7 @@ import (
 
 func TestApplicationPublicConfigRouteIsAnonymousAndNoStore(t *testing.T) {
 	db := testDatabase(t)
-	if _, err := db.Exec(`UPDATE instance_settings SET registration_policy='disabled',public_instance=1,courses_enabled=0 WHERE id=1`); err != nil {
+	if _, err := db.Exec(`UPDATE instance_settings SET registration_policy='disabled',public_instance=0,courses_enabled=0 WHERE id=1`); err != nil {
 		t.Fatal(err)
 	}
 	auth := testAuth(db)
@@ -32,7 +32,7 @@ func TestApplicationPublicConfigRouteIsAnonymousAndNoStore(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.AuthMethods.EmailLink || !got.AuthMethods.Passkey || got.RegistrationPolicy != "disabled" || !got.PublicInstance || got.CoursesEnabled {
+	if got.AuthMethods.EmailLink || !got.AuthMethods.Passkey || got.RegistrationPolicy != "disabled" || got.PublicInstance || got.CoursesEnabled || !got.MenuAPI {
 		t.Fatalf("unexpected composed public config: %+v", got)
 	}
 }

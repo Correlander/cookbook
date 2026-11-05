@@ -21,14 +21,14 @@ func TestPublicConfigReturnsOnlySafeFormConfiguration(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body) != 5 {
-		t.Fatalf("public config keys=%v, want exactly the safe five fields", body)
+	if len(body) != 6 {
+		t.Fatalf("public config keys=%v, want exactly the safe six fields", body)
 	}
 	var got publicConfigResponse
 	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if !got.AuthMethods.EmailLink || !got.AuthMethods.Passkey || got.RegistrationPolicy != "open" || !got.PublicInstance || !got.CoursesEnabled || !got.CourseCreatorAttribution {
+	if !got.AuthMethods.EmailLink || !got.AuthMethods.Passkey || got.RegistrationPolicy != "open" || !got.PublicInstance || !got.CoursesEnabled || !got.CourseCreatorAttribution || !got.MenuAPI {
 		t.Fatalf("unexpected public config: %+v", got)
 	}
 	for _, forbidden := range []string{"smtp", "federation", "retention", "audit", "owner", "email", "key", "secret"} {
@@ -51,7 +51,7 @@ func TestPublicConfigReflectsUnavailableAuthenticationMethods(t *testing.T) {
 	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &got) != nil {
 		t.Fatalf("GET public config status=%d body=%s", response.Code, response.Body)
 	}
-	if got.AuthMethods.EmailLink || !got.AuthMethods.Passkey || got.RegistrationPolicy != "invite_only" || got.PublicInstance || got.CoursesEnabled || !got.CourseCreatorAttribution {
+	if got.AuthMethods.EmailLink || !got.AuthMethods.Passkey || got.RegistrationPolicy != "invite_only" || got.PublicInstance || got.CoursesEnabled || !got.CourseCreatorAttribution || !got.MenuAPI {
 		t.Fatalf("unexpected no-email public config: %+v", got)
 	}
 

@@ -22,6 +22,7 @@ type publicConfigResponse struct {
 	PublicInstance           bool              `json:"public_instance"`
 	CoursesEnabled           bool              `json:"courses_enabled"`
 	CourseCreatorAttribution bool              `json:"course_creator_attribution,omitempty"`
+	MenuAPI                  bool              `json:"menu_api"`
 }
 
 func publicConfigFor(db *sql.DB, auth authHandler) http.Handler {
@@ -52,5 +53,6 @@ func (h publicConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	response.PublicInstance = public == 1
 	response.CoursesEnabled = courses == 1
 	response.CourseCreatorAttribution = true
+	response.MenuAPI = true
 	writeJSON(w, http.StatusOK, response)
 }

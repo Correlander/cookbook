@@ -23,7 +23,7 @@ async function createPrivateRecipe(page: Page, title: string): Promise<{ id: str
       edit_policy: "owner_only",
       cookbook_ids: [],
       ingredients: [{ name: "Tomato", quantity: "2" }],
-      steps: [{ text: "Cook the tomatoes." }],
+      steps: [{ text: "Cook the tomatoes." }, { text: "Season with salt." }],
       initial_publication: { publication_state: "unpublished", federation_mode: "off", index_eligible: false },
     },
   });
@@ -125,7 +125,17 @@ test("ordinary owners create, order, reopen, and cook from private menus while o
     await recipeLink.click();
     await expect(creator.page.getByRole("button", { name: "Start cooking mode" })).toBeVisible();
     await creator.page.getByRole("button", { name: "Start cooking mode" }).click();
-    await expect(creator.page.getByRole("dialog", { name: /Cooking mode/i })).toBeVisible();
+    const cookingDialog = creator.page.getByRole("dialog").filter({
+      has: creator.page.getByText("Cooking mode", { exact: true }),
+    });
+    await expect(cookingDialog).toBeVisible();
+    await expect(cookingDialog).toHaveAccessibleName(/Private menu recipe/);
+    await expect(cookingDialog.getByText("Cooking mode", { exact: true })).toBeVisible();
+    await expect(cookingDialog.getByRole("button", { name: "Next step" })).toBeVisible();
+    await cookingDialog.getByRole("button", { name: "Next step" }).click();
+    await expect(cookingDialog.getByText("Step 2 of 2")).toBeVisible();
+    await expect(cookingDialog.getByRole("heading", { name: "Season with salt." })).toBeVisible();
+    await expect(cookingDialog.getByRole("button", { name: "Finished" })).toBeVisible();
 
     reader = await openContext(browser);
     await reader.page.goto("/");

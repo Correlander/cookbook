@@ -2,6 +2,14 @@ import { test, expect, type BrowserContext, type Route } from '@playwright/test'
 import { readFile, stat, unlink } from 'node:fs/promises'
 import { openAccountMenu, signInWithSyntheticEmail } from './auth'
 
+async function attemptCleanup(failures: string[], label: string, operation: () => Promise<void>): Promise<void> {
+  try {
+    await operation()
+  } catch (error) {
+    failures.push(`${label}: ${error instanceof Error ? error.message : 'cleanup failed'}`)
+  }
+}
+
 test('serves built Astro root with its generated CSP and static metadata', async ({ page }) => {
   const violations: string[] = []
   page.on('console', (message) => { if (/content security policy|refused to execute/i.test(message.text())) violations.push(message.text()) })
@@ -30,7 +38,7 @@ test('serves built Astro root with its generated CSP and static metadata', async
   await page.keyboard.press('Enter')
   await expect(page.locator('#home')).toBeFocused()
   await page.keyboard.press('Tab')
-  await expect(page.locator(':focus')).toHaveAttribute('href', '#recipes')
+  await expect(page.getByRole('button', { name: /sign in or create an account/i })).toBeFocused()
   await page.setViewportSize({ width: 1280, height: 800 })
   await page.goto('/')
   const desktopRestingBox = await skipLink.boundingBox()
@@ -218,6 +226,7 @@ test('keeps the root navigation keyboard reachable and retains its legacy hash t
   await expect(page.locator(':focus')).toHaveAttribute('href', '/')
   await page.keyboard.press('Enter')
   await expect(page).toHaveURL(/\/$/)
+  await signInWithSyntheticEmail(page, page.request, 'home-hash-reader@example.test', 'Home Hash Reader')
   await page.goto('/#cookbooks')
   await expect(page.locator('#cookbooks')).toBeVisible()
   await page.goto('/#recipes')
@@ -381,6 +390,9 @@ test('signed-in instance administrators can open settings directly and through t
     ? 'discovery_first'
     : 'library_first'
   let guestContext: BrowserContext | undefined
+  let primaryFailure: unknown
+  let primaryFailed = false
+  const cleanupFailures: string[] = []
 
   try {
     for (const path of ['/admin/settings', '/admin/settings.html']) {
@@ -403,6 +415,7 @@ test('signed-in instance administrators can open settings directly and through t
     expect((await savedSettings.json()).anonymous_home_preset).toBe('discovery_first')
 
     const privateSettings = await page.request.patch('/api/admin/settings', {
+      headers: { Origin: process.env.PLAYWRIGHT_BASE_URL ?? 'http://127.0.0.1:4178' },
       data: { public_instance: false },
     })
     expect(privateSettings.status()).toBe(200)
@@ -421,6 +434,7 @@ test('signed-in instance administrators can open settings directly and through t
     expect(privateCatalogRequests).toEqual([])
 
     const publicSettings = await page.request.patch('/api/admin/settings', {
+      headers: { Origin: process.env.PLAYWRIGHT_BASE_URL ?? 'http://127.0.0.1:4178' },
       data: { public_instance: true, confirm_publication: true },
     })
     expect(publicSettings.status()).toBe(200)
@@ -440,19 +454,38 @@ test('signed-in instance administrators can open settings directly and through t
     await page.getByRole('link', { name: 'Settings', exact: true }).click()
     await expect(page).toHaveURL(/\/admin\/settings#visibility$/)
     await expect(page.getByRole('heading', { name: 'Instance administration', level: 1 })).toBeVisible()
-  } finally {
-    try {
-      await page.request.patch('/api/admin/settings', {
-        data: {
-          public_instance: initialSettings.public_instance,
-          anonymous_home_preset: originalPreset,
-          confirm_publication: true,
-        },
-      })
-    } finally {
-      await guestContext?.close()
-    }
+  } catch (error) {
+    primaryFailed = true
+    primaryFailure = error
   }
+
+  await attemptCleanup(cleanupFailures, 'Restore instance settings', async () => {
+    const response = await page.request.patch('/api/admin/settings', {
+      headers: { Origin: process.env.PLAYWRIGHT_BASE_URL ?? 'http://127.0.0.1:4178' },
+      data: {
+        public_instance: initialSettings.public_instance,
+        anonymous_home_preset: originalPreset,
+        confirm_publication: true,
+      },
+    })
+    expect(response.status()).toBe(200)
+  })
+  if (guestContext) {
+    await attemptCleanup(cleanupFailures, 'Close guest browser context', () => guestContext!.close())
+  }
+
+  if (primaryFailed) {
+    if (cleanupFailures.length) {
+      const cleanupMessage = `\nCleanup also reported: ${cleanupFailures.join('; ')}`
+      if (primaryFailure instanceof Error) {
+        primaryFailure.message += cleanupMessage
+        throw primaryFailure
+      }
+      throw new Error(`Primary test failure: ${String(primaryFailure)}${cleanupMessage}`, { cause: primaryFailure })
+    }
+    throw primaryFailure
+  }
+  if (cleanupFailures.length) throw new Error(cleanupFailures.join('; '))
 })
 
 test('email sign-in remains explicit, establishes a session, and rejects replay', async ({ page, request }) => {

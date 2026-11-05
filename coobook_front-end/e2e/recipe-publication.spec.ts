@@ -235,7 +235,8 @@ test("owners can publish and withdraw a public recipe without losing owner acces
       const selfProfile = (await selfProfileResponse.json()) as { profile: { id: string; visibility: string } };
       expect(selfProfile.profile.visibility).toBe("private");
       publisherProfileID = selfProfile.profile.id;
-      expect((await anonPage.request.get(`/api/creator-profiles/${publisherProfileID}`)).status()).toBe(404);
+      expect((await page.request.get(`/api/creator-profiles/${publisherProfileID}`)).status()).toBe(200);
+      expect((await anonPage.request.get(`/api/creator-profiles/${publisherProfileID}`)).status()).toBe(401);
 
       const retryPromise = page.waitForResponse(
         (response) => response.request().method() === "PUT" &&

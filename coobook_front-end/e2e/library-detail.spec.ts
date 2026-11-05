@@ -258,8 +258,10 @@ test("Library and recipe detail preserve account, public, saved, unavailable, an
 
     anonymous = await openContext(browser);
     await anonymous.page.goto("/");
-    if (publisherProfileID)
-      expect((await anonymous.page.request.get(`/api/creator-profiles/${publisherProfileID}`)).status()).toBe(404);
+    if (publisherProfileID) {
+      expect((await admin.page.request.get(`/api/creator-profiles/${publisherProfileID}`)).status()).toBe(200);
+      expect((await anonymous.page.request.get(`/api/creator-profiles/${publisherProfileID}`)).status()).toBe(401);
+    }
     const anonymousLibraryRequests: string[] = [];
     anonymous.page.on("request", (request) => {
       if (new URL(request.url()).pathname.startsWith("/api/library/"))
@@ -304,6 +306,8 @@ test("Library and recipe detail preserve account, public, saved, unavailable, an
       "Library reader",
     );
     expect(readerUser.is_admin).toBe(false);
+    if (publisherProfileID)
+      expect((await reader.page.request.get(`/api/creator-profiles/${publisherProfileID}`)).status()).toBe(404);
     await reader.page.goto(`/recipe?id=${publicRecipe.id}`);
     await expect(reader.page.getByRole("button", { name: "Create a copy" })).toBeVisible();
     await reader.page.getByRole("button", { name: "Create a copy" }).click();
